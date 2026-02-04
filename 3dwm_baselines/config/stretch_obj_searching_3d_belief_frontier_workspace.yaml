@@ -1,0 +1,63 @@
+defaults:
+  - agent: exploration_agent
+  - agent/planner: exploration_planner
+  - agent/world_model: belief_3d_model
+  - _self_
+
+robot_ip: "10.203.64.129"
+
+embodied_task:
+  name: stretch_obj_searching_3d_belief_frontier
+  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  subset_type: null # room or length
+  subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
+  close_enough_distance: 4.0
+  alignment_threshold: 45
+  max_steps: 25
+  rotation_step: 10
+  move_step: 0.3
+  timeout: 500
+  trajectory:
+    save: True
+    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/object_searching_3d_belief_frontier
+    image_keys: ['rgb']
+    string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
+
+task_manager:
+  _target_: belief_baselines.task_manager.stretch_obj_searching_task_manager.StretchObjSearchingTaskManager
+
+env_interface:
+  _target_: belief_baselines.env_interface.stretch_env_interface.StretchEnvInterface
+
+agent:
+  camera:
+    _target_: belief_baselines.agent.perception.camera.Camera
+    h: 720
+    w: 1280
+    fx: 644.0974
+    fy: 643.0801
+    cx: 641.4113
+    cy: 360.6201
+    near: 0.1
+    far: 10.0
+  world_model:
+    camera:
+      _target_: belief_baselines.agent.perception.camera.Camera
+      fx: 0.5032011
+      fy: 0.8931668
+      cx: 0.5
+      cy: 0.5
+      h: 128
+      w: 128
+      near: 0.1
+      far: 10.0
+    model:
+      checkpoint_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/training/spoc/dfm/uvit_mvsplat_finetune_sp_repa_128_seq_dir_diff/model-145.pt
+    obs_filter_border_gaussians: true
+    obs_depth_max: 2.5
+  planner:
+    goal_sampling_strategy: frontier
+  assets_saver:
+    save: True
+    save_path: "${embodied_task.trajectory.save_path}"
+    asset_keys: ['occupancy', 'rgb', 'goal_images', 'vlm_scores', 'vlm_response', 'goal_poses', 'pcd']

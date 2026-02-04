@@ -1,0 +1,51 @@
+defaults:
+  - agent: exploration_agent
+  - agent/planner: vlm_goal_selector
+  - agent/world_model: dfot_vggt_model
+  - _self_
+
+embodied_task:
+  name: spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector
+  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  subset_type: null # room or length
+  subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
+  close_enough_distance: 4.0
+  alignment_threshold: 45
+  max_steps: 25
+  rotation_step: 10
+  move_step: 0.3
+  timeout: 200
+  trajectory:
+    save: True
+    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/object_searching_dfot_vggt_gemini_vlm_goal_selector
+    image_keys: ['rgb']
+    string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
+
+task_manager:
+  _target_: belief_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
+
+env_interface:
+  _target_: belief_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+
+agent:
+  camera:
+    _target_: belief_baselines.agent.perception.camera.Camera
+    h: 240
+    w: 240
+    fx: 93.6
+    fy: 92.4
+    cx: 120
+    cy: 120
+    near: 0.1
+    far: 10.0
+  world_model:
+    camera: ${agent.camera}
+  planner:
+    goal_sampling_strategy: frontier_relaxed_random
+    vlm:
+      _target_: belief_baselines.agent.vlm.vlm.GeminiVLM
+      vlm_model_name: "gemini-3-flash-preview"
+  assets_saver:
+    save: True
+    save_path: "${embodied_task.trajectory.save_path}"
+    asset_keys: ['occupancy', 'rgb', 'goal_images', 'vlm_scores', 'vlm_response', 'goal_poses']

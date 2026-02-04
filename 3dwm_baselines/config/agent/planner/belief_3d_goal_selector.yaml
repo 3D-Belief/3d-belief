@@ -1,0 +1,12 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.planner.belief_3d_goal_selector.Belief3DModelGoalSelector
+
+name: belief_3d_goal_selector
+
+goal_sampling_strategy: frontier
+path_planning_algorithm: astar
+action_name: nav_to
+adjacent_angle: 1.57  # 90 degrees
+adjacent_distance: 3.0  # meters

@@ -1,0 +1,5 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.world_model.base_world_model.BaseWorldModel
+name: base_world_model

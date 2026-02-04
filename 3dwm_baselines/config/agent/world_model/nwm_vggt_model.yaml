@@ -1,0 +1,41 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.world_model.nwm_vggt_model.NWMVGGTModel
+
+name: nwm_vggt_model
+
+camera:
+  _target_: belief_baselines.agent.perception.camera.Camera
+  h: 240
+  w: 240
+  fx: 256
+  fy: 256
+  cx: 120
+  cy: 120
+  near: 0.1
+  far: 10.0
+
+nwm_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm/data/nwm_cdit_xl_finetune.pth.tar
+nwm_repo_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm
+
+vggt_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+
+nwm_image_size: 224
+
+obs_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.1
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+belief_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.12
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+adjacent_angle: 0.523599  # 30 degrees
+adjacent_distance: 0.2  # meters

@@ -1,0 +1,39 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.world_model.dfot_vggt_model.DFoTVGGTModel
+
+name: dfot_vggt_model
+
+camera:
+  _target_: belief_baselines.agent.perception.camera.Camera
+  h: 240
+  w: 240
+  fx: 256
+  fy: 256
+  cx: 120
+  cy: 120
+  near: 0.1
+  far: 10.0
+
+dfot_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot/data/dfot_spoc_latest.ckpt
+dfot_repo_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot
+
+vggt_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+
+obs_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.1
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+belief_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.12
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+adjacent_angle: 0.523599  # 30 degrees
+adjacent_distance: 1.0  # meters

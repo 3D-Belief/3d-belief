@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "3D-Belief"
+version = "0.1.0"
+description = "A Generative 3D World Model for Embodied Reasoning and Planning"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  # "numpy",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["3d_belief*", "3dwm_baselines*"]

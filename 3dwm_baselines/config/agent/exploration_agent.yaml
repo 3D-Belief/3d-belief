@@ -1,0 +1,22 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.agent.exploration_agent.ExplorationAgent
+
+name: exploration_agent
+
+camera:
+  _target_: belief_baselines.agent.perception.camera.Camera
+  h: 240
+  w: 240
+  fx: 256
+  fy: 256
+  cx: 120
+  cy: 120
+  near: 0.1
+  far: 10.0
+
+assets_saver:
+  save: True
+  save_path: ./outputs/basics
+  asset_keys: ['occupancy', 'rgb', 'pcd']

@@ -1,0 +1,117 @@
+defaults:
+  - model/encoder@model.diffusion_model.model.encoder_visual_pair.cfg: uvitmvsplat
+  - model/decoder@model.diffusion_model.model.decoder.cfg: splatting_cuda
+  - model@model.diffusion_model.dataset_cfg.config: model_dataset
+  - model/dataset@model.diffusion_model.dataset_cfg.config.dataset: spoc_seq
+  - _self_
+
+_target_: belief_baselines.world_model.belief_3d_model.Belief3DModel
+
+name: belief_3d_model
+
+fast_sampling: true
+
+camera:
+  _target_: belief_baselines.agent.perception.camera.Camera
+  fx: 0.390
+  fy: 0.385
+  cx: 0.5
+  cy: 0.5
+  h: 128
+  w: 128
+  near: 0.1
+  far: 10.0
+
+model:
+  _target_: diffusion.denoising_diffusion_pixelsplat_epi_temporal.Trainer
+  _convert_: none
+  diffusion_model:
+    _target_: belief_baselines.utils.model_factories.build_diffusion
+    _convert_: none
+    image_size: 128
+    model:
+      _target_: belief_baselines.utils.model_factories.build_splat_model
+      inference_mode: true
+      use_semantic: false
+      encoder_visual_pair:
+        _target_: belief_baselines.utils.model_factories.get_encoder_pair
+        _convert_: none
+      decoder:
+        _target_: belief_baselines.utils.model_factories.build_decoder
+      semantic:
+        _target_: belief_baselines.utils.model_factories.build_semantic_bundle
+        use_semantic: false
+        semantic_mode: "embed"        # "embed" | "class" | ...
+        semantic_viz: false
+        semantic_config: null
+        clip:
+          model_name: "ViT-B-16"
+          pretrained: "laion2b_s34b_b88k"
+          precision: "fp16"
+          device: "cuda"
+        reg_model:
+          enabled: false
+          name: "dinov2_reg_small"
+          device: "cuda"
+      depth_mode: depth
+      extended_visualization: false
+      use_history: false    
+    timesteps: 1000
+    sampling_steps: 50
+    loss_type: "l2"
+    objective: "pred_x0"
+    beta_schedule: "cosine"
+    guidance_scale: 0.0
+    temperature: 0.5
+    clean_target: false
+    dataset_cfg:
+      _convert_: none
+  dataloader:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: data_io.get_dataset
+      _convert_: none
+      config: ${agent.world_model.model.diffusion_model.dataset_cfg.config}
+    batch_size: 8
+    shuffle: false
+    pin_memory: true
+    num_workers: 0
+  checkpoint_path: null
+  accelerator:
+    _target_: accelerate.Accelerator
+    split_batches: true
+    mixed_precision: "no"
+  cfg:
+    adjacent_angle: 0.785 # pi/4
+    adjacent_distance: 1.0
+    ctxt_min: 15
+    ctxt_max: 16
+    wandb_id: null
+    resume_id: null
+  wandb_config:
+    mode: disabled
+
+obs_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.12
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+belief_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.12
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+adjacent_angle: 0.523599  # 30 degrees
+adjacent_distance: 1.0  # meters
+
+coverage_threshold: 0.4
+
+obs_filter_border_gaussians: false
+obs_depth_min: 0.1
+obs_depth_max: 10.0
+
+disable_imagination: false

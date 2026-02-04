@@ -1,0 +1,29 @@
+defaults:
+  - _self_
+
+_target_: belief_baselines.world_model.vggt_model.VGGTModel
+
+name: vggt_model
+
+camera:
+  _target_: belief_baselines.agent.perception.camera.Camera
+  h: 240
+  w: 240
+  fx: 256
+  fy: 256
+  cx: 120
+  cy: 120
+  near: 0.1
+  far: 10.0
+
+model_checkpoint: "facebook/VGGT-1B"
+
+obs_occupancy:
+  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  resolution: 0.1
+  obstacle_height_thresh: -0.1
+  ceiling_height: 1.0 # w.r.t. agent height
+  max_range: 3.0
+
+adjacent_angle: 0.523599  # 30 degrees
+adjacent_distance: 1.0  # meters
