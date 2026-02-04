@@ -1,0 +1,32 @@
+name: composite
+seed: 42
+return_dataset_name: false
+sample_index: random             # random | mod
+length: 200000
+overfit_to_index: null
+
+dist_loss_weight: 0.005
+depth_loss_weight: 1.0
+depth_mask_loss_weight: 0.0
+semantic_loss_weight: 0.1
+semantic_reg_loss_weight: 0.1
+lpips_loss_weight: 1.0
+repa_loss_weight: 5.0
+rgb_loss_weight: 1.0
+
+intermediate_weight: 5.0
+vggt_alignment_loss_weight: 2.0
+depth_smooth_loss_weight: 0.1
+
+datasets:
+  - name: spoc
+    weight: 1.0
+    ctxt_min: 2
+    ctxt_max: 15
+    root_dir: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories
+
+  - name: dl3dv
+    weight: 1.0
+    ctxt_min: 2
+    ctxt_max: 10
+    root_dir: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/dataset/dl3dv

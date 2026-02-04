@@ -1,0 +1,131 @@
+defaults:
+  - wandb: local
+  - dataset: hm3d
+  - model/encoder: epidiff
+  - model/decoder: splatting_cuda
+  - _self_
+
+max_scenes: null
+use_first_pool: false
+
+lr: 2e-5
+
+checkpoint_path: null
+name: null
+batch_size: 12
+num_target: 1
+wandb_every: 500
+
+ctxt_min: 100
+ctxt_max: 180
+
+num_context: 1
+nsamples: 2
+render_length: 150
+
+overfit_to_index: null
+
+mode: "cond"
+model_type: "dit"
+feats_cond: false
+
+depth_mode: depth
+extended_visualization: false
+
+sampling_type: "simple"
+setting_name: "pixelsplat"
+ngpus: 2
+results_folder: "raw_results"
+
+semantic_config: "/home/scai/Workspace/hshi33/DFM/config/semantic/hm3d.yaml"
+semantic_mode: "embed" # one_hot, embed
+semantic_viz: "feat" # seg, query, feat
+
+stage: train
+
+resume_id: null
+wandb_id: null
+
+use_guidance: false
+guidance_scale: 1.0
+temperature: 1.0
+sampling_steps: 50
+train_num_steps: 550000
+warmup_period: 10000
+
+ema_decay: 0.995
+deterministic: False
+
+use_depth_smoothness: False
+use_lpips_loss: True
+
+image_size: 64
+
+start_idx: 0
+end_idx: 50
+
+use_abs_pose: False
+test_autoregressive_stepsize: 40
+scale_aug_ratio: 0
+all_class: False 
+seed: 0
+use_dataset_pose: False
+noise: 0.0
+eval_10_frame: False  
+rebuttal_indices: False 
+load_pn: False
+lock_pn_steps: 0
+
+load_enc: False
+lock_enc_steps: 0
+
+load_optimizer: False
+
+use_identity: True
+ctxt_losses_factor: 1.0
+
+inference_sample_from_dataset: False
+inference_num_samples: 12
+inference_min_frames: 20
+inference_max_frames: 30
+inference_save_scene: False
+
+history_frames: 5
+
+st_n_head: 1
+st_n_layer: 3
+
+clean_target: False
+intermediate: True
+num_intermediate: 3
+use_history: True
+
+use_object_binary_mask: False
+background_weight: 0.1
+
+repa_encoder_resolution: 1024
+
+clevr_first_frame_prob: 0.1
+clevr_start_frame_id: 1
+
+adjacent_angle: 0.523 # pi/6
+# adjacent_angle: 0.785 # pi/4
+adjacent_distance: 1.0 # in meters
+
+use_depth_supervision: True
+
+alignment: 
+  apply_unnormalize_recon: True 
+  alignment_context_length: 2 # number of frames to use for repa loss
+  # vggt_layer_index: -1 
+  # encoder_info: [1, 1374, 2048]
+  encoder_info: [24, 512, 512]
+  mid_channels: 128
+  latents_info: null
+
+agent:
+  camera: ${dataset.camera}
+  save_scene: False
+  key_frame_interval: 8
+  max_num_traj: 3
+  step_size: 0.1

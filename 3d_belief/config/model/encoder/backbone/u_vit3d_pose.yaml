@@ -1,0 +1,22 @@
+name: u_vit3d_pose
+
+input_size: [64, 64]
+channels: [128, 256, 576, 1152]
+emb_channels: 1024
+patch_size: 2
+block_types: ["ResBlock", "ResBlock", "TransformerBlock", "TransformerBlock"]
+block_dropouts: [0.0, 0.0, 0.1, 0.1]
+num_updown_blocks: [3, 3, 6]
+num_mid_blocks: 20
+num_heads: 9
+max_tokens: 2
+pos_emb_type: rope
+use_checkpointing: [false, false, false, true]
+external_cond_dropout: 0.1 # probability of dropping a camera pose of each video during training 
+conditioning_type: ray_encoding
+conditioning_dim: 180
+use_causal_mask: False
+use_repa: False
+repa_z_dim: 768
+repa_size: 32
+use_vggt_alignment: false
