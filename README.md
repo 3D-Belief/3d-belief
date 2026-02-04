@@ -34,8 +34,8 @@ cd 3d-belief
 # (optional) Install uv if have not
 curl -Ls https://astral.sh/uv/install.sh | sh
 # Create a venv
-uv init --python 3.10 3db_venv
-cd 3db_venv
+uv init --python 3.10 uv_venv
+cd uv_venv
 uv venv
 source .venv/bin/activate
 uv pip install --upgrade pip setuptools wheel
