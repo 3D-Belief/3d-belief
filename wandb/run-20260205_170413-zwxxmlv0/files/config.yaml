@@ -1,0 +1,443 @@
+_wandb:
+    value:
+        cli_version: 0.22.3
+        e:
+            8wqslsrn1rs3r5mzsmcm7ui86gdjhdn5:
+                args:
+                    - dataset=spoc
+                    - dataset.vggt_alignment_loss_weight=2.0
+                    - dataset.intermediate_weight=5.0
+                    - dataset.depth_smooth_loss_weight=0.1
+                    - dataset.root_dir=/home/ubuntu/Yifan/datasets/spoc_videos
+                    - setting_name=pixelsplat_h100
+                    - stage=unit
+                    - results_folder=outputs/training/spoc_base
+                    - semantic_config=configurations/semantic/onehot.yaml
+                    - checkpoint_path=data/DFoT_RE10K.ckpt
+                    - ngpus=1
+                    - image_size=128
+                    - ctxt_min=5
+                    - ctxt_max=15
+                    - model/encoder=uvitmvsplat
+                    - model.encoder.use_image_condition=true
+                    - model.encoder.depth_predictor_time_embed=true
+                    - model.encoder.use_camera_pose=true
+                    - model.encoder.use_semantic=false
+                    - model.encoder.use_reg_model=false
+                    - model.encoder.d_semantic=512
+                    - model.encoder.d_semantic_reg=384
+                    - model.encoder.gaussians_per_pixel=1
+                    - model.encoder.evolve_ctxt=false
+                    - model.encoder.use_depth_mask=true
+                    - model.encoder.encoder_ckpt=data/re10k.ckpt
+                    - model.encoder.freeze_depth_predictor=false
+                    - model/encoder/backbone=u_vit3d_pose
+                    - model.encoder.backbone.use_vggt_alignment=true
+                    - model.encoder.backbone.use_repa=true
+                    - model.encoder.backbone.input_size=[128, 128]
+                    - alignment.latents_info=-1
+                    - ctxt_losses_factor=0.9
+                    - repa_encoder_resolution=512
+                    - model_type=uvit_pose
+                    - name=spoc_base
+                    - wandb=online
+                    - wandb.entity=yifanyin-johns-hopkins-university
+                    - clean_target=false
+                    - use_identity=true
+                    - intermediate=true
+                    - load_optimizer=false
+                    - load_enc=true
+                    - lock_enc_steps=5
+                    - use_depth_smoothness=true
+                    - adjacent_angle=0.785
+                    - adjacent_distance=1.0
+                    - num_intermediate=15
+                codePath: splat_belief/experiment/train.py
+                codePathLocal: splat_belief/experiment/train.py
+                cpu_count: 64
+                cpu_count_logical: 64
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "4261618229248"
+                        used: "40397537280"
+                email: yyin34@jhu.edu
+                executable: /lambda/nfs/Yifan/codebase/3d-belief/uv_venv/.venv/bin/python3
+                git:
+                    commit: 86ae332d58323a8deb950e56e885fe25eb5a9c82
+                    remote: https://github.com/3D-Belief/3d-belief.git
+                gpu: NVIDIA GH200 480GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "102625181696"
+                      name: NVIDIA GH200 480GB
+                      uuid: GPU-9264a4c2-25a1-cac1-3777-f23a2889bdf2
+                host: 192-222-57-32
+                memory:
+                    total: "564443021312"
+                os: Linux-6.8.0-1040-nvidia-64k-aarch64-with-glibc2.35
+                program: /lambda/nfs/Yifan/codebase/3d-belief/splat_belief/experiment/train.py
+                python: CPython 3.10.12
+                root: /lambda/nfs/Yifan/codebase/3d-belief
+                startedAt: "2026-02-05T17:04:13.130024Z"
+                writerId: 8wqslsrn1rs3r5mzsmcm7ui86gdjhdn5
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 50
+                - 53
+                - 63
+                - 71
+                - 83
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 50
+                - 53
+                - 63
+                - 71
+                - 83
+            "3":
+                - 16
+                - 17
+                - 61
+            "4": 3.10.12
+            "5": 0.22.3
+            "6": 5.0.0
+            "12": 0.22.3
+            "13": linux-aarch64
+adjacent_angle:
+    value: 0.785
+adjacent_distance:
+    value: 1
+agent:
+    value:
+        camera:
+            cx: 0.5
+            cy: 0.5
+            far: 20
+            fx: 0.39
+            fy: 0.385
+            h: 64
+            near: 0.01
+            w: 64
+        key_frame_interval: 8
+        max_num_traj: 3
+        save_scene: false
+        step_size: 0.1
+alignment:
+    value:
+        alignment_context_length: 2
+        apply_unnormalize_recon: true
+        encoder_info:
+            - 24
+            - 512
+            - 512
+        latents_info: -1
+        mid_channels: 128
+all_class:
+    value: false
+background_weight:
+    value: 0.1
+batch_size:
+    value: 12
+checkpoint_path:
+    value: data/DFoT_RE10K.ckpt
+clean_target:
+    value: false
+clevr_first_frame_prob:
+    value: 0.1
+clevr_start_frame_id:
+    value: 1
+ctxt_losses_factor:
+    value: 0.9
+ctxt_max:
+    value: 15
+ctxt_min:
+    value: 5
+dataset:
+    value:
+        camera:
+            cx: 0.5
+            cy: 0.5
+            far: 20
+            fx: 0.39
+            fy: 0.385
+            h: 64
+            near: 0.01
+            w: 64
+        depth_loss_weight: 0.1
+        depth_mask_loss_weight: 0
+        depth_smooth_loss_weight: 0.1
+        intermediate_weight: 5
+        lindisp: false
+        lpips_loss_weight: 1
+        name: spoc
+        overfit_to_index: null
+        repa_loss_weight: 5
+        rgb_loss_weight: 1
+        root_dir: /home/ubuntu/Yifan/datasets/spoc_videos
+        semantic_loss_weight: 0.1
+        semantic_reg_loss_weight: 0.1
+        vggt_alignment_loss_weight: 2
+        viz_type: interpolation
+depth_mode:
+    value: depth
+deterministic:
+    value: false
+ema_decay:
+    value: 0.995
+end_idx:
+    value: 50
+eval_10_frame:
+    value: false
+extended_visualization:
+    value: false
+feats_cond:
+    value: false
+guidance_scale:
+    value: 1
+history_frames:
+    value: 5
+image_size:
+    value: 128
+inference_max_frames:
+    value: 30
+inference_min_frames:
+    value: 20
+inference_num_samples:
+    value: 12
+inference_sample_from_dataset:
+    value: false
+inference_save_scene:
+    value: false
+intermediate:
+    value: true
+load_enc:
+    value: true
+load_optimizer:
+    value: false
+load_pn:
+    value: false
+lock_enc_steps:
+    value: 5
+lock_pn_steps:
+    value: 0
+lr:
+    value: 2e-05
+max_scenes:
+    value: null
+mode:
+    value: cond
+model:
+    value:
+        decoder:
+            name: splatting_cuda
+        encoder:
+            backbone:
+                block_dropouts:
+                    - 0
+                    - 0
+                    - 0.1
+                    - 0.1
+                block_types:
+                    - ResBlock
+                    - ResBlock
+                    - TransformerBlock
+                    - TransformerBlock
+                channels:
+                    - 128
+                    - 256
+                    - 576
+                    - 1152
+                conditioning_dim: 180
+                conditioning_type: ray_encoding
+                emb_channels: 1024
+                external_cond_dropout: 0.1
+                input_size:
+                    - 128
+                    - 128
+                max_tokens: 2
+                name: u_vit3d_pose
+                num_heads: 9
+                num_mid_blocks: 20
+                num_updown_blocks:
+                    - 3
+                    - 3
+                    - 6
+                patch_size: 2
+                pos_emb_type: rope
+                repa_size: 32
+                repa_z_dim: 768
+                use_causal_mask: false
+                use_checkpointing:
+                    - false
+                    - false
+                    - false
+                    - true
+                use_repa: true
+                use_vggt_alignment: true
+            conditioning_type: ray_encoding
+            costvolume_nearest_n_views: null
+            costvolume_unet_attn_res:
+                - 4
+            costvolume_unet_channel_mult:
+                - 1
+                - 1
+                - 1
+            costvolume_unet_feat_dim: 128
+            d_feature: 128
+            d_semantic: 512
+            d_semantic_reg: 384
+            depth_inference_max: 10
+            depth_inference_min: 1.2
+            depth_predictor_time_embed: true
+            depth_unet_attn_res:
+                - 16
+            depth_unet_channel_mult:
+                - 1
+                - 1
+                - 1
+            depth_unet_feat_dim: 32
+            depth_upscale_factor: null
+            downscale_factor: 1
+            encoder_ckpt: data/re10k.ckpt
+            evolve_ctxt: false
+            fit_ckpt: false
+            freeze_depth_predictor: false
+            gaussian_adapter:
+                feature_sh_degree: 0
+                gaussian_scale_max: 15
+                gaussian_scale_min: 0.5
+                n_feature_channels: 0
+                sh_degree: 4
+            gaussians_per_pixel: 1
+            grid_sample_disable_cudnn: false
+            inference_mode: false
+            legacy_2views: false
+            multiview_trans_nearest_n_views: null
+            name: uvitmvsplat
+            num_depth_candidates: 128
+            num_surfaces: 1
+            opacity_mapping:
+                final: 0
+                initial: 0
+                warm_up: 1
+            predict_depth_mask: false
+            reg_model_name: dinov2_reg_small
+            render_features: false
+            use_camera_pose: true
+            use_depth_mask: true
+            use_image_condition: true
+            use_reg_model: false
+            use_semantic: false
+            use_semantic_ipe: false
+            use_transmittance: true
+            visualizer:
+                export_ply: false
+                min_resolution: 256
+                num_samples: 8
+            wo_backbone_cross_attn: false
+            wo_cost_volume: false
+            wo_cost_volume_refine: false
+            wo_depth_refine: false
+model_type:
+    value: uvit_pose
+name:
+    value: spoc_base
+ngpus:
+    value: 1
+noise:
+    value: 0
+nsamples:
+    value: 2
+num_context:
+    value: 1
+num_intermediate:
+    value: 15
+num_target:
+    value: 1
+overfit_to_index:
+    value: null
+rebuttal_indices:
+    value: false
+render_length:
+    value: 150
+repa_encoder_resolution:
+    value: 512
+results_folder:
+    value: outputs/training/spoc_base
+resume_id:
+    value: null
+sampling_steps:
+    value: 50
+sampling_type:
+    value: simple
+scale_aug_ratio:
+    value: 0
+seed:
+    value: 0
+semantic_config:
+    value: configurations/semantic/onehot.yaml
+semantic_mode:
+    value: embed
+semantic_viz:
+    value: feat
+setting_name:
+    value: pixelsplat_h100
+st_n_head:
+    value: 1
+st_n_layer:
+    value: 3
+stage:
+    value: unit
+start_idx:
+    value: 0
+temperature:
+    value: 1
+test_autoregressive_stepsize:
+    value: 40
+train_num_steps:
+    value: 550000
+use_abs_pose:
+    value: false
+use_dataset_pose:
+    value: false
+use_depth_smoothness:
+    value: true
+use_depth_supervision:
+    value: true
+use_first_pool:
+    value: false
+use_guidance:
+    value: false
+use_history:
+    value: true
+use_identity:
+    value: true
+use_lpips_loss:
+    value: true
+use_object_binary_mask:
+    value: false
+wandb:
+    value:
+        entity: yifanyin-johns-hopkins-university
+        mode: online
+        project: 3d_belief
+wandb_every:
+    value: 500
+wandb_id:
+    value: null
+warmup_period:
+    value: 10000

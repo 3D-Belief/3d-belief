@@ -1,5 +1,6 @@
 # build artifacts
 
+/uv_venv/
 .eggs/
 .mypy_cache
 my_package.egg-info/
@@ -62,8 +63,6 @@ outputs/
 **/debug/
 
 # ml ops
-
-wandb/
 
 # Model files
 *.glb

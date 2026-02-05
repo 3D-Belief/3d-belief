@@ -14,4 +14,9 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["3d_belief*", "3dwm_baselines*"]
+include = ["splat_belief*", "wm_baselines*"]
+
+[tool.uv.workspace]
+members = [
+    "uv_venv",
+]
