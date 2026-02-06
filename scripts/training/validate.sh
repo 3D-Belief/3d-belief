@@ -1,19 +1,17 @@
-source /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/miniconda3/etc/profile.d/conda.sh
-
-conda activate dfm-pixel
+source uv_venv/.venv/bin/activate
 
 nvidia-smi
 
 export MASTER_PORT=$((12000 + RANDOM % 1000))
 
-export PATH=$CONDA_PREFIX/bin:$PATH
-export CUDA_HOME=$CONDA_PREFIX
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+export CUDA_HOME=/usr/lib/nvidia-cuda-toolkit
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 
-export CUDA_VISIBLE_DEVICES=4
-
-python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/experiment_scripts/temporal_inference_pixel_epi.py \
+python splat_belief/experiment/temporal_inference.py \
     dataset=spoc_seq \
+    dataset.root_dir=/path/to/dataset \
     batch_size=1 \
     num_target=1 \
     num_context=1 \
@@ -47,8 +45,8 @@ python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/experiment_scri
     clean_target=false \
     use_history=false \
     inference_save_scene=true \
-    semantic_config=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/configurations/semantic/onehot.yaml \
-    checkpoint_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/weights/uvit_mvsplat_repa_128_seq_vggt_refine_semantic/model-28.pt \
-    results_folder=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/inference/spoc/dfm/uvit_mvsplat_repa_128_seq_vggt_refine_semantic_scene \
+    semantic_config=splat_belief/config/semantic/onehot.yaml \
+    checkpoint_path=/path/to/checkpoint \
+    results_folder=outputs/inference/spoc_base \
 
 conda deactivate
