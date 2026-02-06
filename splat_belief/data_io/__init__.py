@@ -1,27 +1,27 @@
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
 
-from data_io.realestate import RealEstate10kDatasetOM
-from data_io.realestate_seq import RealEstate10kDatasetSeq
-from data_io.hm3d import HM3DDataset
-from data_io.hm3d_seq import HM3DDatasetSeq
-from data_io.spoc import SPOCDataset
-from data_io.spoc_seq import SPOCDatasetSeq
-from splat.layers import T5Encoder
+from splat_belief.data_io.realestate import RealEstate10kDatasetOM
+from splat_belief.data_io.realestate_seq import RealEstate10kDatasetSeq
+from splat_belief.data_io.hm3d import HM3DDataset
+from splat_belief.data_io.hm3d_seq import HM3DDatasetSeq
+from splat_belief.data_io.spoc import SPOCDataset
+from splat_belief.data_io.spoc_seq import SPOCDatasetSeq
+from splat_belief.splat.layers import T5Encoder
 
 def get_path(dataset_name: str) -> str:
     if dataset_name == "realestate":
-        return "/scratch/tshu2/yyin34/projects/3d_belief/DFM/data/realestate_full"
+        return ""
     if dataset_name == "realestate_seq":
-        return "/scratch/tshu2/yyin34/projects/3d_belief/DFM/data/realestate_full"
+        return ""
     elif dataset_name == "hm3d":
-        return "/home/ubuntu/VLMP/tianmin-project/yyin34/dataset/HM3D-dataset-non-sem"
+        return ""
     elif dataset_name == "hm3d_seq":
-        return "/home/ubuntu/VLMP/tianmin-project/yyin34/dataset/eval_dataset"
+        return ""
     elif dataset_name == "spoc":
-        return "/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories"
+        return ""
     elif dataset_name == "spoc_seq":
-        return "/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories"
+        return ""
     raise NotImplementedError(f'Dataset "{dataset_name}" not supported.')
 
 

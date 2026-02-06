@@ -7,39 +7,39 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset, DataLoader
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from diffusion.diffusion_temporal import (
+from splat_belief.diffusion.diffusion_temporal import (
     DiffusionTemporal,
     Trainer,
 )
-import data_io
+import splat_belief.data_io as data_io
 from einops import rearrange
 
-from splat import SplatBeliefState
-from splat.ply_export import export_ply, export_gaussians_to_ply
-from splat.decoder import get_decoder
-from splat.encoder import get_encoder
-from embodied.semantic_mapper import SemanticMapper
+from splat_belief.splat import SplatBeliefState
+from splat_belief.splat.ply_export import export_ply, export_gaussians_to_ply
+from splat_belief.splat.decoder import get_decoder
+from splat_belief.splat.encoder import get_encoder
+from splat_belief.embodied.semantic_mapper import SemanticMapper
 import torch
 import random
 import imageio
 import copy
 import numpy as np
-from utils.vision_utils import *
+from splat_belief.utils.vision_utils import *
 from torchvision.utils import make_grid
 from accelerate import DistributedDataParallelKwargs
 from accelerate import Accelerator
-from configurations.inference import temporal_indices
+from splat_belief.config.inference import temporal_indices
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from PIL import Image
-from utils.model_utils import build_2d_model
+from splat_belief.utils.model_utils import build_2d_model
 
 import clip
 import open_clip
 
 
 @hydra.main(
-    version_base=None, config_path="../configurations/", config_name="config",
+    version_base=None, config_path="../config/", config_name="config",
 )
 
 def train(cfg: DictConfig):

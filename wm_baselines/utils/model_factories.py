@@ -9,7 +9,7 @@ from splat.decoder import get_decoder
 from splat.encoder import get_encoder
 from data_io import get_dataset
 from model_utils import build_2d_model
-from embodied.semantic_mapper import SemanticMapper
+from splat_belief.embodied.semantic_mapper import SemanticMapper
 from diffusion.denoising_diffusion_pixelsplat_epi_temporal import GaussianDiffusionPixelEpiTemporal
 
 def build_splat_model(

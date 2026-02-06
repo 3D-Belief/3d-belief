@@ -13,7 +13,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.vision_utils import *
+from splat_belief.utils.vision_utils import *
 
 
 class Residual(nn.Module):

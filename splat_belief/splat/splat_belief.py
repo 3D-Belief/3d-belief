@@ -1,4 +1,3 @@
-from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
@@ -10,15 +9,15 @@ from jaxtyping import Float
 import torch
 from torch import Tensor, nn
 import torchvision
-from utils.vision_utils import *
+from splat_belief.utils.vision_utils import *
 
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from embodied.semantic_mapper import SemanticMapper
-from utils.model_utils import forward_2d_model_batch    
+from splat_belief.embodied.semantic_mapper import SemanticMapper
+from splat_belief.utils.model_utils import forward_2d_model_batch, preprocess_raw_image
 
-class SplatBeliefState(nn.Module):
+class SplatBelief(nn.Module):
     encoder: Encoder
     encoder_visualizer: Optional[EncoderVisualizer]
     decoder: Decoder
@@ -26,6 +25,7 @@ class SplatBeliefState(nn.Module):
     semantic_mapper: Optional[SemanticMapper]
     clip_model: Optional[nn.Module]
     dino_model: Optional[nn.Module]
+    repa_encoder: Optional[nn.Module]
     clip_process = torchvision.transforms.Compose(
         [
             torchvision.transforms.Resize((224, 224)),
@@ -46,16 +46,18 @@ class SplatBeliefState(nn.Module):
         extended_visualization: bool | None,
         clip_model: Optional[nn.Module] = None,
         dino_model: Optional[nn.Module] = None,
+        repa_encoder: Optional[Encoder] = None,
+        repa_encoder_name: Optional[str] = None,
+        repa_encoder_resolution: Optional[int] = None,
         inference_mode: bool = False,
         use_semantic: bool = False,
         semantic_mode: str = "embed",
+        use_depth_mask: bool = False,
         channels: int = 3,
         viz_type="interpolation",
-        use_history: bool = True,
         feature_patch_min_scale: float = 0.05,
         feature_patch_max_scale: float = 0.5,
         feature_patch_num_samples: int = 15,
-        use_depth_mask: bool = False,
     ) -> None:
         super().__init__()
 
@@ -63,157 +65,70 @@ class SplatBeliefState(nn.Module):
         self.channels = channels
         self.out_dim = channels
         self.viz_type = viz_type
-        self.use_history = use_history
         self.encoder = encoder
         self.encoder_visualizer = encoder_visualizer
         self.decoder = decoder
-        self.use_depth_mask = use_depth_mask
         self.use_semantic = use_semantic
         self.semantic_mode = semantic_mode
         if self.use_semantic:
             self.semantic_mapper = semantic_mapper
         self.clip_model = clip_model
         self.dino_model = dino_model
+        self.repa_encoder = repa_encoder
+        self.repa_encoder_name = repa_encoder_name
+        self.repa_encoder_resolution = repa_encoder_resolution
         self.feature_patch_min_scale = feature_patch_min_scale
         self.feature_patch_max_scale = feature_patch_max_scale
         self.feature_patch_num_samples = feature_patch_num_samples
+        self.use_depth_mask = use_depth_mask
         self.depth_mode = depth_mode
         self.extended_visualization = extended_visualization
         self.inference_mode = inference_mode
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
-        
-        # Internal counter for time steps.
-        self.current_timestep = None
-        # Containers for Gaussians
-        self.history_gaussians = None
-        self.incremental_gaussians = None
-        self.belief_gaussians = None
-        # Container for history
-        self.history_rgb = None
-        self.history_pose = None
-        self.first_ctxt_shift = None
-    
-    @property
-    def augmented_gaussians(self):
-        """Returns the augmented Gaussians, which are the sum of history and belief Gaussians."""
-        if self.history_gaussians is None or self.belief_gaussians is None:
-            return None
-        return self.history_gaussians + self.belief_gaussians
-    
-    def forward(
-        self, model_input, t, global_step=100000, state_t=None, 
-        filter_border_gaussians: bool = False, 
-        depth_inference_min: float = 0.2, 
-        depth_inference_max: float = 10.0
-    ):
+        self.gaussians = None
+
+    def forward(self, model_input, t, global_step=100000):
         b, num_context, _, h, w = model_input["ctxt_rgb"].shape
 
-        if self.current_timestep is None:
-            # record the first ctxt c2w
-            first_ctxt_c2w = model_input["ctxt_c2w"].clone()
-            # make first_ctxt_shift to be the inverse of first_ctxt_c2w's position, but keep orientation identity
-            first_ctxt_shift = torch.eye(4, device=first_ctxt_c2w.device).unsqueeze(0).unsqueeze(0).repeat(b, 1, 1, 1)
-            first_ctxt_shift[:, 0:1, 3, 0:1] = -first_ctxt_c2w[:, 0:1, 3, 0:1]
-            self.first_ctxt_shift = first_ctxt_shift
+        context_gaussians, target_gaussians = self.encoder(
+            model_input, 
+            t=t,
+            global_step=global_step, 
+            deterministic=self.inference_mode,
+        )
 
-        # Build context Gaussians for this step
-        if not (self.current_timestep==state_t): # do nothing if already updated history for this step
-            # Append current context to history rgb for image conditioning
-            if self.use_history:
-                if self.history_rgb is None:
-                    self.history_rgb = model_input["ctxt_rgb"]
-                    self.history_pose = model_input["ctxt_c2w"]
-                else:
-                    self.history_rgb = torch.cat([self.history_rgb, model_input["ctxt_rgb"]], dim=1)
-                    self.history_pose = torch.cat([self.history_pose, model_input["ctxt_c2w"]], dim=1)
-                model_input["cond_rgb"] = self.history_rgb
-                model_input["cond_pose"] = self.history_pose
-            else:
-                ctxt_c2w_raw = model_input["ctxt_c2w"].clone() 
-                trgt_c2w_raw = model_input["trgt_c2w"].clone() 
-                # Make ctxt to be identity and adjust trgt accordingly
-                model_input["ctxt_c2w"] = torch.eye(4, device=ctxt_c2w_raw.device).unsqueeze(0).unsqueeze(0).repeat(b, num_context, 1, 1)
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", torch.linalg.inv(ctxt_c2w_raw), trgt_c2w_raw)
-            context_gaussians, target_gaussians = self.encoder(
-                model_input, 
-                t=t,
-                global_step=global_step, 
-                deterministic=False,
-                filter_border_gaussians=filter_border_gaussians,
-                depth_inference_min=depth_inference_min,
-                depth_inference_max=depth_inference_max,
-            )
-            if not self.use_history:
-                # Shift the means of context and target gaussians back to original coordinates
-                context_gaussians = context_gaussians.transform(ctxt_c2w_raw.squeeze(1))
-                target_gaussians = target_gaussians.transform(ctxt_c2w_raw.squeeze(1))
-                # Keep shifting the target gaussians using first_ctxt_c2w's position, but not orientation
-                context_gaussians = context_gaussians.transform(self.first_ctxt_shift.squeeze(1))
-                target_gaussians = target_gaussians.transform(self.first_ctxt_shift.squeeze(1))
-                # Restore original coordinates
-                model_input["ctxt_c2w"] = ctxt_c2w_raw
-                model_input["trgt_c2w"] = trgt_c2w_raw
-                # Shift ctxt_c2w and trgt_c2w using first_ctxt_shift with matrix multiplication
-                model_input["ctxt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["ctxt_c2w"])
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["trgt_c2w"])
+        repa_pred = None
+        if "repa_pred" in model_input:
+            repa_pred = model_input["repa_pred"]
+        repa_pred_ctxt = None
+        if "repa_pred_ctxt" in model_input:
+            repa_pred_ctxt = model_input["repa_pred_ctxt"]
 
-            # Update history Gaussians
-            if self.current_timestep is None:
-                self.current_timestep = 0
-                self.history_gaussians = context_gaussians
-            elif self.current_timestep<state_t:
-                assert self.current_timestep+1==state_t # can only differ by 1
-                self.current_timestep+=1
-                self.history_gaussians=context_gaussians+self.history_gaussians.detach()
-            
-            # Update inc obs Gaussians
-            self.incremental_gaussians = context_gaussians
-            # Update belief Gaussians
-            self.belief_gaussians = target_gaussians
-        else:
-            assert self.current_timestep==state_t
-            if self.use_history:
-                model_input["cond_rgb"] = self.history_rgb
-                model_input["cond_pose"] = self.history_pose
-            else:
-                ctxt_c2w_raw = model_input["ctxt_c2w"].clone() 
-                trgt_c2w_raw = model_input["trgt_c2w"].clone() 
-                # Make ctxt to be identity and adjust trgt accordingly
-                model_input["ctxt_c2w"] = torch.eye(4, device=ctxt_c2w_raw.device).unsqueeze(0).unsqueeze(0).repeat(b, num_context, 1, 1)
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", torch.linalg.inv(ctxt_c2w_raw), trgt_c2w_raw)
-            # TODO evolve context_gaussians as diffusion t goes
-            context_gaussians, target_gaussians = self.encoder(
-                model_input, 
-                t=t,
-                global_step=global_step, 
-                deterministic=False,
-                filter_border_gaussians=filter_border_gaussians,
-                depth_inference_min=depth_inference_min,
-                depth_inference_max=depth_inference_max,
+        latents = None
+        if "latents" in model_input:
+            latents = model_input["latents"]
+
+        repa_gt_ctxt = None
+        repa_gt_trgt = None
+        if self.repa_encoder is not None:
+            raw_ctxt = self.unnormalize(model_input["ctxt_rgb"]).squeeze(1)
+            raw_ctxt = preprocess_raw_image(
+                raw_ctxt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
             )
-            if not self.use_history:
-                # Shift the means of context and target gaussians back to original coordinates
-                context_gaussians = context_gaussians.transform(ctxt_c2w_raw.squeeze(1))
-                target_gaussians = target_gaussians.transform(ctxt_c2w_raw.squeeze(1))
-                # Keep shifting the target gaussians using first_ctxt_c2w's position, but not orientation
-                context_gaussians = context_gaussians.transform(self.first_ctxt_shift.squeeze(1))
-                target_gaussians = target_gaussians.transform(self.first_ctxt_shift.squeeze(1))
-                # Restore original coordinates
-                model_input["ctxt_c2w"] = ctxt_c2w_raw
-                model_input["trgt_c2w"] = trgt_c2w_raw
-                # Shift ctxt_c2w and trgt_c2w using first_ctxt_shift with matrix multiplication
-                model_input["ctxt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["ctxt_c2w"])
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["trgt_c2w"])
-            # Update belief Gaussians
-            self.belief_gaussians = target_gaussians
-        
-        assert state_t >= self.current_timestep, "state_t should not be smaller than the current timestep"
+            repa_gt_ctxt = self.repa_encoder.forward_features(raw_ctxt)
+            if 'dinov2' in self.repa_encoder_name: repa_gt_ctxt = repa_gt_ctxt['x_norm_patchtokens']
+
+            raw_trgt = self.unnormalize(model_input["trgt_rgb"]).squeeze(1)
+            raw_trgt = preprocess_raw_image(
+                raw_trgt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
+            )
+            repa_gt_trgt = self.repa_encoder.forward_features(raw_trgt)
+            if 'dinov2' in self.repa_encoder_name: repa_gt_trgt = repa_gt_trgt['x_norm_patchtokens']
 
         # Augmented gaussians
-        gaussians = self.history_gaussians + self.belief_gaussians
-
-        # Decode
+        gaussians = context_gaussians + target_gaussians
+        self.gaussians = gaussians
         output = self.decoder.forward(
             gaussians.float(),
             model_input["trgt_c2w"],
@@ -237,18 +152,33 @@ class SplatBeliefState(nn.Module):
 
         target_rendered_color = torch.clamp(output.color, 0.0, 1.0)
         target_rendered_depth = output.depth
-        target_rendered_features = output.features # b v c h w
+        target_rendered_features = output.features
 
         context_rendered_color = torch.clamp(rerender_output.color, 0.0, 1.0)
         context_rendered_depth = rerender_output.depth
-        context_rendered_features = rerender_output.features # b v c h w
+        context_rendered_features = rerender_output.features
+
+        if self.use_depth_mask:
+            target_rendered_depth_mask = self.encoder.get_depth_mask(target_rendered_features)
+            context_rendered_depth_mask = self.encoder.get_depth_mask(context_rendered_features)
 
         misc = {
             "rendered_ctxt_rgb": context_rendered_color,
             "rendered_trgt_rgb": target_rendered_color,
             "rendered_ctxt_depth": context_rendered_depth,
             "rendered_trgt_depth": target_rendered_depth,
+            "repa_pred": repa_pred,
+            "repa_pred_ctxt": repa_pred_ctxt,
+            "repa_gt": repa_gt_trgt,
+            "repa_gt_ctxt": repa_gt_ctxt,
+            "latents": latents,
         }
+
+        if self.use_depth_mask:
+            misc.update({
+                "rendered_ctxt_depth_mask": context_rendered_depth_mask,
+                "rendered_trgt_depth_mask": target_rendered_depth_mask,
+            })
 
         # Render intermediate
         if "intm_c2w" in model_input:
@@ -266,12 +196,18 @@ class SplatBeliefState(nn.Module):
             intm_rendered_color = torch.clamp(intm_output.color, 0.0, 1.0)
             intm_rendered_depth = intm_output.depth
             intm_rendered_features = intm_output.features
+
+            if self.use_depth_mask:
+                intm_rendered_depth_mask = self.encoder.get_depth_mask(intm_rendered_features)
+                misc.update({
+                    "rendered_intm_depth_mask": intm_rendered_depth_mask,
+                })
         
             misc.update({
                 "rendered_intm_rgb": intm_rendered_color,
                 "rendered_intm_depth": intm_rendered_depth,
             })
-        
+
         extract_dino = False if self.dino_model is None else True
         # Sample from target rendered semantic feature maps
         if self.use_semantic and not self.inference_mode:
@@ -329,49 +265,19 @@ class SplatBeliefState(nn.Module):
             misc[f"intm_semantic"] = intm_samples
         
         return self.normalize(target_rendered_color), target_rendered_depth, misc
-
-    def render(self, gaussians, extrinsics, intrinsics, near, far, h, w,
-               filter_ceiling: bool = False, ceiling_threshold: float = 2.5,
-               query_label: Optional[str] = None):
-        
-        # Shift extrinsics using first_ctxt_shift with matrix multiplication
-        extrinsics = extrinsics.unsqueeze(0).unsqueeze(0)
-        extrinsics = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, extrinsics)
-        extrinsics = extrinsics.squeeze(0).squeeze(0)
-
-        if filter_ceiling:
-            gaussians = gaussians.filter_ceiling(ceiling_threshold)
-        
+    
+    def render(self, gaussians, extrinsics, intrinsics, near, far, h, w):
         output = self.decoder.forward(
-            gaussians.float(),
-            extrinsics.float().unsqueeze(0)[:, None, ...].cuda(),
-            intrinsics.float().unsqueeze(0)[:1].unsqueeze(1).cuda(),
-            near.float().unsqueeze(0).unsqueeze(1).cuda(),
-            far.float().unsqueeze(0).unsqueeze(1).cuda(),
+            gaussians,
+            extrinsics,
+            intrinsics,
+            near,
+            far,
             (h, w),
             depth_mode=self.depth_mode,
         )
-
-        rgb = output.color[:, 0, ...]
-        depth = output.depth[:, 0, ...]
-        rgb = rearrange(rgb, "b c h w -> b h w c")
-        rgb = torch.clamp(rgb, 0.0, 1.0) 
-        rgb = rgb * 255.0
-        rgb = rgb.float().cpu().detach().numpy().astype(np.uint8)
-        depth = depth.float().cpu().detach()
-        semantic = None
-        if self.use_semantic:
-            features = output.features[:, 0:1, ...]
-            if self.semantic_mode == "embed":
-                features = self.encoder.get_semantic_features(features)
-                # features = self.encoder.get_semantic_reg_features(features)
-            features = features.squeeze(1)  # [b, c, h, w]
-            raw_intensity = True if query_label is not None else False
-            semantic = self.semantic_mapper.forward(features, query_label, raw_intensity)
-            semantic = semantic.float().cpu().detach().numpy()
-            if not raw_intensity:
-                semantic = semantic.astype(np.uint8)
-        return rgb, depth, semantic
+        output.color = torch.clamp(output.color, 0.0, 1.0)
+        return output
 
     @torch.no_grad()
     def render_video(
@@ -383,37 +289,33 @@ class SplatBeliefState(nn.Module):
         render_high_res=False,
         global_step=100000,
     ):
-        b, num_context, _, h, w = model_input["ctxt_rgb"].shape
-        model_input["ctxt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["ctxt_c2w"])
-        model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["trgt_c2w"])
-
-        ## Render videos using the updated belief gaussians and whatever history gaussians available
         if "render_poses" not in model_input.keys():
             render_poses = self.compute_poses(self.viz_type, model_input, n,)
             print("using computed poses")
         else:
-            # shift each pose in render_poses (b, N, 4, 4) using first_ctxt_shift
-            render_poses = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["render_poses"])[0]
-            n = render_poses.shape[0]
+            render_poses = model_input["render_poses"][0]
+            n = len(render_poses)
             print("using provided poses", render_poses.shape)
         intrinsics = model_input["intrinsics"]
 
         if num_videos is None:
-            num_videos = 1
+            num_videos = model_input["trgt_rgb"].shape[1]
         
+        b, num_context, _, h, w = model_input["ctxt_rgb"].shape
+
+        context_gaussians, target_gaussians = self.encoder(model_input, t, global_step=global_step)
+
+        # Augmented gaussians
+        gaussians = context_gaussians + target_gaussians
+        self.gaussians = gaussians
         frames = []
         depth_frames = []
         semantics = []
-        if self.use_depth_mask:
-            depth_masks = []
 
         h = 128 if render_high_res else h
         w = 128 if render_high_res else w
 
         print(f"render_poses {render_poses.shape}")
-
-        # Augmented gaussians
-        gaussians = self.history_gaussians + self.belief_gaussians
 
         for i in range(n):
             output = self.decoder.forward(
@@ -429,22 +331,9 @@ class SplatBeliefState(nn.Module):
             depth = output.depth[:, 0, ...]
             rgb = rearrange(rgb, "b c h w -> b h w c")
             rgb = torch.clamp(rgb, 0.0, 1.0) 
-            if self.use_depth_mask:
-                depth_mask = self.encoder.get_depth_mask(output.features)[:, 0, ...]
-                depth_mask = rearrange(depth_mask, "b c h w -> b h w c")
-                # apply sigmoid to the mask
-                depth_mask = torch.sigmoid(depth_mask)
-                # make the mask binary
-                depth_mask = (depth_mask > 0.5).float()
-                # apply the mask to the color
-                rgb = rgb * depth_mask
-                depth = depth * depth_mask.squeeze(3)
-
             rgb = rgb * 255.0
             frames.append(rgb.float().cpu().detach().numpy().astype(np.uint8))
             depth_frames.append(depth.float().cpu().detach())
-            if self.use_depth_mask:
-                depth_masks.append((depth_mask * 255.0).cpu().detach().numpy().astype(np.uint8))
 
             if self.use_semantic:
                 features = output.features[:, 0:1, ...]
@@ -454,12 +343,9 @@ class SplatBeliefState(nn.Module):
                 features = features.squeeze(1)  # [b, c, h, w]
                 semantic = self.semantic_mapper.forward(features)
                 semantics.append(semantic.float().cpu().detach().numpy().astype(np.uint8))
-            
+
         print(f"frames {len(frames)}")
-        if self.use_depth_mask:
-            return frames, depth_frames, semantics, render_poses, depth_masks
-        else:
-            return frames, depth_frames, semantics, render_poses
+        return frames, depth_frames, semantics, render_poses
 
     @torch.no_grad()
     def compute_poses(
@@ -502,53 +388,6 @@ class SplatBeliefState(nn.Module):
             raise ValueError("Unknown video type", type)
         print(f"render_poses: {render_poses.shape}")
         return render_poses
-
-    def get_current_timestep(self):
-        """Returns the current time step."""
-        return self.current_timestep
-
-    def reset_timestep(self):
-        """Resets the internal time step counter and stored state."""
-        self.current_timestep = None
-        self.history_gaussians = None
-        self.incremental_gaussians = None
-        self.belief_gaussians = None
-        self.history_rgb = None
-        self.history_pose = None
-        self.first_ctxt_c2w = None
-
-    def copy_states_to_ema(self, model: SplatBeliefState):
-        model.current_timestep = self.current_timestep
-        model.history_rgb = self.history_rgb
-        model.history_pose = self.history_pose
-        model.first_ctxt_shift = self.first_ctxt_shift
-        if self.history_gaussians is not None:
-            model.history_gaussians = self.history_gaussians.clone()
-            model.history_gaussians.means = self.history_gaussians.means[:1]
-            model.history_gaussians.covariances = self.history_gaussians.covariances[:1]
-            model.history_gaussians.harmonics = self.history_gaussians.harmonics[:1]
-            model.history_gaussians.opacities = self.history_gaussians.opacities[:1]
-            model.history_gaussians.features = self.history_gaussians.features[:1] if self.history_gaussians.features is not None else None
-        else:
-            model.history_gaussians = None
-        if self.incremental_gaussians is not None:
-            model.incremental_gaussians = self.incremental_gaussians.clone()
-            model.incremental_gaussians.means = self.incremental_gaussians.means[:1]
-            model.incremental_gaussians.covariances = self.incremental_gaussians.covariances[:1]
-            model.incremental_gaussians.harmonics = self.incremental_gaussians.harmonics[:1]
-            model.incremental_gaussians.opacities = self.incremental_gaussians.opacities[:1]
-            model.incremental_gaussians.features = self.incremental_gaussians.features[:1] if self.incremental_gaussians.features is not None else None
-        else:
-            model.incremental_gaussians = None
-        if self.belief_gaussians is not None:
-            model.belief_gaussians = self.belief_gaussians.clone()
-            model.belief_gaussians.means = self.belief_gaussians.means[:1]
-            model.belief_gaussians.covariances = self.belief_gaussians.covariances[:1]
-            model.belief_gaussians.harmonics = self.belief_gaussians.harmonics[:1]
-            model.belief_gaussians.opacities = self.belief_gaussians.opacities[:1]
-            model.belief_gaussians.features = self.belief_gaussians.features[:1] if self.belief_gaussians.features is not None else None
-        else:
-            model.belief_gaussians = None
 
     def sample_patches_and_get_clip_embeddings(
         self,

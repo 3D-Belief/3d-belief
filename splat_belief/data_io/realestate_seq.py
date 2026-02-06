@@ -9,7 +9,7 @@ import torchvision.transforms as tf
 from einops import rearrange, repeat
 from torch.utils.data import Dataset
 from numpy.random import default_rng
-from utils.vision_utils import *
+from splat_belief.utils.vision_utils import *
 from splat.layers import T5Encoder
 from numpy import random
 import scipy

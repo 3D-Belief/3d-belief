@@ -37,7 +37,7 @@ setting_name: "pixelsplat"
 ngpus: 2
 results_folder: "raw_results"
 
-semantic_config: "/home/scai/Workspace/hshi33/DFM/configurations/semantic/hm3d.yaml"
+semantic_config: ""
 semantic_mode: "embed" # one_hot, embed
 semantic_viz: "feat" # seg, query, feat
 

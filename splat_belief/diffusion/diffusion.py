@@ -34,13 +34,13 @@ from accelerate import DistributedDataParallelKwargs
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # from utils import *
-from splat.layers import *
+from splat_belief.splat.layers import *
 import lpips
 
 from scipy import interpolate
-from utils.vision_utils import JsonLogger
-from splat.splat_belief import SplatBelief
-from splat.alignment import VGGTAlignmentLoss
+from splat_belief.utils.vision_utils import JsonLogger
+from splat_belief.splat.splat_belief import SplatBelief
+from splat_belief.splat.alignment import VGGTAlignmentLoss
 
 # constants
 ModelPrediction = namedtuple(

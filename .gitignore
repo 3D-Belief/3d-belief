@@ -63,7 +63,7 @@ outputs/
 
 # ml ops
 
-wandb/
+/wandb/
 
 # Model files
 *.glb

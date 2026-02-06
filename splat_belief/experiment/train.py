@@ -6,29 +6,29 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset, DataLoader
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from diffusion.diffusion import (
+from splat_belief.diffusion.diffusion import (
     Diffusion,
     Trainer,
 )
-import data_io
+import splat_belief.data_io as data_io
 
-from splat import SplatBelief
-from splat.decoder import get_decoder
-from splat.encoder import get_encoder
-from embodied.semantic_mapper import SemanticMapper
+from splat_belief.splat import SplatBelief
+from splat_belief.splat.decoder import get_decoder
+from splat_belief.splat.encoder import get_encoder
+from splat_belief.embodied.semantic_mapper import SemanticMapper
 import torch
 torch.autograd.set_detect_anomaly(True)
 import numpy as np
 from accelerate import DistributedDataParallelKwargs
 from accelerate import Accelerator
-from utils.model_utils import build_2d_model, load_repa_encoder
+from splat_belief.utils.model_utils import build_2d_model, load_repa_encoder
 
 import clip
 import open_clip
 
 
 @hydra.main(
-    version_base=None, config_path="../configurations/", config_name="config",
+    version_base=None, config_path="../config/", config_name="config",
 )
 def train(cfg: DictConfig):
     train_settings = get_train_settings(cfg.setting_name, cfg.ngpus)

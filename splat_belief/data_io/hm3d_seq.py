@@ -8,8 +8,8 @@ import torch.nn.functional as F
 import torchvision.transforms as tf
 from einops import rearrange, repeat
 from torch.utils.data import Dataset
-from utils.vision_utils import *
-from splat.layers import T5Encoder
+from splat_belief.utils.vision_utils import *
+from splat_belief.splat.layers import T5Encoder
 from numpy import random
 import time
 import scipy

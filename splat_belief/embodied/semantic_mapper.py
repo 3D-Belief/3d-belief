@@ -2,7 +2,7 @@ import torch
 import yaml
 from typing import Callable, List, Dict
 import torch.nn.functional as F
-from utils.vision_utils import viz_feat, semantic_to_color
+from splat_belief.utils.vision_utils import viz_feat, semantic_to_color
 import matplotlib.pyplot as plt
 import numpy as np
 
