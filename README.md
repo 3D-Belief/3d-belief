@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
-pip install -r requirements.txt
+pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
 

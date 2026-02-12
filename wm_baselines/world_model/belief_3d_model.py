@@ -15,16 +15,16 @@ from splat_belief.splat.ply_export import export_gaussians_to_ply
 from general_utils import to_gpu, normalize_to_neg_one_to_one
 from rollout_utils import prepare_video
 from splat_belief.diffusion.diffusion_temporal import Trainer as ModelWrapper
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.utils.data_classes import Frame, RenderOutput
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.utils.data_classes import Frame, RenderOutput
 from einops import rearrange
-from belief_baselines.agent.perception.camera import Camera
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.utils.vision_utils import (
+from wm_baselines.agent.perception.camera import Camera
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.utils.vision_utils import (
     pose_lh2rh, pose_gl_world2cam_to_open3d_world2cam, points_gl_to_open3d, plot_two_poses, flip_yaw_in_Twc
 )
-from belief_baselines.utils.planning_utils import rotation_angle
+from wm_baselines.utils.planning_utils import rotation_angle
 
 class Belief3DModel(BaseWorldModel):
     """3D belief world model maintaining both observation and belief occupancy maps.

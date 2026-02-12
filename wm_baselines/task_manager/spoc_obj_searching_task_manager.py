@@ -12,7 +12,7 @@ from spoc_utils.embodied_utils import find_object_node
 from scipy.spatial.transform import Rotation as R
 from pathlib import Path
 from copy import deepcopy
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 
 
 class SpocObjSearchingTaskManager(BaseTaskManager):

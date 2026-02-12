@@ -1,10 +1,10 @@
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from environment.stretch_controller import StretchController
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 from scipy.spatial.transform import Rotation as R
 from spoc_utils.embodied_utils import square_image, distance_traveled_step
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
 
 
 class SpocEnvInterface(BaseEnvInterface):

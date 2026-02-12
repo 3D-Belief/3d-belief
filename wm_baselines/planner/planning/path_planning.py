@@ -4,8 +4,8 @@ import heapq
 import math
 import skimage.draw
 from collections import deque
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.utils.planning_utils import (
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.utils.planning_utils import (
     _bresenham_segment_is_free,
     _catmull_rom_spline,
     _equal_arclength_resample,

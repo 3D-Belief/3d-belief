@@ -1,6 +1,6 @@
-from belief_baselines.agent.vlm.api import *
-from belief_baselines.agent.vlm.openai_utils import *
-from belief_baselines.agent.vlm.general_utils import _ensure_list_imgs, _save_np_to_temp_png
+from wm_baselines.agent.vlm.api import *
+from wm_baselines.agent.vlm.openai_utils import *
+from wm_baselines.agent.vlm.general_utils import _ensure_list_imgs, _save_np_to_temp_png
 from typing import Any, Dict, List, Optional, Tuple, Union, Iterable
 import numpy as np
 from pathlib import Path

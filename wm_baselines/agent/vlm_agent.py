@@ -7,12 +7,12 @@ from torch import Tensor
 from pathlib import Path
 from PIL import Image
 #import open3d as o3d
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.agent.base_agent import BaseAgent
-from belief_baselines.agent.perception.camera import Camera
-from belief_baselines.utils.vision_utils import to_pil
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.agent.base_agent import BaseAgent
+from wm_baselines.agent.perception.camera import Camera
+from wm_baselines.utils.vision_utils import to_pil
 
 class VLMAgent(BaseAgent):
     """VLM agent that uses vision-language model for object searching."""

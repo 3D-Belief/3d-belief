@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 from omegaconf import DictConfig
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 
 
 class BaseEnvInterface:

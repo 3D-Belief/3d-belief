@@ -5,10 +5,10 @@ from PIL import Image
 import torch
 from torch import Tensor
 from pathlib import Path
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.agent.perception.camera import Camera
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.agent.perception.camera import Camera
 
 class BaseAgent:
     """Base agent class providing a minimal interface.

@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
 from omegaconf import DictConfig
-from belief_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.agent.perception.occupancy import OccupancyMap
 
 class BaseWorldModel:
     """Base world model class providing a minimal interface.

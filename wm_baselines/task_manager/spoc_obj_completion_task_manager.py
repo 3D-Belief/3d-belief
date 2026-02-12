@@ -24,12 +24,12 @@ from scipy.ndimage import binary_fill_holes
 from PIL import Image
 from pathlib import Path
 from copy import deepcopy
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
-from belief_baselines.agent.perception.metrics import Box3D, box3d_from_aabb
-from belief_baselines.agent.perception.camera import Camera
-from belief_baselines.utils.planning_utils import rotation_angle
-from belief_baselines.agent.vlm.vlm import VLM
-from belief_baselines.agent.vlm.object_detection import segment_label_with_gemini
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.agent.perception.metrics import Box3D, box3d_from_aabb
+from wm_baselines.agent.perception.camera import Camera
+from wm_baselines.utils.planning_utils import rotation_angle
+from wm_baselines.agent.vlm.vlm import VLM
+from wm_baselines.agent.vlm.object_detection import segment_label_with_gemini
 
 
 class SpocObjCompletionTaskManager(BaseTaskManager):

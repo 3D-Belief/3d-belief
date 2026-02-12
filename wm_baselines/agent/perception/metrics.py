@@ -3,7 +3,7 @@ import open3d as o3d
 import torch, functools
 from PIL import Image
 from typing import Iterable, Sequence, Tuple, Union, List, Optional
-from belief_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.agent.perception.occupancy import OccupancyMap
 from transformers import CLIPModel, CLIPProcessor, AutoProcessor, SiglipModel
 import torchvision.transforms as T
 from lpips import LPIPS

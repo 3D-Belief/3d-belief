@@ -28,13 +28,13 @@ os.chdir(ROOT_DIR)
 from environment.stretch_controller import StretchController
 from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
 from spoc_utils.constants.objaverse_data_dirs import OBJAVERSE_HOUSES_DIR
-from belief_baselines.workspace.base_workspace import BaseWorkspace
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
-from belief_baselines.agent.base_agent import BaseAgent
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.agent.vlm.vlm import VLM
+from wm_baselines.workspace.base_workspace import BaseWorkspace
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.agent.base_agent import BaseAgent
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.agent.vlm.vlm import VLM
 
 class SpocObjPermanence3DBeliefWorkspace(BaseWorkspace):
     def __init__(self, config: DictConfig):

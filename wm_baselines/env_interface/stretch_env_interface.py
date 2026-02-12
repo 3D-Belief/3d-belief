@@ -3,11 +3,11 @@ from omegaconf import DictConfig
 from typing import Optional
 import timeit
 import time
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 from scipy.spatial.transform import Rotation as R
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.utils.planning_utils import distance_traveled_step
-from belief_baselines.utils.vision_utils import square_image, pose_robot_to_opencv, pose_opencv_to_robot
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.utils.planning_utils import distance_traveled_step
+from wm_baselines.utils.vision_utils import square_image, pose_robot_to_opencv, pose_opencv_to_robot
 from stretch.agent.zmq_client import HomeRobotZmqClient
 from stretch.utils.geometry import angle_difference, xyt_base_to_global
 

@@ -25,13 +25,13 @@ from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
-from belief_baselines.utils.data_classes import Frame, RenderOutput
-from belief_baselines.agent.perception.camera import Camera
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.utils.planning_utils import rotation_angle
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.utils.vision_utils import (
+from wm_baselines.utils.data_classes import Frame, RenderOutput
+from wm_baselines.agent.perception.camera import Camera
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.utils.planning_utils import rotation_angle
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.utils.vision_utils import (
     interpolate_pose_wobble,
     get_yaw_from_pose,
     to_local_coords,

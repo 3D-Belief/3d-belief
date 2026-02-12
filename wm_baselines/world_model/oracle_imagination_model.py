@@ -4,14 +4,14 @@ import numpy as np
 import open3d as o3d
 import torch
 from torch import Tensor
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.utils.data_classes import Frame, RenderOutput
-from belief_baselines.agent.perception.camera import Camera
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.agent.perception.reconstruction import TSDFFusion
-from belief_baselines.world_model.oracle_depth_model import OracleDepthModel
-from belief_baselines.utils.vision_utils import pose_lh2rh, pose_gl_cam2world_to_open3d_cam2world
-from belief_baselines.utils.planning_utils import rotation_angle
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.utils.data_classes import Frame, RenderOutput
+from wm_baselines.agent.perception.camera import Camera
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.agent.perception.reconstruction import TSDFFusion
+from wm_baselines.world_model.oracle_depth_model import OracleDepthModel
+from wm_baselines.utils.vision_utils import pose_lh2rh, pose_gl_cam2world_to_open3d_cam2world
+from wm_baselines.utils.planning_utils import rotation_angle
 from environment.stretch_controller import StretchController
 from spoc_utils.embodied_utils import square_image
 

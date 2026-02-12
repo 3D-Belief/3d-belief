@@ -32,11 +32,11 @@ os.environ["OBJAVERSE_HOUSES_DIR"] = "/home/ubuntu/jhu-scai-lab/yyin34/spoc/data
 from environment.stretch_controller import StretchController
 from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
 from spoc_utils.constants.objaverse_data_dirs import OBJAVERSE_HOUSES_DIR
-from belief_baselines.workspace.base_workspace import BaseWorkspace
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.env_interface.spoc_env_interface import SpocEnvInterface
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
-from belief_baselines.task_manager.spoc_obj_searching_task_manager import SpocObjSearchingTaskManager
+from wm_baselines.workspace.base_workspace import BaseWorkspace
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.env_interface.spoc_env_interface import SpocEnvInterface
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.task_manager.spoc_obj_searching_task_manager import SpocObjSearchingTaskManager
 
 
 class SpocEnvTestingWorkspace(BaseWorkspace):

@@ -5,7 +5,7 @@ from scipy.ndimage import distance_transform_edt, binary_dilation
 from pathlib import Path
 import math
 from typing import Tuple, List, Optional, Union
-from belief_baselines.utils.common_utils import with_timing
+from wm_baselines.utils.common_utils import with_timing
 
 class OccupancyMap:
     def __init__(

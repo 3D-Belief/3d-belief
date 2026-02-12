@@ -5,12 +5,12 @@ from torch import Tensor
 from pathlib import Path
 from omegaconf import DictConfig
 from copy import deepcopy
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.utils.planning_utils import rotation_angle
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.planner.planning.path_planning import PATH_PLANNING_REGISTRY, path_to_trajectory
-from belief_baselines.planner.planning.goal_sampling import GOAL_SAMPLING_REGISTRY
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.utils.planning_utils import rotation_angle
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.planner.planning.path_planning import PATH_PLANNING_REGISTRY, path_to_trajectory
+from wm_baselines.planner.planning.goal_sampling import GOAL_SAMPLING_REGISTRY
 
 class ExplorationPlanner(BasePlanner):
     """Exploration planner using frontier-based exploration strategy.

@@ -5,9 +5,9 @@ from torch import Tensor
 from pathlib import Path
 from omegaconf import DictConfig
 from copy import deepcopy
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.agent.vlm.finetuned_vlm import VLM
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.agent.vlm.finetuned_vlm import VLM
 
 class VLMPlanner(BasePlanner):
     """VLM-based planner that uses vision-language model for goal selection."""

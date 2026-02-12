@@ -5,7 +5,7 @@ import heapq
 import math
 import skimage.draw
 from scipy.ndimage import distance_transform_edt, binary_dilation, convolve
-from belief_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.world_model.base_world_model import BaseWorldModel
 
 KERNEL_8 = np.array([[1,1,1],[1,0,1],[1,1,1]], dtype=np.uint8)
 

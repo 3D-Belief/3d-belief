@@ -1,7 +1,7 @@
 import numpy as np
 import open3d as o3d
-from belief_baselines.utils.data_classes import Frame
-from belief_baselines.utils.common_utils import with_timing
+from wm_baselines.utils.data_classes import Frame
+from wm_baselines.utils.common_utils import with_timing
 
 
 class TSDFFusion:

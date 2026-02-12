@@ -2,8 +2,8 @@ from typing import Tuple, List, Optional, Union
 import numpy as np
 import math
 from scipy.ndimage import distance_transform_edt, binary_dilation, label
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.utils.planning_utils import (
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.utils.planning_utils import (
     _vectorized_frontiers,
     _frustum_gain
 )

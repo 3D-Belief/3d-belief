@@ -5,15 +5,15 @@ from torch import Tensor
 from pathlib import Path
 from omegaconf import DictConfig
 from copy import deepcopy
-from belief_baselines.agent.perception.occupancy import OccupancyMap
-from belief_baselines.planner.base_planner import BasePlanner
-from belief_baselines.utils.planning_utils import rotation_angle, goals_and_forwards_to_poses
-from belief_baselines.utils.common_utils import with_timing
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.planner.planning.path_planning import PATH_PLANNING_REGISTRY, path_to_trajectory
-from belief_baselines.planner.planning.goal_sampling import GOAL_SAMPLING_REGISTRY
-from belief_baselines.planner.exploration_planner import ExplorationPlanner
-from belief_baselines.agent.vlm.vlm import VLM
+from wm_baselines.agent.perception.occupancy import OccupancyMap
+from wm_baselines.planner.base_planner import BasePlanner
+from wm_baselines.utils.planning_utils import rotation_angle, goals_and_forwards_to_poses
+from wm_baselines.utils.common_utils import with_timing
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.planner.planning.path_planning import PATH_PLANNING_REGISTRY, path_to_trajectory
+from wm_baselines.planner.planning.goal_sampling import GOAL_SAMPLING_REGISTRY
+from wm_baselines.planner.exploration_planner import ExplorationPlanner
+from wm_baselines.agent.vlm.vlm import VLM
 
 class VLMGoalSelector(ExplorationPlanner):
     """VLM-based planner that uses vision-language model for goal selection."""

@@ -26,12 +26,12 @@ sys.path.append(ROOT_DIR)
 os.chdir(ROOT_DIR)
 
 from stretch.agent.zmq_client import HomeRobotZmqClient
-from belief_baselines.workspace.base_workspace import BaseWorkspace
-from belief_baselines.env_interface.base_env_interface import BaseEnvInterface
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
-from belief_baselines.agent.base_agent import BaseAgent
-from belief_baselines.world_model.base_world_model import BaseWorldModel
-from belief_baselines.planner.base_planner import BasePlanner
+from wm_baselines.workspace.base_workspace import BaseWorkspace
+from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.agent.base_agent import BaseAgent
+from wm_baselines.world_model.base_world_model import BaseWorldModel
+from wm_baselines.planner.base_planner import BasePlanner
 
 class StretchObjSearching3DBeliefGeminiVLMGoalSelectorWorkspace(BaseWorkspace):
     def __init__(self, config: DictConfig):

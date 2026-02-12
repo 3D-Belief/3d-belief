@@ -8,8 +8,8 @@ from stretch.agent.zmq_client import HomeRobotZmqClient
 from scipy.spatial.transform import Rotation as R
 from pathlib import Path
 from copy import deepcopy
-from belief_baselines.task_manager.base_task_manager import BaseTaskManager
-from belief_baselines.agent.vlm.object_detection import segment_label_with_gemini
+from wm_baselines.task_manager.base_task_manager import BaseTaskManager
+from wm_baselines.agent.vlm.object_detection import segment_label_with_gemini
 
 
 class StretchObjSearchingTaskManager(BaseTaskManager):
