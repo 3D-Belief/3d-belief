@@ -62,6 +62,6 @@ hf auth login
 Enter your password. You can now download the assets. The following commands download and set up the assets under a created data/ directory.
 
 ```bash
-hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./checkpoints --include "checkpoints/**" 
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "checkpoints/**" 
 ```
 
