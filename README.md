@@ -52,3 +52,16 @@ export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 uv pip install --no-build-isolation -r requirements.txt
 uv pip install -e .
 ```
+
+### Download Pretrained Checkpoints
+Go to the dataset page: https://huggingface.co/datasets/SCAI-JHU/3d-belief. Log in to your Hugging Face account and accept the conditions as prompted. Then go back to the project root directory, log in from your terminal.
+
+```bash
+hf auth login
+```
+Enter your password. You can now download the assets. The following commands download and set up the assets under a created data/ directory.
+
+```bash
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./checkpoints --include "checkpoints/**" 
+```
+
