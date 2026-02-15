@@ -54,7 +54,7 @@ uv pip install -e .
 ```
 
 ### Download Pretrained Checkpoints
-Go to the dataset page: https://huggingface.co/datasets/SCAI-JHU/3d-belief. Log in to your Hugging Face account and accept the conditions as prompted. Then go back to the project root directory, log in from your terminal.
+Under the project root directory, log in to your Hugging Face account from your terminal.
 
 ```bash
 hf auth login
