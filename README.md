@@ -54,7 +54,7 @@ uv pip install -e .
 ```
 
 ### Download Pretrained Checkpoints
-Under the project root directory, log in to your Hugging Face account from your terminal.
+From the project root directory, open a terminal and log in to your Hugging Face account.
 
 ```bash
 hf auth login
