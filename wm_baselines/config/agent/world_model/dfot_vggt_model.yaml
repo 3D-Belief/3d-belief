@@ -16,10 +16,10 @@ camera:
   near: 0.1
   far: 10.0
 
-dfot_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot/data/dfot_spoc_latest.ckpt
-dfot_repo_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot
+dfot_model_checkpoint: ${paths.checkpoints.dfot}
+dfot_repo_path: ${paths.repos.dfot}
 
-vggt_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+vggt_model_checkpoint: ${paths.checkpoints.vggt}
 
 obs_occupancy:
   _target_: belief_baselines.agent.perception.occupancy.OccupancyMap

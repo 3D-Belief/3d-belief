@@ -1,15 +1,16 @@
 # @package _global_
 defaults:
+  - paths
   - _self_
 embodied_task:
   name: spoc_env_testing
-  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  episode_root: ${paths.episode_roots.obj_searching}
   close_enough_distance: 1.2
   alignment_threshold: 20 # degrees allowed between agent heading and object center
   max_steps: 25
   trajectory:
     save: True
-    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/env_testing
+    save_path: ${paths.output_root}/env_testing
     image_keys: ['rgb']
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 

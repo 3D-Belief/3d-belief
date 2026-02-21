@@ -2,13 +2,14 @@ defaults:
   - agent: vlm_agent
   - agent/planner: vlm_planner
   - agent/world_model: base_world_model
+  - paths
   - _self_
 
 robot_ip: "10.203.64.129"
 
 embodied_task:
   name: stretch_obj_searching_vlm_agent
-  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  episode_root: ${paths.episode_roots.obj_searching}
   subset_type: null # room or length
   subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
   close_enough_distance: 4.0
@@ -19,7 +20,7 @@ embodied_task:
   timeout: 50
   trajectory:
     save: True
-    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/stretch_obj_searching_gemini_vlm_agent
+    save_path: ${paths.output_root}/stretch_obj_searching_gemini_vlm_agent
     image_keys: ['rgb']
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 

@@ -2,11 +2,12 @@ defaults:
   - agent: room_comp_reasoning_agent
   - agent/planner: exploration_planner
   - agent/world_model: dfot_vggt_model
+  - paths
   - _self_
 
 embodied_task:
   name: spoc_room_completion_dfot_vggt
-  episode_root: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_door_passing
+  episode_root: ${paths.episode_roots.room_completion}
   adjacent_angle: 0.785  # 45 degrees
   adjacent_distance: 1.0  # meters
   occupancy_resolution: 0.1  # meters
@@ -16,7 +17,7 @@ embodied_task:
   vlm_model_name: "gpt-5-mini"
   trajectory:
     save: True
-    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/room_completion_dfot_vggt
+    save_path: ${paths.output_root}/room_completion_dfot_vggt
     image_keys: ['rgb']
     string_keys: ['position', 'rotation']
 
@@ -39,7 +40,7 @@ agent:
     far: 10.0
   world_model:
     camera: ${agent.camera}
-    model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+    model_checkpoint: ${paths.checkpoints.vggt}
   planner:
     goal_sampling_strategy: frontier_balanced_turns
   assets_saver:

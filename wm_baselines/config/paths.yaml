@@ -1,0 +1,103 @@
+# =============================================================================
+# Meta Paths Config
+# =============================================================================
+# Centralizes all filesystem paths required to run the baselines.
+# Individual workspace configs can reference these via Hydra interpolation,
+# e.g.  episode_root: ${paths.episode_roots.obj_searching}
+#
+# Before running, update every path below to match your local environment.
+# =============================================================================
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Episode data roots (input trajectories / episodes)
+  # ---------------------------------------------------------------------------
+  episode_roots:
+    # Object searching & env testing episodes (validation split)
+    # Used by: spoc_obj_searching_*, spoc_env_testing, stretch_*
+    obj_searching: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+
+    # Object completion episodes
+    # Used by: spoc_obj_completion_3d_belief, spoc_obj_completion_dfot_vggt
+    obj_completion: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_object_visibility_unit
+
+    # Object permanence episodes
+    # Used by: spoc_obj_permanence_3d_belief, spoc_obj_permanence_dfot_vggt
+    obj_permanence: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_full_rotation_unit_test
+
+    # Room completion episodes
+    # Used by: spoc_room_completion_3d_belief, spoc_room_completion_dfot_vggt
+    room_completion: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_door_passing
+
+  # ---------------------------------------------------------------------------
+  # Output root (trajectory saves, assets, logs)
+  # ---------------------------------------------------------------------------
+  # All per-experiment save_paths are derived as  <output_root>/<experiment_name>
+  output_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data
+
+  # ---------------------------------------------------------------------------
+  # 3D Belief (DFM) model checkpoints
+  # ---------------------------------------------------------------------------
+  checkpoints:
+    # 3D Belief – semantic model (used for semantic goal selector, obj/room completion, obj permanence)
+    # Used by: spoc_obj_searching_3d_belief_semantic_goal_selector,
+    #          spoc_obj_completion_3d_belief, spoc_obj_permanence_3d_belief,
+    #          spoc_room_completion_3d_belief, stretch_obj_searching_3d_belief_semantic_goal_selector
+    belief_3d_semantic: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/weights/spoc/uvit_mvsplat_repa_128_seq_vggt_refine_semantic/model-114.pt
+
+    # 3D Belief – non-semantic model (used for frontier / VLM / CEM goal selectors)
+    # Used by: spoc_obj_searching_3d_belief_frontier,
+    #          spoc_obj_searching_3d_belief_vlm_goal_selector,
+    #          spoc_obj_searching_3d_belief_gemini_vlm_goal_selector,
+    #          spoc_obj_searching_3d_belief_no_imagination_*,
+    #          spoc_obj_searching_3d_belief_cem_vlm_goal_selector,
+    #          stretch_obj_searching_3d_belief_frontier,
+    #          stretch_obj_searching_3d_belief_gemini_vlm_goal_selector
+    belief_3d: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/training/spoc/dfm/uvit_mvsplat_finetune_sp_repa_128_seq_dir_diff/model-145.pt
+
+    # 3D Belief – semantic model (training variant, alternative checkpoint)
+    belief_3d_semantic_training: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/training/spoc/dfm/uvit_mvsplat_repa_128_seq_vggt_refine_semantic/model-273.pt
+
+    # RE10K-pretrained model (used in re10k workspace configs)
+    belief_3d_re10k: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/DFM/outputs/weights/re10k_train_repa_dir_diff_vggt_-1/model-44.pt
+
+    # 3D Belief – SAT phase2 model (optional, referenced in comments)
+    belief_3d_sat: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/weights/spoc_sat/uvit_mvsplat_repa_128_seq_vggt_phase2/model-20.pt
+
+    # VGGT checkpoint (finetuned on SPOC)
+    # Used by: spoc_obj_searching_vggt_*, spoc_obj_completion_dfot_vggt,
+    #          spoc_obj_permanence_dfot_vggt, spoc_room_completion_dfot_vggt,
+    #          dfot_vggt_model, nwm_vggt_model
+    vggt: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+
+    # DFoT checkpoint
+    # Used by: dfot_vggt_model
+    dfot: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot/data/dfot_spoc_latest.ckpt
+
+    # NWM checkpoint
+    # Used by: nwm_vggt_model
+    nwm: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm/data/nwm_cdit_xl_finetune.pth.tar
+
+    # Finetuned VLM adapter (Qwen-2 LoRA)
+    # Used by: spoc_obj_searching_finetuned_vlm_agent
+    vlm_adapter: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/data/checkpoint-30429
+
+  # ---------------------------------------------------------------------------
+  # External repository paths (needed at runtime for model loading)
+  # ---------------------------------------------------------------------------
+  repos:
+    # DFoT repository root
+    # Used by: dfot_vggt_model
+    dfot: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/dfot
+
+    # NWM repository root
+    # Used by: nwm_vggt_model
+    nwm: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm
+
+  # ---------------------------------------------------------------------------
+  # Semantic configuration
+  # ---------------------------------------------------------------------------
+  # Semantic label config (one-hot encoding spec)
+  # Used by: belief_3d_model configs with use_semantic: true
+  semantic_config: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/configurations/semantic/onehot.yaml

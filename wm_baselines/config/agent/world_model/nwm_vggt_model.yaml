@@ -16,10 +16,10 @@ camera:
   near: 0.1
   far: 10.0
 
-nwm_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm/data/nwm_cdit_xl_finetune.pth.tar
-nwm_repo_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/nwm
+nwm_checkpoint: ${paths.checkpoints.nwm}
+nwm_repo_path: ${paths.repos.nwm}
 
-vggt_model_checkpoint: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/vggt/output/checkpoints/spoc_checkpoint.pt
+vggt_model_checkpoint: ${paths.checkpoints.vggt}
 
 nwm_image_size: 224
 

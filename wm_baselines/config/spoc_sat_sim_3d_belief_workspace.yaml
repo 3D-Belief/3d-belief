@@ -2,11 +2,12 @@ defaults:
   - agent: exploration_agent
   - agent/planner: vlm_goal_selector
   - agent/world_model: belief_3d_model
+  - paths
   - _self_
 
 embodied_task:
   name: spoc_obj_searching_3d_belief_vlm_goal_selector
-  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  episode_root: ${paths.episode_roots.obj_searching}
   subset_type: null # room or length
   subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
   close_enough_distance: 4.0
@@ -17,7 +18,7 @@ embodied_task:
   timeout: 500
   trajectory:
     save: True
-    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/object_searching_3d_belief_vlm_goal_selector
+    save_path: ${paths.output_root}/object_searching_3d_belief_vlm_goal_selector
     image_keys: ['rgb']
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 
@@ -62,7 +63,7 @@ agent:
             use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
             semantic_mode: "embed"        # "embed" | "class" | ...
             semantic_viz: "query"
-            semantic_config: "/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/configurations/semantic/onehot.yaml"
+            semantic_config: "${paths.semantic_config}"
             clip:
               model_name: "ViT-B-16"
               pretrained: "laion2b_s34b_b88k"
@@ -73,10 +74,10 @@ agent:
               name: "dinov2_reg_small"
               device: "cuda"
         temperature: 0.8
-      # checkpoint_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/weights/spoc/uvit_mvsplat_repa_128_seq_vggt_refine_semantic/model-114.pt
-      checkpoint_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/training/spoc/dfm/uvit_mvsplat_repa_128_seq_vggt_refine_semantic/model-273.pt
-      # checkpoint_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/DFM/outputs/weights/spoc_sat/uvit_mvsplat_repa_128_seq_vggt_phase2/model-20.pt
-      # checkpoint_path: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/DFM/outputs/weights/re10k_train_repa_dir_diff_vggt_-1/model-44.pt
+      # checkpoint_path: ${paths.checkpoints.belief_3d_semantic}
+      checkpoint_path: ${paths.checkpoints.belief_3d_semantic_training}
+      # checkpoint_path: ${paths.checkpoints.belief_3d_sat}
+      # checkpoint_path: ${paths.checkpoints.belief_3d_re10k}
   planner:
     goal_sampling_strategy: frontier_relaxed_random
     vlm:

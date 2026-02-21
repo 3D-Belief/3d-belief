@@ -2,11 +2,12 @@ defaults:
   - agent: exploration_agent
   - agent/planner: vlm_goal_selector
   - agent/world_model: oracle_imagination_model
+  - paths
   - _self_
 
 embodied_task:
   name: spoc_obj_searching_oracle_imagination_gemini_vlm_goal_selector
-  episode_root: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/spoc_trajectories_val
+  episode_root: ${paths.episode_roots.obj_searching}
   subset_type: null # room or length
   subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
   close_enough_distance: 4.0
@@ -17,7 +18,7 @@ embodied_task:
   timeout: 500
   trajectory:
     save: True
-    save_path: /home/ubuntu/jhu-scai-lab/yyin34/spoc/data/object_searching_oracle_imagination_gemini_vlm_goal_selector
+    save_path: ${paths.output_root}/object_searching_oracle_imagination_gemini_vlm_goal_selector
     image_keys: ['rgb']
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 

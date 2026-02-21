@@ -8,7 +8,7 @@ name: vlm_planner
 vlm:
   _target_: belief_baselines.agent.vlm.finetuned_vlm.VLM
   vlm_model_name: "qwen-2"
-  adapter_path: "/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/data/checkpoint-30429"
+  adapter_path: "${paths.checkpoints.vlm_adapter}"
 
 action_horizon: 5
 rotation_step: 10
