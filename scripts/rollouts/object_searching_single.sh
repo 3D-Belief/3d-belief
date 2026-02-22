@@ -86,9 +86,6 @@ run_exp () {
 
 NAV_WS="${CODEBASE}/belief_baselines/workspace/nav"
 
-# Exploration
-run_exp "spoc_obj_searching" \
-  "${NAV_WS}/spoc_obj_searching_workspace.py"
 
 # VLM Goal Selector
 run_exp "spoc_obj_searching_vlm_goal_selector" \
@@ -145,30 +142,6 @@ run_exp "spoc_obj_searching_nwm_vggt_vlm_goal_selector" \
 # NWM-VGGT Gemini VLM Goal Selector Agent
 run_exp "spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector" \
   "${NAV_WS}/spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector_workspace.py"
-
-# Oracle Imagination Model with VLM Goal Selector
-run_exp "spoc_obj_searching_oracle_imagination_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_oracle_imagination_vlm_goal_selector_workspace.py"
-
-# Oracle Imagination Model with Gemini VLM Goal Selector
-run_exp "spoc_obj_searching_oracle_imagination_gemini_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_oracle_imagination_gemini_vlm_goal_selector_workspace.py"
-
-# 3D Belief No Imagination GPT VLM Goal Selector
-run_exp "spoc_obj_searching_3d_belief_no_imagination_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_3d_belief_no_imagination_vlm_goal_selector_workspace.py"
-
-# 3D Belief No Imagination Gemini VLM Goal Selector
-run_exp "spoc_obj_searching_3d_belief_no_imagination_gemini_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_3d_belief_no_imagination_gemini_vlm_goal_selector_workspace.py"
-
-# 3D Belief No 3D (CEM) GPT VLM Goal Selector
-run_exp "spoc_obj_searching_3d_belief_cem_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_3d_belief_cem_vlm_goal_selector_workspace.py"
-
-# 3D Belief Frontier Agent
-run_exp "spoc_obj_searching_3d_belief_frontier" \
-  "${NAV_WS}/spoc_obj_searching_3d_belief_frontier_workspace.py"
 
 echo ""
 echo "[DONE] All short-subset baselines finished."
