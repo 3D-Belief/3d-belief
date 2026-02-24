@@ -11,6 +11,10 @@ pip-wheel-metadata/
 huggingface/
 # dev tools
 
+/spoc_data/
+
+output/
+
 .envrc
 .python-version
 .idea
