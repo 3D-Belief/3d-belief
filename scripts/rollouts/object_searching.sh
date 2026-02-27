@@ -1,10 +1,12 @@
-source /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/miniconda3/etc/profile.d/conda.sh
-conda activate belief
+# TODO: refactor so that it's easier to run
+conda activate 3d-belief
 
-export CUDA_VISIBLE_DEVICES=3
 export XFORMERS_DISABLED=1
-export OBJAVERSE_DATA_DIR="/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data"
-export OBJAVERSE_HOUSES_DIR="/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/houses_2023_07_28"
+export OBJAVERSE_DATA_DIR="[Enter your objaverse data directory here]"
+export OBJAVERSE_HOUSES_DIR="[Enter your objaverse houses directory here]"
+
+save_path = ""
+episode_root = ""
 
 # Exploration
 HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_workspace.py \
@@ -21,14 +23,14 @@ HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jh
     embodied_task.subset=short \
 
 # GPT VLM Agent
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_vlm_agent_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_gpt_vlm_agent_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_vlm_agent \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
     embodied_task.subset=short \
 
 # GPT VLM Agent - Medium
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_vlm_agent_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_gpt_vlm_agent_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_vlm_agent_med \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
@@ -49,14 +51,14 @@ HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jh
     embodied_task.subset=med \
 
 # Finetuned VLM Agent
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_finetuned_vlm_agent_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_qwen3_vlm_agent_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_qwen3_vlm_agent \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
     embodied_task.subset=short \
 
 # Finetuned VLM Agent - Medium
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_finetuned_vlm_agent_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_qwen3_vlm_agent_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_qwen3_vlm_agent_med \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
@@ -105,7 +107,7 @@ HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jh
     embodied_task.subset=med \
 
 # VGGT VLM Goal Selector Agent
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_vggt_vlm_goal_selector_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_vggt_gpt_vlm_goal_selector_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_vggt_vlm_goal_selector \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
@@ -133,14 +135,14 @@ HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jh
     embodied_task.subset=med \
 
 # DFoT-VGGT VLM Goal Selector Agent
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_dfot_vggt_vlm_goal_selector_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_dfot_vggt_gpt_vlm_goal_selector_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_dfot_vggt_vlm_goal_selector \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
     embodied_task.subset=short \
 
 # DFoT-VGGT VLM Goal Selector Agent - Medium
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_dfot_vggt_vlm_goal_selector_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_dfot_vggt_gpt_vlm_goal_selector_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_dfot_vggt_vlm_goal_selector_med \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
@@ -161,14 +163,14 @@ HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jh
     embodied_task.subset=med \
 
 # NWM-VGGT VLM Goal Selector Agent
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_nwm_vggt_vlm_goal_selector_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_nwm_vggt_gpt_vlm_goal_selector_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_nwm_vggt_vlm_goal_selector \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
     embodied_task.subset=short \
 
 # NWM-VGGT VLM Goal Selector Agent - Medium
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_nwm_vggt_vlm_goal_selector_workspace.py \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/belief_baselines/workspace/nav/spoc_obj_searching_nwm_vggt_gpt_vlm_goal_selector_workspace.py \
     embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/spoc_obj_searching_nwm_vggt_vlm_goal_selector_med \
     embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories/test \
     embodied_task.subset_type=length \
