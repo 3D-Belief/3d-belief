@@ -62,7 +62,7 @@ use_transmittance: true
 use_depth_mask: false
 predict_depth_mask: False
 depth_predictor_time_embed: false
-depth_inference_min: 1.2
+depth_inference_min: 0.2
 depth_inference_max: 10.0
 
 use_image_condition: false
@@ -74,3 +74,6 @@ render_features: false
 conditioning_type: ray_encoding
 
 freeze_depth_predictor: false
+
+filter_border_gaussians: false
+border_px: 1

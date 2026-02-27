@@ -68,6 +68,8 @@ class EncoderUViTMVSplatCfg:
     multiview_trans_nearest_n_views: Optional[int] = None
     fit_ckpt: Optional[bool] = False
     depth_upscale_factor: Optional[int] = None
+    filter_border_gaussians: bool = False
+    border_px: int = 2
 
 
 class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
@@ -79,6 +81,8 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
         super().__init__(cfg)
 
         self.inference_mode = cfg.inference_mode
+        self.filter_border_gaussians = cfg.filter_border_gaussians
+        self.border_px = cfg.border_px
         self.use_semantic = cfg.use_semantic
         self.use_reg_model = cfg.use_reg_model
         self.evolve_ctxt = cfg.evolve_ctxt
@@ -122,6 +126,8 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             legacy_2views=cfg.legacy_2views,
             grid_sample_disable_cudnn=cfg.grid_sample_disable_cudnn,
             use_time_embedder=cfg.depth_predictor_time_embed,
+            depth_inference_min=cfg.depth_inference_min,
+            depth_inference_max=cfg.depth_inference_max,
         )
 
         if self.use_semantic:
@@ -285,6 +291,9 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
         t: Tensor,
         global_step: int,
         deterministic: bool = False,
+        filter_border_gaussians: bool = None,
+        depth_inference_min: float = None,
+        depth_inference_max: float = None,
     ) -> Gaussians:
         device = model_input["ctxt_rgb"].device
         b, v, c, h, w = model_input["ctxt_rgb"].shape
@@ -352,8 +361,7 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             )
             semantic_features = repeat(semantic_features, '... 1 c -> ... gpp c', gpp=gpp) 
             # TODO sample semantic features from a distribution
-
-        depths, densities, raw_gaussians = self.depth_predictor(
+        depths, densities, raw_gaussians, mask_exp = self.depth_predictor(
             features,
             intrinsics,
             extrinsics,
@@ -363,7 +371,32 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             deterministic=deterministic,
             extra_info=extra_info,
             t=t,
+            inference_mode=self.inference_mode,
+            return_mask=True,
+            depth_inference_min=depth_inference_min,
+            depth_inference_max=depth_inference_max,
         )
+        filter_border_gaussians = self.filter_border_gaussians if filter_border_gaussians is None else filter_border_gaussians
+
+        if self.inference_mode and filter_border_gaussians:
+            border = int(self.border_px)
+            if border > 0:
+                # mask_exp: (b, v_all, r, srf, dpt), where r = h*w
+                r = h * w
+                idx = torch.arange(r, device=device)
+                x = idx % w
+                y = idx // w
+
+                border_mask_r = (
+                    (x < border) | (x >= (w - border)) |
+                    (y < border) | (y >= (h - border))
+                )  # (r,) True means "on border"
+
+                # expand to match mask_exp
+                border_mask = border_mask_r.view(1, 1, r, 1, 1).expand_as(mask_exp)
+
+                # keep only non-border
+                mask_exp = mask_exp & (~border_mask)
 
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((h, w), device)
@@ -405,21 +438,83 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                 semantic_features[:,  v:], "b v r srf spp c -> b (v r srf spp) c"
             )
 
-        context_gaussians = Gaussians(
-            rearrange(gaussians.means[:, :v], "b v r srf spp xyz -> b (v r srf spp) xyz"),
-            rearrange(gaussians.covariances[:, :v], "b v r srf spp i j -> b (v r srf spp) i j"),
-            rearrange(gaussians.harmonics[:, :v], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
-            rearrange(opacity_multiplier * gaussians.opacities[:, :v], "b v r srf spp -> b (v r srf spp)"),
-            context_semantic
-        )
+        if not self.inference_mode:
+            context_gaussians = Gaussians(
+                rearrange(gaussians.means[:, :v], "b v r srf spp xyz -> b (v r srf spp) xyz"),
+                rearrange(gaussians.covariances[:, :v], "b v r srf spp i j -> b (v r srf spp) i j"),
+                rearrange(gaussians.harmonics[:, :v], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
+                rearrange(opacity_multiplier * gaussians.opacities[:, :v], "b v r srf spp -> b (v r srf spp)"),
+                context_semantic
+            )
 
-        target_gaussians = Gaussians(
-            rearrange(gaussians.means[:, v:], "b v r srf spp xyz -> b (v r srf spp) xyz"),
-            rearrange(gaussians.covariances[:, v:], "b v r srf spp i j -> b (v r srf spp) i j"),
-            rearrange(gaussians.harmonics[:, v:], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
-            rearrange(opacity_multiplier * gaussians.opacities[:, v:], "b v r srf spp -> b (v r srf spp)"),
-            target_semantic
-        )
+            target_gaussians = Gaussians(
+                rearrange(gaussians.means[:, v:], "b v r srf spp xyz -> b (v r srf spp) xyz"),
+                rearrange(gaussians.covariances[:, v:], "b v r srf spp i j -> b (v r srf spp) i j"),
+                rearrange(gaussians.harmonics[:, v:], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
+                rearrange(opacity_multiplier * gaussians.opacities[:, v:], "b v r srf spp -> b (v r srf spp)"),
+                target_semantic
+            )
+        else:
+            mask = mask_exp[0]
+            mask_ctx = mask[:v]
+            mask_tgt = mask[v:]
+            mask_ctx_f = mask_ctx.reshape(-1)
+            mask_tgt_f = mask_tgt.reshape(-1)
+
+            means0 = gaussians.means[0]
+            covs0 = gaussians.covariances[0]
+            harms0 = gaussians.harmonics[0]
+            ops0 = gaussians.opacities[0]
+
+            means_ctx = rearrange(means0[:v], "v r srf spp xyz -> (v r srf spp) xyz")
+            means_tgt = rearrange(means0[v:], "v r srf spp xyz -> (v r srf spp) xyz")
+
+            covs_ctx = rearrange(covs0[:v], "v r srf spp i j -> (v r srf spp) i j")
+            covs_tgt = rearrange(covs0[v:], "v r srf spp i j -> (v r srf spp) i j")
+
+            harms_ctx = rearrange(harms0[:v], "v r srf spp c d_sh -> (v r srf spp) c d_sh")
+            harms_tgt = rearrange(harms0[v:], "v r srf spp c d_sh -> (v r srf spp) c d_sh")
+
+            ops_ctx = opacity_multiplier * ops0.reshape(-1)[: mask_ctx_f.numel()]
+            ops_tgt = opacity_multiplier * ops0.reshape(-1)[mask_ctx_f.numel():]
+
+            if self.render_features or self.use_semantic:
+                feats_ctx = context_semantic[0]
+                feats_tgt = target_semantic[0]
+
+            valid_means_ctx = means_ctx[mask_ctx_f].unsqueeze(0)
+            valid_covs_ctx = covs_ctx[mask_ctx_f].unsqueeze(0)
+            valid_harms_ctx = harms_ctx[mask_ctx_f].unsqueeze(0)
+            valid_ops_ctx = ops_ctx[mask_ctx_f].unsqueeze(0)
+            if self.render_features or self.use_semantic:
+                valid_feats_ctx = feats_ctx[mask_ctx_f].unsqueeze(0)
+            else:
+                valid_feats_ctx = None
+
+            valid_means_tgt = means_tgt[mask_tgt_f].unsqueeze(0)
+            valid_covs_tgt = covs_tgt[mask_tgt_f].unsqueeze(0)
+            valid_harms_tgt = harms_tgt[mask_tgt_f].unsqueeze(0)
+            valid_ops_tgt = ops_tgt[mask_tgt_f].unsqueeze(0)
+            if self.render_features or self.use_semantic:
+                valid_feats_tgt = feats_tgt[mask_tgt_f].unsqueeze(0)
+            else:
+                valid_feats_tgt = None
+
+            context_gaussians = Gaussians(
+                valid_means_ctx,
+                valid_covs_ctx,
+                valid_harms_ctx,
+                valid_ops_ctx,
+                valid_feats_ctx,
+            )
+
+            target_gaussians = Gaussians(
+                valid_means_tgt,
+                valid_covs_tgt,
+                valid_harms_tgt,
+                valid_ops_tgt,
+                valid_feats_tgt,
+            )
 
         return context_gaussians, target_gaussians
     

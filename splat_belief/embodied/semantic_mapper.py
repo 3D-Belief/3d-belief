@@ -25,6 +25,8 @@ class SemanticMapper(torch.nn.Module):
         super().__init__()
         self.mode = mode
         self.semantic_viz = semantic_viz
+        self.text_encoder = text_encoder
+        self.text_tokenizer = text_tokenizer
         # Load texture labels from YAML config
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f)
@@ -50,11 +52,7 @@ class SemanticMapper(torch.nn.Module):
         elif self.mode == 'embed':
             if text_encoder is None or text_tokenizer is None:
                 raise ValueError('text_encoder must be provided in "embed" mode.')
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            label_tokens = text_tokenizer(self.labels).to(device)
-            with torch.no_grad():
-                embeddings = text_encoder(label_tokens)
-            embeddings = embeddings.detach() 
+            embeddings = self.tokenize_labels(self.labels)
             if not isinstance(embeddings, torch.Tensor):
                 raise ValueError('text_encoder must return a torch.Tensor.')
             if embeddings.shape[0] != self.num_labels:
@@ -66,10 +64,12 @@ class SemanticMapper(torch.nn.Module):
         else:
             raise ValueError(f'Unsupported mode: {self.mode}. Choose "one_hot" or "embed".')
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, query_label: str = None, raw_intensity: bool = False) -> torch.Tensor:
         """
         Args:
             features (torch.Tensor): shape [b, c, h, w]
+            query_label (str, optional): if provided, use this label to visualize the feature map.
+                Only applicable in 'embed' mode with semantic_viz='query'.
         Returns:
             torch.Tensor: semantic map of shape [b, h, w] with integer labels
         """
@@ -93,8 +93,11 @@ class SemanticMapper(torch.nn.Module):
             # Pad zeros on the right to get shape [num_labels, c]
             label_vecs = F.pad(base, (0, c - self.num_labels))
         else:
+            if query_label is not None:
+                label_vectors = self.tokenize_labels([query_label])
+            else:
+                label_vectors = self.label_vectors
             # Normalize to ensure they are unit vectors
-            label_vectors = self.label_vectors
             label_vectors = label_vectors / label_vectors.norm(dim=1, keepdim=True)
             label_vecs = label_vectors.to(device=features.device, dtype=features.dtype)
     
@@ -108,11 +111,14 @@ class SemanticMapper(torch.nn.Module):
             # Reshape to [b, h, w]
             intensity_map = query_sims.reshape(b, h, w)
             # import ipdb; ipdb.set_trace()
+            if raw_intensity:
+                # If raw intensity is requested, return the normalized intensity map directly
+                render = intensity_map
+                return render
             # Normalize to [0, 1] range for better visualization
             intensity_map = (intensity_map - intensity_map.min()) / (intensity_map.max() - intensity_map.min() + 1e-8)
-            
             # Convert to colormap
-            intensity_np = intensity_map.cpu().numpy()
+            intensity_np = intensity_map.detach().cpu().numpy()
             intensity_list = []
             # Apply colormap (jet, viridis, plasma, etc.) by looping over the batch
             for i in range(intensity_np.shape[0]):
@@ -131,3 +137,15 @@ class SemanticMapper(torch.nn.Module):
             render = idxs.reshape(b, h, w).long()
             render = semantic_to_color(render)
             return render
+
+    def tokenize_labels(self, labels) -> None:
+        """
+        Tokenizes the texture labels using the provided tokenizer.
+        """
+        if self.mode != 'embed':
+            raise ValueError('tokenize_labels is only applicable in "embed" mode.')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        label_tokens = self.text_tokenizer(labels).to(device)
+        with torch.no_grad():
+            embeddings = self.text_encoder(label_tokens)
+        return embeddings.detach()

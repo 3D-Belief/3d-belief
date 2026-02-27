@@ -94,7 +94,19 @@ class SplatBeliefState(nn.Module):
         self.history_pose = None
         self.first_ctxt_shift = None
     
-    def forward(self, model_input, t, global_step=100000, state_t=None):
+    @property
+    def augmented_gaussians(self):
+        """Returns the augmented Gaussians, which are the sum of history and belief Gaussians."""
+        if self.history_gaussians is None or self.belief_gaussians is None:
+            return None
+        return self.history_gaussians + self.belief_gaussians
+    
+    def forward(
+        self, model_input, t, global_step=100000, state_t=None, 
+        filter_border_gaussians: bool = False, 
+        depth_inference_min: float = 0.2, 
+        depth_inference_max: float = 10.0
+    ):
         b, num_context, _, h, w = model_input["ctxt_rgb"].shape
 
         if self.current_timestep is None:
@@ -127,7 +139,10 @@ class SplatBeliefState(nn.Module):
                 model_input, 
                 t=t,
                 global_step=global_step, 
-                deterministic=False
+                deterministic=False,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
             )
             if not self.use_history:
                 # Shift the means of context and target gaussians back to original coordinates
@@ -172,7 +187,10 @@ class SplatBeliefState(nn.Module):
                 model_input, 
                 t=t,
                 global_step=global_step, 
-                deterministic=False
+                deterministic=False,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
             )
             if not self.use_history:
                 # Shift the means of context and target gaussians back to original coordinates
@@ -313,10 +331,13 @@ class SplatBeliefState(nn.Module):
         return self.normalize(target_rendered_color), target_rendered_depth, misc
 
     def render(self, gaussians, extrinsics, intrinsics, near, far, h, w,
-               filter_ceiling: bool = False, ceiling_threshold: float = 2.5):
+               filter_ceiling: bool = False, ceiling_threshold: float = 2.5,
+               query_label: Optional[str] = None):
         
         # Shift extrinsics using first_ctxt_shift with matrix multiplication
+        extrinsics = extrinsics.unsqueeze(0).unsqueeze(0)
         extrinsics = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, extrinsics)
+        extrinsics = extrinsics.squeeze(0).squeeze(0)
 
         if filter_ceiling:
             gaussians = gaussians.filter_ceiling(ceiling_threshold)
@@ -345,8 +366,11 @@ class SplatBeliefState(nn.Module):
                 features = self.encoder.get_semantic_features(features)
                 # features = self.encoder.get_semantic_reg_features(features)
             features = features.squeeze(1)  # [b, c, h, w]
-            semantic = self.semantic_mapper.forward(features)
-            semantic = semantic.float().cpu().detach().numpy().astype(np.uint8)
+            raw_intensity = True if query_label is not None else False
+            semantic = self.semantic_mapper.forward(features, query_label, raw_intensity)
+            semantic = semantic.float().cpu().detach().numpy()
+            if not raw_intensity:
+                semantic = semantic.astype(np.uint8)
         return rgb, depth, semantic
 
     @torch.no_grad()
@@ -497,6 +521,7 @@ class SplatBeliefState(nn.Module):
         model.current_timestep = self.current_timestep
         model.history_rgb = self.history_rgb
         model.history_pose = self.history_pose
+        model.first_ctxt_shift = self.first_ctxt_shift
         if self.history_gaussians is not None:
             model.history_gaussians = self.history_gaussians.clone()
             model.history_gaussians.means = self.history_gaussians.means[:1]

@@ -5,7 +5,6 @@ from collections import OrderedDict
 import numpy as np
 from functools import partial
 from collections import namedtuple
-from omegaconf import OmegaConf
 
 import torch
 from torch import nn
@@ -34,7 +33,7 @@ from PIL import Image
 from accelerate import DistributedDataParallelKwargs
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# from splat_belief.utils.vision_utils import *
+# from utils import *
 from splat_belief.splat.layers import *
 import lpips
 
@@ -320,12 +319,15 @@ class DiffusionTemporal(nn.Module):
         render_high_res=False,
         global_step=100000,
         state_t=None,
+        filter_border_gaussians=False,
+        depth_inference_min=0.2,
+        depth_inference_max=10.0,
     ):
         x = inp["noisy_trgt_rgb"]
         _, _, _, h, w = inp["ctxt_rgb"].shape
         if self.use_guidance and self.guidance_scale > 1.0:
             model_uncond = deepcopy(self.model)
-        self.model(inp, t=t, global_step=global_step, state_t=state_t) # Update history and belief
+        self.model(inp, t=t, global_step=global_step, state_t=state_t, filter_border_gaussians=filter_border_gaussians, depth_inference_min=depth_inference_min, depth_inference_max=depth_inference_max) # Update history and belief
         
         # Augmented gaussians
         gaussians = self.model.history_gaussians + self.model.belief_gaussians
@@ -441,7 +443,7 @@ class DiffusionTemporal(nn.Module):
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.no_grad()
-    def p_sample(self, inp, t: int, global_step=100000, state_t=None):
+    def p_sample(self, inp, t: int, global_step=100000, state_t=None, fast_sampling=False):
         x = inp["noisy_trgt_rgb"]
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((x.shape[0],), t, device=x.device, dtype=torch.long)
@@ -453,7 +455,7 @@ class DiffusionTemporal(nn.Module):
         return pred_img, x_start
 
     @torch.no_grad()
-    def p_sample_loop(self, shape, return_all_timesteps=False, inp=None, global_step=100000, state_t=None):
+    def p_sample_loop(self, shape, return_all_timesteps=False, inp=None, global_step=100000, state_t=None, fast_sampling=False):
         batch, device = shape[0], self.betas.device
 
         img = torch.randn(shape, device=device)
@@ -497,7 +499,13 @@ class DiffusionTemporal(nn.Module):
         return out_dict
 
     @torch.no_grad()
-    def ddim_sample(self, shape, return_all_timesteps=False, inp=None, global_step=100000, state_t=None):
+    def ddim_sample(
+        self, shape, return_all_timesteps=False, inp=None, global_step=100000, state_t=None, 
+        fast_sampling=False,
+        filter_border_gaussians=False,
+        depth_inference_min=0.2,
+        depth_inference_max=10.0,
+    ):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = (
             shape[0],
             self.betas.device,
@@ -506,6 +514,8 @@ class DiffusionTemporal(nn.Module):
             self.ddim_sampling_eta,
             self.objective,
         )
+        if fast_sampling:
+            sampling_timesteps = 10
         """Normalize input images"""
         times = torch.linspace(
             -1, total_timesteps - 1, steps=sampling_timesteps + 1
@@ -544,6 +554,9 @@ class DiffusionTemporal(nn.Module):
                 render_high_res=render_high_res,
                 global_step=global_step,
                 state_t=state_t,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
             )
             if time_next < 0:
                 img = x_start
@@ -598,7 +611,7 @@ class DiffusionTemporal(nn.Module):
         return out_dict
 
     @torch.no_grad()
-    def sample(self, batch_size=2, return_all_timesteps=False, inp=None, state_t=None):
+    def sample(self, batch_size=2, return_all_timesteps=False, inp=None, state_t=None, fast_sampling=False, filter_border_gaussians=False, depth_inference_min=0.2, depth_inference_max=10.0):
         image_size, channels = self.image_size, self.channels
         sample_fn = (
             self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
@@ -608,6 +621,10 @@ class DiffusionTemporal(nn.Module):
             return_all_timesteps=return_all_timesteps,
             inp=inp,
             state_t=state_t,
+            fast_sampling=fast_sampling,
+            filter_border_gaussians=filter_border_gaussians,
+            depth_inference_min=depth_inference_min,
+            depth_inference_max=depth_inference_max,
         )
 
     @torch.no_grad()
@@ -1060,6 +1077,7 @@ class Trainer(object):
         use_semantic=False,
         intermediate=True,
         num_intermediate=10,
+        **kwargs,
     ):
         super().__init__()
 
@@ -1153,14 +1171,14 @@ class Trainer(object):
         if self.accelerator.is_main_process:
             if cfg.wandb_id is not None:
                 wandb.init(
-                    config=OmegaConf.to_container(cfg, resolve=True), **wandb_config, id=cfg.wandb_id, resume="allow"
+                    config=cfg, **wandb_config, id=cfg.wandb_id, resume="allow"
                 )
             elif cfg.resume_id is not None:
                 wandb.init(
-                    config=OmegaConf.to_container(cfg, resolve=True), **wandb_config, id=cfg.resume_id, resume="must"
+                    config=cfg, **wandb_config, id=cfg.resume_id, resume="must"
                 )
             else:
-                wandb.init(config=OmegaConf.to_container(cfg, resolve=True), **wandb_config)
+                wandb.init(config=cfg, **wandb_config)
             wandb.run.name = run_name
 
     def save(self, milestone):
