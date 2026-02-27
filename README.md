@@ -53,15 +53,23 @@ uv pip install --no-build-isolation -r requirements.txt
 uv pip install -e .
 ```
 
-### Download Pretrained Checkpoints
+### Download Data and Pretrained Checkpoints
 From the project root directory, open a terminal and log in to your Hugging Face account.
 
 ```bash
 hf auth login
 ```
-Enter your password. You can now download the assets. The following commands download and set up the assets under a created data/ directory.
+Enter your password. You can now download the assets.
+
+The following commands download and set up all the checkpoints under a created checkpoints/ directory.
 
 ```bash
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "checkpoints/**" 
 ```
 
+The following commands download and set up the assets under a created data/ directory.
+
+```bash
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/**"
+unzip ./data/spoc_trajectories.zip -d ./data/ && rm data/spoc_trajectories.zip
+```
