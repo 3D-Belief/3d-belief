@@ -6,7 +6,13 @@ from torch import Tensor
 from pathlib import Path
 from PIL import Image
 import open3d as o3d
-from rollout_utils import visualize_semantic_query_intensity_map
+try:
+    from rollout_utils import visualize_semantic_query_intensity_map
+except ImportError:
+    def visualize_semantic_query_intensity_map(semantic):
+        """Fallback: return the raw semantic map as-is when rollout_utils is unavailable."""
+        import numpy as np
+        return (np.clip(semantic, 0, 1) * 255).astype(np.uint8) if semantic.max() <= 1.0 else semantic.astype(np.uint8)
 from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
 from wm_baselines.world_model.base_world_model import BaseWorldModel
 from wm_baselines.planner.base_planner import BasePlanner

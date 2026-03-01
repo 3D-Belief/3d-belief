@@ -21,14 +21,14 @@ embodied_task:
     string_keys: ['position', 'rotation']
 
 task_manager:
-  _target_: belief_baselines.task_manager.spoc_obj_completion_task_manager.SpocObjCompletionTaskManager
+  _target_: wm_baselines.task_manager.spoc_obj_completion_task_manager.SpocObjCompletionTaskManager
 
 env_interface:
-  _target_: belief_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+  _target_: wm_baselines.env_interface.spoc_env_interface.SpocEnvInterface
 
 agent:
   camera:
-    _target_: belief_baselines.agent.perception.camera.Camera
+    _target_: wm_baselines.agent.perception.camera.Camera
     h: 240
     w: 240
     fx: 93.6
@@ -39,7 +39,7 @@ agent:
     far: 10.0
   world_model:
     camera:
-      _target_: belief_baselines.agent.perception.camera.Camera
+      _target_: wm_baselines.agent.perception.camera.Camera
       fx: 0.390
       fy: 0.385
       cx: 0.5
@@ -58,7 +58,7 @@ agent:
               use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
               use_reg_model: true
           semantic:
-            _target_: belief_baselines.utils.model_factories.build_semantic_bundle
+            _target_: wm_baselines.utils.model_factories.build_semantic_bundle
             use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
             semantic_mode: "embed"        # "embed" | "class" | ...
             semantic_viz: "query"

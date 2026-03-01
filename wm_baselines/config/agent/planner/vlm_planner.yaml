@@ -1,12 +1,12 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.planner.vlm_planner.VLMPlanner
+_target_: wm_baselines.planner.vlm_planner.VLMPlanner
 
 name: vlm_planner
 
 vlm:
-  _target_: belief_baselines.agent.vlm.vlm.VLM
+  _target_: wm_baselines.agent.vlm.vlm.VLM
   vlm_model_name: "gpt-5"
 
 action_horizon: 5

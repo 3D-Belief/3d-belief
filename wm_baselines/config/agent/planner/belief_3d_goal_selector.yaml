@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.planner.belief_3d_goal_selector.Belief3DModelGoalSelector
+_target_: wm_baselines.planner.belief_3d_goal_selector.Belief3DModelGoalSelector
 
 name: belief_3d_goal_selector
 

@@ -19,7 +19,7 @@ export OBJAVERSE_HOUSES_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/
 # Base output directory (each baseline will create a subfolder here)
 SAVE_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output"
 # SPOC trajectories root
-EPISODE_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data"
+EPISODE_ROOT=/scratch/tshu2/zwen19/3dbelief/3d-belief/data/spoc_trajectories_val
 # Codebase root (used to build absolute paths below)
 CODEBASE="/scratch/tshu2/zwen19/3dbelief/3d-belief"
 # If you want to just print commands (no execution), set DRY_RUN=1

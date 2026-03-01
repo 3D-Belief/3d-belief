@@ -28,6 +28,7 @@ import os
 import time
 import wandb
 import imageio
+from omegaconf import OmegaConf
 from copy import deepcopy
 from PIL import Image
 from accelerate import DistributedDataParallelKwargs
@@ -1171,14 +1172,14 @@ class Trainer(object):
         if self.accelerator.is_main_process:
             if cfg.wandb_id is not None:
                 wandb.init(
-                    config=cfg, **wandb_config, id=cfg.wandb_id, resume="allow"
+                    config=OmegaConf.to_container(cfg, resolve=True), **wandb_config, id=cfg.wandb_id, resume="allow"
                 )
             elif cfg.resume_id is not None:
                 wandb.init(
-                    config=cfg, **wandb_config, id=cfg.resume_id, resume="must"
+                    config=OmegaConf.to_container(cfg, resolve=True), **wandb_config, id=cfg.resume_id, resume="must"
                 )
             else:
-                wandb.init(config=cfg, **wandb_config)
+                wandb.init(config=OmegaConf.to_container(cfg, resolve=True), **wandb_config)
             wandb.run.name = run_name
 
     def save(self, milestone):

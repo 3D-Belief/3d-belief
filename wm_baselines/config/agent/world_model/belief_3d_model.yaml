@@ -5,14 +5,14 @@ defaults:
   - model/dataset@model.diffusion_model.dataset_cfg.config.dataset: spoc_seq
   - _self_
 
-_target_: belief_baselines.world_model.belief_3d_model.Belief3DModel
+_target_: wm_baselines.world_model.belief_3d_model.Belief3DModel
 
 name: belief_3d_model
 
 fast_sampling: true
 
 camera:
-  _target_: belief_baselines.agent.perception.camera.Camera
+  _target_: wm_baselines.agent.perception.camera.Camera
   fx: 0.390
   fy: 0.385
   cx: 0.5
@@ -23,23 +23,23 @@ camera:
   far: 10.0
 
 model:
-  _target_: diffusion.denoising_diffusion_pixelsplat_epi_temporal.Trainer
+  _target_: splat_belief.diffusion.diffusion_temporal.Trainer
   _convert_: none
   diffusion_model:
-    _target_: belief_baselines.utils.model_factories.build_diffusion
+    _target_: wm_baselines.utils.model_factories.build_diffusion
     _convert_: none
     image_size: 128
     model:
-      _target_: belief_baselines.utils.model_factories.build_splat_model
+      _target_: wm_baselines.utils.model_factories.build_splat_model
       inference_mode: true
       use_semantic: false
       encoder_visual_pair:
-        _target_: belief_baselines.utils.model_factories.get_encoder_pair
+        _target_: wm_baselines.utils.model_factories.get_encoder_pair
         _convert_: none
       decoder:
-        _target_: belief_baselines.utils.model_factories.build_decoder
+        _target_: wm_baselines.utils.model_factories.build_decoder
       semantic:
-        _target_: belief_baselines.utils.model_factories.build_semantic_bundle
+        _target_: wm_baselines.utils.model_factories.build_semantic_bundle
         use_semantic: false
         semantic_mode: "embed"        # "embed" | "class" | ...
         semantic_viz: false
@@ -92,14 +92,14 @@ model:
     mode: disabled
 
 obs_occupancy:
-  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
   resolution: 0.1
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height
   max_range: 3.0
 
 belief_occupancy:
-  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
   resolution: 0.1
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height

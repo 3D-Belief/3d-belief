@@ -12,6 +12,7 @@ repa_loss_weight: 5.0
 rgb_loss_weight: 1.
 intermediate_weight: 2.0
 vggt_alignment_loss_weight: 0.1
+root_dir: ""
 camera:
   fx: 0.390
   fy: 0.385

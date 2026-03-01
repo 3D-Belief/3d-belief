@@ -211,6 +211,8 @@ class DepthPredictorMultiView(nn.Module):
         legacy_2views=False,
         grid_sample_disable_cudnn=False,
         use_time_embedder=True,
+        depth_inference_min=0.2,
+        depth_inference_max=10.0,
         **kwargs,
     ):
         super(DepthPredictorMultiView, self).__init__()
@@ -219,6 +221,8 @@ class DepthPredictorMultiView(nn.Module):
             self.time_embedding = TimestepEmbedder(hidden_size=feature_channels)
         else:
             self.time_embedding = None
+        self.depth_inference_min = depth_inference_min
+        self.depth_inference_max = depth_inference_max
         self.num_depth_candidates = num_depth_candidates
         self.regressor_feat_dim = costvolume_unet_feat_dim
         self.upscale_factor = upscale_factor
@@ -347,6 +351,10 @@ class DepthPredictorMultiView(nn.Module):
         cnn_features=None,
         nn_matrix=None,
         t=None,
+        inference_mode=False,
+        return_mask=False,
+        depth_inference_min=None,
+        depth_inference_max=None,
     ):
         """IMPORTANT: this model is in (v b), NOT (b v), due to some historical issues.
         keep this in mind when performing any operation related to the view dim"""
@@ -501,5 +509,20 @@ class DepthPredictorMultiView(nn.Module):
                 v=v,
                 srf=1,
             )
+
+        mask_exp = torch.ones_like(depths, dtype=torch.bool)
+        if inference_mode:
+            depth_inference_min = self.depth_inference_min if depth_inference_min is None else depth_inference_min
+            depth_inference_max = self.depth_inference_max if depth_inference_max is None else depth_inference_max
+            min_depth = depth_inference_min
+            max_depth = depth_inference_max
+
+            dvals = depths[..., 0]
+            mask = (dvals >= min_depth) & (dvals <= max_depth)
+
+            mask_exp = mask.unsqueeze(-1).expand_as(depths)
+
+        if return_mask:
+            return depths, densities, raw_gaussians, mask_exp
 
         return depths, densities, raw_gaussians

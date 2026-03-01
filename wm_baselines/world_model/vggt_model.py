@@ -97,9 +97,9 @@ class VGGTModel(BaseWorldModel):
             ## DEBUG
             color, depth = self.render_image(pose_map)
             # save color
-            # imageio.imwrite(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/debug/scene_color_{self.step}.png", color)
+            # imageio.imwrite(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/scene_color_{self.step}.png", color)
             # save pcd as .ply
-            # o3d.io.write_point_cloud(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/debug/scene_{self.step}.ply", self.scene_pcd)
+            # o3d.io.write_point_cloud(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/scene_{self.step}.ply", self.scene_pcd)
             self._metrics["model_inference_time"] += exe_time
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
             resolution = self.obs_occupancy.resolution
@@ -394,7 +394,7 @@ class VGGTModel(BaseWorldModel):
     def _inference_pcd(self) -> o3d.geometry.PointCloud:
         """Run VGGT model inference to get the scene point cloud."""
         with torch.no_grad():
-            with torch.amp.autocast(dtype=self.model_dtype):
+            with torch.amp.autocast(device_type="cuda", dtype=self.model_dtype):
                 images = self._preprocess_images(self.rgb_images)
                 images = images[None]  # add batch dimension
                 aggregated_tokens_list, ps_idx = self.model.aggregator(images)

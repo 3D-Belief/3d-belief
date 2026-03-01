@@ -377,7 +377,7 @@ class DFoTVGGTModel(BaseWorldModel):
     def _inference_pcd(self) -> o3d.geometry.PointCloud:
         """Run VGGT model inference to get the scene point cloud."""
         with torch.no_grad():
-            with torch.amp.autocast(dtype=self.vggt_model_dtype):
+            with torch.amp.autocast(device_type="cuda", dtype=self.vggt_model_dtype):
                 images = self._preprocess_images(self.rgb_images)
                 images = images[None]  # add batch dimension
                 aggregated_tokens_list, ps_idx = self.vggt_model.aggregator(images)

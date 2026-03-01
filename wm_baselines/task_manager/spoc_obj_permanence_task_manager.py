@@ -318,7 +318,7 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
             obs_occupancy.integrate(np.array(pcd.points), np.array([0,0,0]), np.eye(3), intrinsics=self.camera.intrinsics)
 
         # ## DEBUG
-        # obs_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/debug/obs_occupancy.png")
+        # obs_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/obs_occupancy.png")
         ret = {
             "gt_occupancy": obs_occupancy,
         }
@@ -335,7 +335,7 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
         rgb = assets["imagine_rgb"][-1]
         
         # ## DEBUG
-        # belief_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/debug/belief_occupancy.png")
+        # belief_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/belief_occupancy.png")
         ret = {
             "belief_occupancy": belief_occupancy,
         }

@@ -1,12 +1,12 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.world_model.nwm_vggt_model.NWMVGGTModel
+_target_: wm_baselines.world_model.nwm_vggt_model.NWMVGGTModel
 
 name: nwm_vggt_model
 
 camera:
-  _target_: belief_baselines.agent.perception.camera.Camera
+  _target_: wm_baselines.agent.perception.camera.Camera
   h: 240
   w: 240
   fx: 256
@@ -24,14 +24,14 @@ vggt_model_checkpoint: ${paths.checkpoints.vggt}
 nwm_image_size: 224
 
 obs_occupancy:
-  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
   resolution: 0.1
   obstacle_height_thresh: -0.1
   ceiling_height: 1.0 # w.r.t. agent height
   max_range: 3.0
 
 belief_occupancy:
-  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
   resolution: 0.1
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height

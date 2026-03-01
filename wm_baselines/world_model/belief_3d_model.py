@@ -12,8 +12,25 @@ import torch.nn.functional as F
 import math
 from splat_belief.splat.types import Gaussians
 from splat_belief.splat.ply_export import export_gaussians_to_ply
-from general_utils import to_gpu, normalize_to_neg_one_to_one
-from rollout_utils import prepare_video
+try:
+    from general_utils import to_gpu, normalize_to_neg_one_to_one
+except ImportError:
+    from splat_belief.utils.vision_utils import to_gpu, normalize_to_neg_one_to_one
+try:
+    from rollout_utils import prepare_video
+except ImportError:
+    def prepare_video(frames, depths, semantics):
+        """Fallback: convert tensor frames to numpy uint8, pass depths/semantics through."""
+        out_frames = []
+        for f in frames:
+            if hasattr(f, 'cpu'):
+                f = f.cpu().detach().numpy()
+            if f.max() <= 1.0:
+                f = (f * 255).clip(0, 255).astype(np.uint8)
+            else:
+                f = f.clip(0, 255).astype(np.uint8)
+            out_frames.append(f)
+        return out_frames, depths, semantics
 from splat_belief.diffusion.diffusion_temporal import Trainer as ModelWrapper
 from wm_baselines.utils.common_utils import with_timing
 from wm_baselines.utils.data_classes import Frame, RenderOutput
@@ -349,7 +366,8 @@ class Belief3DModel(BaseWorldModel):
         # Save a deep copy of the model for imagination
         self.imagination_model = copy.deepcopy(self.model.ema.ema_model)
         # Run inference
-        self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=self.obs_filter_border_gaussians, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max, ref_depth=depth)
+        # self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=self.obs_filter_border_gaussians, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max, ref_depth=depth)
+        self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=self.obs_filter_border_gaussians, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max)
         self.obs_scene = self.model.ema.ema_model.model.history_gaussians.clone()
         self.inc_scene = self.model.ema.ema_model.model.incremental_gaussians.clone()
         self.belief_scene = self.model.ema.ema_model.model.belief_gaussians.clone()

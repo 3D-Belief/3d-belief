@@ -4,13 +4,13 @@ import open_clip
 import torch
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
-from splat import PixelSplatEpiState
+from splat_belief.splat import SplatBeliefState
 from splat_belief.splat.decoder import get_decoder
 from splat_belief.splat.encoder import get_encoder
 from data_io import get_dataset
-from model_utils import build_2d_model
-from embodied.semantic_mapper import SemanticMapper
-from splat_belief.diffusion.denoising_diffusion_pixelsplat_epi_temporal import GaussianDiffusionPixelEpiTemporal
+from splat_belief.utils.model_utils import build_2d_model
+from splat_belief.embodied.semantic_mapper import SemanticMapper
+from splat_belief.diffusion.diffusion_temporal import DiffusionTemporal
 
 def build_splat_model(
     encoder_visual_pair: Dict[str, Any],
@@ -31,7 +31,7 @@ def build_splat_model(
         clip_model = semantic.get("clip_model")
         dino_model = semantic.get("dino_model")
         semantic_mapper = semantic.get("semantic_mapper")
-    return PixelSplatEpiState(
+    return SplatBeliefState(
         enc,
         viz,
         decoder,
@@ -111,7 +111,7 @@ def build_diffusion(model: Any, dataset_cfg: Dict[str, Any], **kwargs):
         model.dino_model = bundle.get("dino_model")
         model.semantic_mapper = bundle.get("semantic_mapper")
 
-    return GaussianDiffusionPixelEpiTemporal(
+    return DiffusionTemporal(
         model=model,
         image_size=image_size,
         timesteps=kwargs.get("timesteps", 1000),

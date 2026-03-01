@@ -50,3 +50,4 @@ qwen-vl-utils
 google-genai
 supervision
 sentencepiece
+torcheval

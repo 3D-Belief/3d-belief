@@ -16,7 +16,7 @@ paths:
   episode_roots:
     # Object searching & env testing episodes (validation split)
     # Used by: spoc_obj_searching_*, spoc_env_testing, stretch_*
-    obj_searching: /scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data
+    obj_searching: /scratch/tshu2/zwen19/3dbelief/3d-belief/data/spoc_trajectories_val
 
     # Object completion episodes
     # Used by: spoc_obj_completion_3d_belief, spoc_obj_completion_dfot_vggt
@@ -77,7 +77,7 @@ paths:
 
     # NWM checkpoint
     # Used by: nwm_vggt_model
-    nwm: scratch/tshu2/yyin34/nwm_cdit_xl_finetune.pth.tar
+    nwm: /scratch/tshu2/yyin34/nwm_cdit_xl_finetune.pth.tar
 
     # Finetuned VLM adapter (Qwen-2 LoRA)
     # Used by: spoc_obj_searching_finetuned_vlm_agent
@@ -89,7 +89,7 @@ paths:
   repos:
     # DFoT repository root
     # Used by: dfot_vggt_model
-    dfot: /scratch/tshu2/zwen19/diffusion-forcing-transformer
+    dfot: /scratch/tshu2/zwen19/models/dfot
 
     # NWM repository root
     # Used by: nwm_vggt_model

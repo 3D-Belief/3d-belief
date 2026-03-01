@@ -106,7 +106,7 @@ class VLMGoalSelector(ExplorationPlanner):
         action = {"action_name": self.action_name, "args": {"target_pose": next_pose}}
 
         trace_asset = {
-            "pcd": current_asset["pcd"],
+            # "pcd": current_asset["pcd"],
             "rgb": current_asset["rgb"],
             "occupancy": deepcopy(current_asset["occupancy"]),
             "path": path_keypoints if len(path_keypoints)>0 else None,

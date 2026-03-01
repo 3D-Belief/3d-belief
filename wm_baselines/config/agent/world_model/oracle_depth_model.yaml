@@ -1,12 +1,12 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.world_model.oracle_depth_model.OracleDepthModel
+_target_: wm_baselines.world_model.oracle_depth_model.OracleDepthModel
 
 name: oracle_depth_model
 
 camera:
-  _target_: belief_baselines.agent.perception.camera.Camera
+  _target_: wm_baselines.agent.perception.camera.Camera
   h: 240
   w: 240
   fx: 256
@@ -17,7 +17,7 @@ camera:
   far: 10.0
 
 model:
-  _target_: belief_baselines.agent.perception.reconstruction.TSDFFusion
+  _target_: wm_baselines.agent.perception.reconstruction.TSDFFusion
   _convert_: all
   K:
     - - 256
@@ -41,7 +41,7 @@ model:
   # block_count: 120000
 
 obs_occupancy:
-  _target_: belief_baselines.agent.perception.occupancy.OccupancyMap
+  _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
   resolution: 0.1
   obstacle_height_thresh: -0.1
   ceiling_height: 1.0 # w.r.t. agent height

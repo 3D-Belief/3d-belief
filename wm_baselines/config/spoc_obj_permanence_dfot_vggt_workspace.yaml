@@ -22,14 +22,14 @@ embodied_task:
     string_keys: ['position', 'rotation']
 
 task_manager:
-  _target_: belief_baselines.task_manager.spoc_obj_permanence_task_manager.SpocObjPermanenceTaskManager
+  _target_: wm_baselines.task_manager.spoc_obj_permanence_task_manager.SpocObjPermanenceTaskManager
 
 env_interface:
-  _target_: belief_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+  _target_: wm_baselines.env_interface.spoc_env_interface.SpocEnvInterface
 
 agent:
   camera:
-    _target_: belief_baselines.agent.perception.camera.Camera
+    _target_: wm_baselines.agent.perception.camera.Camera
     h: 240
     w: 240
     fx: 93.6

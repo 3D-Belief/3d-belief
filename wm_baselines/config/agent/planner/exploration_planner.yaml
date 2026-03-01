@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.planner.exploration_planner.ExplorationPlanner
+_target_: wm_baselines.planner.exploration_planner.ExplorationPlanner
 
 name: exploration_planner
 

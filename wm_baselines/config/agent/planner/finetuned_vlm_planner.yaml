@@ -1,12 +1,12 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.planner.finetuned_vlm_planner.VLMPlanner
+_target_: wm_baselines.planner.finetuned_vlm_planner.VLMPlanner
 
 name: vlm_planner
 
 vlm:
-  _target_: belief_baselines.agent.vlm.finetuned_vlm.VLM
+  _target_: wm_baselines.agent.vlm.finetuned_vlm.VLM
   vlm_model_name: "qwen-2"
   adapter_path: "${paths.checkpoints.vlm_adapter}"
 

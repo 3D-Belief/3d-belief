@@ -23,14 +23,14 @@ embodied_task:
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 
 task_manager:
-  _target_: belief_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
+  _target_: wm_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
 
 env_interface:
-  _target_: belief_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+  _target_: wm_baselines.env_interface.spoc_env_interface.SpocEnvInterface
 
 agent:
   camera:
-    _target_: belief_baselines.agent.perception.camera.Camera
+    _target_: wm_baselines.agent.perception.camera.Camera
     h: 240
     w: 240
     fx: 93.6
@@ -41,7 +41,7 @@ agent:
     far: 10.0
   planner:
     vlm:
-      _target_: belief_baselines.agent.vlm.vlm.GeminiVLM
+      _target_: wm_baselines.agent.vlm.vlm.GeminiVLM
       vlm_model_name: "gemini-3-flash-preview"
     rotation_step: ${embodied_task.rotation_step}
     move_step: ${embodied_task.move_step}

@@ -1,12 +1,12 @@
 defaults:
-  - agent: vlm_agent
-  - agent/planner: finetuned_vlm_planner
-  - agent/world_model: base_world_model
+  - agent: exploration_agent
+  - agent/planner: vlm_goal_selector
+  - agent/world_model: dfot_vggt_model
   - paths
   - _self_
 
 embodied_task:
-  name: spoc_obj_searching_vlm_agent
+  name: spoc_obj_searching_dfot_vggt_vlm_goal_selector
   episode_root: ${paths.episode_roots.obj_searching}
   subset_type: null # room or length
   subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
@@ -15,22 +15,22 @@ embodied_task:
   max_steps: 25
   rotation_step: 10
   move_step: 0.3
-  timeout: 500
+  timeout: 200
   trajectory:
     save: True
-    save_path: ${paths.output_root}/object_searching_vlm_agent
+    save_path: ${paths.output_root}/object_searching_dfot_vggt_vlm_goal_selector
     image_keys: ['rgb']
     string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
 
 task_manager:
-  _target_: belief_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
+  _target_: wm_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
 
 env_interface:
-  _target_: belief_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+  _target_: wm_baselines.env_interface.spoc_env_interface.SpocEnvInterface
 
 agent:
   camera:
-    _target_: belief_baselines.agent.perception.camera.Camera
+    _target_: wm_baselines.agent.perception.camera.Camera
     h: 240
     w: 240
     fx: 93.6
@@ -39,12 +39,13 @@ agent:
     cy: 120
     near: 0.1
     far: 10.0
+  world_model:
+    camera: ${agent.camera}
   planner:
+    goal_sampling_strategy: frontier_relaxed_random
     vlm:
-      vlm_model_name: "qwen-2"
-    rotation_step: ${embodied_task.rotation_step}
-    move_step: ${embodied_task.move_step}
+      vlm_model_name: "gpt-5-mini"
   assets_saver:
     save: True
     save_path: "${embodied_task.trajectory.save_path}"
-    asset_keys: ['rgb', 'vlm_response']
+    asset_keys: ['occupancy', 'rgb', 'goal_images', 'vlm_scores', 'vlm_response', 'goal_poses']

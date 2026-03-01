@@ -341,8 +341,8 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
         # crop the bbox region
         bbox_crop = bbox_image[y_min:y_max, x_min:x_max]
         # # DEBUG: save bbox image
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/bbox_image.png", bbox_image)
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/bbox_image_crop.png", bbox_crop)
+        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/bbox_image.png", bbox_image)
+        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/bbox_image_crop.png", bbox_crop)
         # calculate 3D point cloud of the target object
         rgb = np.array(self.observations[-1]['rgb'])
         depth = np.array(self.observations[-1]['depth'])
@@ -363,7 +363,7 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
         box_aabb = box3d_from_aabb(target_pcd)
         
         # DEBUG: save target_pcd
-        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/target_pcd.ply", target_pcd)
+        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/target_pcd.ply", target_pcd)
         ret = {
             "gt_bbox_2d": bbox_2d,
             "gt_bbox_image": bbox_crop,
@@ -421,14 +421,14 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
             bbox_crop = cv2.resize(bbox_crop, ((gt_x_max - gt_x_min), (gt_y_max - gt_y_min)))
             print("Rendered bbox (blue) vs GT bbox (green)")
         # # DEBUG: save bbox image
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/imagined_bbox_image.png", bbox_image)
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/imagined_bbox_image_crop.png", bbox_crop)
+        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_bbox_image.png", bbox_image)
+        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_bbox_image_crop.png", bbox_crop)
         # calculate 3D point cloud of the target object
         assert self.camera is not None, "Camera not set in TaskManager."
         pose = self.observations[-1]['pose']
         target_pcd = self._masked_depth_to_world_pcd(depth, target_mask, self.camera.intrinsics, T_world_cam=pose, rgb=rgb)
         # # save target_pcd
-        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/belief_baselines/outputs/reasoning/imagined_target_pcd.ply", target_pcd)
+        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_target_pcd.ply", target_pcd)
         # extract target 3D bounding box from target pcd
         ctr = target_pcd.get_center()  # centroid of all points (mean)
         print("Center of rendered target PCD:", ctr)

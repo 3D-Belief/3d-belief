@@ -1,12 +1,12 @@
 defaults:
   - _self_
 
-_target_: belief_baselines.agent.exploration_agent.ExplorationAgent
+_target_: wm_baselines.agent.exploration_agent.ExplorationAgent
 
 name: exploration_agent
 
 camera:
-  _target_: belief_baselines.agent.perception.camera.Camera
+  _target_: wm_baselines.agent.perception.camera.Camera
   h: 240
   w: 240
   fx: 256

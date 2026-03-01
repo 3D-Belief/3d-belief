@@ -51,7 +51,7 @@ class ExplorationAgent(BaseAgent):
         pose = obs.get("pose")
         if self.world_model.initial_location.get('pose') is not None:
             pose_map = np.linalg.inv(self.world_model.initial_location['pose']) @ pose
-            pose_map = self.world_model._project_pose_to_initial_ground(pose_map)
+            # pose_map = self.world_model._project_pose_to_initial_ground(pose_map)
             self.current_assets['pose'] = pose_map
         action, trace_asset = self.planner.get_next_action(self.current_assets, self.step, self.force_update)
         self._step_assets_save(trace_asset)
