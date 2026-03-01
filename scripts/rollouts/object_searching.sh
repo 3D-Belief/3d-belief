@@ -25,11 +25,12 @@ SCRIPT_DIR="${REPO_ROOT}/wm_baselines/workspace/nav"
 # Base output directory for saving trajectories
 OUTPUT_DIR="${REPO_ROOT}/outputs"
 # Episode root directory (SPOC test trajectories)
-EPISODE_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data"
-
+EPISODE_ROOT=/scratch/tshu2/zwen19/3dbelief/3d-belief/data/spoc_trajectories_val
+# Conda environment name
+CONDA_ENV="3d-belief"
 # Environment variables
 export XFORMERS_DISABLED=1
-export OBJAVERSE_DATA_DIR=="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/2023_07_28"
+export OBJAVERSE_DATA_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/2023_07_28"
 export OBJAVERSE_HOUSES_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/houses_2023_07_28"
 
 # ── Available Agents ──────────────────────────────────────────────────────────
@@ -135,6 +136,18 @@ shift 1
 
 EXTRA_HYDRA_ARGS=""
 get_agent_config "${AGENT}"
+
+if command -v conda >/dev/null 2>&1; then
+  CONDA_BASE="$(conda info --base)"
+  set +u  # conda scripts reference unset variables
+  source "${CONDA_BASE}/etc/profile.d/conda.sh"
+  conda activate "$CONDA_ENV"
+  set -u
+  # Ensure conda's libstdc++ is found before the (older) system one
+  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+else
+  echo "[WARN] conda not found in PATH. Skipping conda activate."
+fi
 
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_FILE}"
 SAVE_PATH="${OUTPUT_DIR}/${SAVE_NAME}"

@@ -10,6 +10,10 @@ from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 from wm_baselines.agent.base_agent import BaseAgent
 from wm_baselines.world_model.base_world_model import BaseWorldModel
 from wm_baselines.planner.base_planner import BasePlanner
+import numpy as np
+import random
+import torch
+
 
 class BaseWorkspace:
     """Base workspace class to manage the environment interface and task manager.
@@ -26,6 +30,22 @@ class BaseWorkspace:
         self.task_manager: BaseTaskManager = instantiate(self.config.task_manager, embodied_config=self.embodied_config, **kwargs)
         self.env_interface: BaseEnvInterface = instantiate(self.config.env_interface, embodied_config=self.embodied_config, task_manager=self.task_manager, **kwargs)
         self.agent: BaseAgent = instantiate(self.config.agent, env_interface=self.env_interface, **kwargs)
+        self.seed = config.get("seed", None)
+        if self.seed is not None:
+          self._set_seed(self.seed)
+
+    def _set_seed(self, seed: int):
+        """Set random seed for reproducibility."""
+        random.seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            # NOTE: Uncomment if you want to make cudnn deterministic
+            # torch.backends.cudnn.deterministic = True
+            # torch.backends.cudnn.benchmark = False  
+        if hasattr(self.env_interface, 'seed'):
+          self.env_interface.seed(seed)
 
     def run(self):
         """Run the main loop of the workspace. Must be implemented by subclass."""
