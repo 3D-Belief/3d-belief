@@ -31,6 +31,8 @@ pip install -e .
 cd third_party/spoc
 pip install --no-build-isolation -e ./src/clip
 pip install -r requirements.txt
+pip install --extra-index-url https://ai2thor-pypi.allenai.org ai2thor==0+5d0ab8ab8760eb584c5ae659c2b2b951cab23246
+
 ```
 
 
