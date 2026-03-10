@@ -9,6 +9,7 @@ We propose 3D-Belief, a generative 3D world model that builds and updates 3D sce
 ```bash
 git clone https://github.com/3D-Belief/3d-belief
 cd 3d-belief
+git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 -y 
 conda activate 3d-belief
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
@@ -31,10 +32,10 @@ cd third_party/spoc
 pip install --no-build-isolation -e ./src/clip
 pip install -r requirements.txt
 pip install --extra-index-url https://ai2thor-pypi.allenai.org ai2thor==0+5d0ab8ab8760eb584c5ae659c2b2b951cab23246
-python -m scripts.download_training_data --save_dir ./data --types all
-python -m objathor.dataset.download_annotations --version 2023_07_28 --path ./data
-python -m objathor.dataset.download_assets --version 2023_07_28 --path ./data
-python -m scripts.download_objaverse_houses --save_dir ./data --subset val
+python -m scripts.download_training_data --save_dir ../../data --types all
+python -m objathor.dataset.download_annotations --version 2023_07_28 --path ../../data
+python -m objathor.dataset.download_assets --version 2023_07_28 --path ../../data
+python -m scripts.download_objaverse_houses --save_dir ../../data --subset val
 
 ```
 
