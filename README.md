@@ -12,7 +12,7 @@ cd 3d-belief
 conda create -n 3d-belief python=3.10 -y 
 conda activate 3d-belief
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9
-conda install -c conda-forge moviepy
+conda install -c conda-forge moviepy swig
 conda install -c nvidia cuda=12.1
 
 export PATH=$CONDA_PREFIX/bin:$PATH
@@ -24,6 +24,15 @@ conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
 pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
+
+### Install Third-Party Packages
+
+```bash
+cd third_party/spoc
+pip install --no-build-isolation -e ./src/clip
+pip install -r requirements.txt
+```
+
 
 ### Download Data and Pretrained Checkpoints
 From the project root directory, open a terminal and log in to your Hugging Face account.
