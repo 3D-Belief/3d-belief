@@ -13,7 +13,7 @@ git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 -y 
 conda activate 3d-belief
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
-conda install -c nvidia cuda=12.1
+conda install -c nvidia cuda=12.1 # Use the one matches your cuda version
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
@@ -28,7 +28,9 @@ pip install -e .
 ### Install Third-Party Packages
 
 ```bash
-cd third_party/spoc
+cd third_party/dfot
+pip install -r requirements.txt
+cd ../spoc
 pip install --no-build-isolation -e ./src/clip
 pip install -r requirements.txt
 pip install --extra-index-url https://ai2thor-pypi.allenai.org ai2thor==0+5d0ab8ab8760eb584c5ae659c2b2b951cab23246
