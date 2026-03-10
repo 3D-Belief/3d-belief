@@ -11,8 +11,7 @@ git clone https://github.com/3D-Belief/3d-belief
 cd 3d-belief
 conda create -n 3d-belief python=3.10 -y 
 conda activate 3d-belief
-conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9
-conda install -c conda-forge moviepy swig
+conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
 conda install -c nvidia cuda=12.1
 
 export PATH=$CONDA_PREFIX/bin:$PATH
