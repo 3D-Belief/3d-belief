@@ -54,14 +54,37 @@ def _rect_corners_bev(box: Box3D) -> np.ndarray:
     return Y
 
 def _to_pil(x):
-    if isinstance(x, Image.Image): return x
-    if isinstance(x, np.ndarray):
-        if x.dtype != np.uint8:
-            x = np.clip(x, 0, 255).astype(np.uint8)
-        if x.ndim == 2:  # gray
-            x = np.stack([x]*3, axis=-1)
-        return Image.fromarray(x)
-    raise TypeError("Expected PIL or np.ndarray")
+    if isinstance(x, Image.Image):
+        return x.convert("RGB")
+
+    x = np.asarray(x)
+
+    # Handle 4D input by taking the first element repeatedly until <= 3 dims
+    # e.g. (1, 1, 256, 3) -> (1, 256, 3) -> (256, 3) [too far], so do only one step first
+    if x.ndim == 4:
+        x = x[0]
+
+    # Handle channel-first: (C, H, W) -> (H, W, C)
+    if x.ndim == 3 and x.shape[0] in (1, 3, 4) and x.shape[-1] not in (1, 3, 4):
+        x = np.transpose(x, (1, 2, 0))
+
+    # Handle grayscale singleton channel
+    if x.ndim == 3 and x.shape[-1] == 1:
+        x = x[..., 0]
+
+    if x.dtype != np.uint8:
+        x = np.clip(x, 0, 255).astype(np.uint8)
+
+    if x.ndim == 2:
+        return Image.fromarray(x, mode="L")
+
+    if x.ndim == 3 and x.shape[-1] == 3:
+        return Image.fromarray(x, mode="RGB")
+
+    if x.ndim == 3 and x.shape[-1] == 4:
+        return Image.fromarray(x, mode="RGBA")
+
+    raise ValueError(f"_to_pil got unsupported shape {x.shape} and dtype {x.dtype}")
 
 def _to_pil_lpips(x):
     if isinstance(x, Image.Image): return x.convert("RGB")

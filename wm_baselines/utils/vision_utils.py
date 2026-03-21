@@ -115,6 +115,12 @@ def to_pil(
     """
     Convert numpy/torch array to a PIL.Image with sensible defaults.
 
+    Supported inputs:
+    - HxW
+    - HxWx1 / HxWx3 / HxWx4
+    - 1xHxW / 3xHxW / 4xHxW
+    - 1xHxWxC / TxHxWxC / BxCxHxW   -> takes first item
+
     - RGB/RGBA:
         * float in [0,1] -> scale to 0..255 uint8
         * float in [0,255] or uint16 -> clip to 0..255 and cast uint8
@@ -135,9 +141,21 @@ def to_pil(
     if arr is None:
         raise ValueError("to_pil: got None")
 
-    arr = np.asarray(arr)  # ensure numpy
+    arr = np.asarray(arr)
+
+    # Handle batched / temporal 4D input by taking the first image
+    # Examples:
+    #   (1, H, W, 3), (T, H, W, 3), (1, 3, H, W), (B, C, H, W)
+    if arr.ndim == 4:
+        arr = arr[0]
+
+    # Handle channel-first 3D arrays: (C, H, W) -> (H, W, C)
+    if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
+        arr = np.transpose(arr, (1, 2, 0))
+
+    # Squeeze HxWx1 -> HxW
     if arr.ndim == 3 and arr.shape[2] == 1:
-        arr = arr[..., 0]  # squeeze HxWx1 -> HxW
+        arr = arr[..., 0]
 
     # Auto-detect kind if not provided
     if kind is None:
@@ -145,45 +163,72 @@ def to_pil(
             kind = "rgb" if arr.shape[2] == 3 else "rgba"
         elif arr.ndim == 2:
             kind = "gray"
-        elif arr.ndim == 3 and arr.shape[2] == 1:
-            kind = "depth"
-            arr = np.squeeze(arr, axis=2)  # Remove channel dimension
         else:
-            # fallback: try treat as rgb-like if last dim ==3
-            if arr.ndim >= 3 and arr.shape[-1] == 3:
-                kind = "rgb"
-                arr = np.reshape(arr, (*arr.shape[:-1], 3))
-            else:
-                raise ValueError(f"Unsupported shape for to_pil: {arr.shape}")
+            raise ValueError(f"Unsupported shape for to_pil: {arr.shape}")
 
     if kind == "normals":
-        # map [-1,1] -> [0,255]
+        if arr.ndim == 4:
+            arr = arr[0]
+        if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[-1] not in (3, 4):
+            arr = np.transpose(arr, (1, 2, 0))
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            raise ValueError(f"Normals image must be HxWx3, got {arr.shape}")
         arr = np.clip((arr + 1.0) * 0.5, 0.0, 1.0)
         kind = "rgb"
         assume_range = "0_1"
 
     if kind == "depth":
+        # Accept HxW or HxWx1 or 1xHxW
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[..., 0]
+        elif arr.ndim == 3 and arr.shape[0] == 1:
+            arr = arr[0]
+
         if arr.ndim != 2:
-            raise ValueError("Depth image must be HxW.")
+            raise ValueError(f"Depth image must be HxW, got {arr.shape}")
+
         depth_m = np.asarray(arr, dtype=np.float32)
         depth_mm = np.clip(depth_m * 1000.0, 0, 65535).astype(np.uint16)
         return Image.fromarray(depth_mm, mode="I;16")
 
     if kind in ("rgb", "rgba"):
+        # Re-handle some cases in case caller explicitly set kind
+        if arr.ndim == 4:
+            arr = arr[0]
+        if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[-1] not in (3, 4):
+            arr = np.transpose(arr, (1, 2, 0))
+
         if arr.ndim != 3 or arr.shape[2] not in (3, 4):
-            raise ValueError("RGB/RGBA image must be HxWx3 or HxWx4")
-        # Determine scaling
+            raise ValueError(f"RGB/RGBA image must be HxWx3 or HxWx4, got {arr.shape}")
+
+        # If caller asked for rgb but input is rgba, drop alpha
+        if kind == "rgb" and arr.shape[2] == 4:
+            arr = arr[..., :3]
+        # If caller asked for rgba but input is rgb, keep as rgb since we cannot invent alpha
+        if kind == "rgba" and arr.shape[2] == 3:
+            kind = "rgb"
+
         a = arr.astype(np.float32)
-        if assume_range == "0_1" or (assume_range is None and a.max() <= 1.5):
+        if assume_range == "0_1" or (assume_range is None and np.nanmax(a) <= 1.5):
             a = np.clip(a * 255.0, 0.0, 255.0)
         else:
             a = np.clip(a, 0.0, 255.0)
         a = a.astype(np.uint8)
-        return Image.fromarray(a, mode="RGB" if arr.shape[2] == 3 else "RGBA")
+
+        return Image.fromarray(a, mode="RGB" if a.shape[2] == 3 else "RGBA")
 
     if kind == "gray":
+        # Accept HxW, HxWx1, 1xHxW
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[..., 0]
+        elif arr.ndim == 3 and arr.shape[0] == 1:
+            arr = arr[0]
+
+        if arr.ndim != 2:
+            raise ValueError(f"Gray image must be HxW, got {arr.shape}")
+
         a = arr.astype(np.float32)
-        if assume_range == "0_1" or (assume_range is None and a.max() <= 1.5):
+        if assume_range == "0_1" or (assume_range is None and np.nanmax(a) <= 1.5):
             a = np.clip(a * 255.0, 0.0, 255.0)
         else:
             a = np.clip(a, 0.0, 255.0)
@@ -477,34 +522,6 @@ def square_image(image):
     start_x = (width - size) // 2
     start_y = (height - size) // 2
     return image[start_y:start_y+size, start_x:start_x+size]
-
-# def pose_robot_to_opencv(T_robot: np.ndarray) -> np.ndarray:
-#     # T_cv = A * T_robot * A^{-1} ; A^{-1} uses R^T
-#     R_cv_robot = np.array([
-#         [0, -1,  0],
-#         [0,  0, -1],
-#         [1,  0,  0],
-#     ], dtype=float)
-#     A = np.eye(4)
-#     A[:3, :3] = R_cv_robot
-#     A_inv = np.eye(4)
-#     A_inv[:3, :3] = R_cv_robot.T
-#     return A @ T_robot @ A_inv
-
-# def pose_opencv_to_robot(T_cv: np.ndarray) -> np.ndarray:
-#     R_cv_robot = np.array([
-#         [0, -1,  0],
-#         [0,  0, -1],
-#         [1,  0,  0],
-#     ], dtype=float)
-
-#     A = np.eye(4)
-#     A[:3, :3] = R_cv_robot
-
-#     A_inv = np.eye(4)
-#     A_inv[:3, :3] = R_cv_robot.T  # inverse of rotation
-
-#     return A_inv @ T_cv @ A
 
 def pose_robot_to_opencv(T_robot: np.ndarray) -> np.ndarray:
     # T_cv = A * T_robot * A^{-1} ; A^{-1} uses R^T

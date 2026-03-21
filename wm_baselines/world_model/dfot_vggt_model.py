@@ -600,7 +600,7 @@ class DFoTVGGTModel(BaseWorldModel):
         key_rgbs_255 = [(rgb * 255).astype(np.uint8) for rgb in key_rgbs]
         # Run VGGT inference to get the depth maps for the key frames
         with torch.no_grad():
-            with torch.amp.autocast(dtype=self.vggt_model_dtype):
+            with torch.amp.autocast(device_type="cuda", dtype=self.vggt_model_dtype):
                 images = self._preprocess_images(key_rgbs_255)
                 images = images[None]  # add batch dimension
                 aggregated_tokens_list, ps_idx = self.vggt_model.aggregator(images)

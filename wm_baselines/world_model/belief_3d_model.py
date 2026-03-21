@@ -507,6 +507,8 @@ class Belief3DModel(BaseWorldModel):
         video_poses = torch.stack(
             [render_poses[0]] + [render_poses[idx] for idx in key_frame_indices], 0
         )
+        if len(key_frame_indices) == 0 and len(render_poses) == 1:
+            key_frame_indices = [0]
         # run inference
         state_step = self.state_step - 1
         inp = {}

@@ -1,37 +1,135 @@
-source /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/miniconda3/etc/profile.d/conda.sh
-conda activate belief
+#!/bin/bash
+#SBATCH --job-name=reasoning
+#SBATCH --partition=a100
+#SBATCH --gres=gpu:a100:1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/reasoning_%j.out
+#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/reasoning_%j.err
 
+set -euo pipefail
+
+# A small wrapper to run the different reasoning workspaces by agent key.
+# Usage: bash reasoning.sh <AGENT> [EXTRA_HYDRA_ARGS...]
+
+# Root of this repository (two levels up from scripts/rollouts)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="${REPO_ROOT}/wm_baselines/workspace"
+OUTPUT_DIR="${REPO_ROOT}/outputs"
+CONDA_ENV="3d-belief"
+
+# Environment variables (kept from original script)
 export XFORMERS_DISABLED=1
-export CUDA_VISIBLE_DEVICES=4
-export OBJAVERSE_DATA_DIR="/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data"
-export OBJAVERSE_HOUSES_DIR="/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/houses_2023_07_28"
+export CUDA_VISIBLE_DEVICES=0
+export OBJAVERSE_DATA_DIR="${REPO_ROOT}/spoc_data"
+export OBJAVERSE_HOUSES_DIR="${REPO_ROOT}/spoc_data/houses_2023_07_28"
 
-# object completion with 3D belief
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/obj_comp/spoc_obj_completion_3d_belief_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_obj_completion_3d_belief_T1.2_filtered \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_object_visibility_filtered
+get_agent_config() {
+    local agent="$1"
+    # Sets SCRIPT_FILE, SAVE_NAME and optional EPISODE_OVERRIDE
+    case "${agent}" in
+        obj_comp_3d_belief)
+            SCRIPT_FILE="obj_comp/spoc_obj_completion_3d_belief_workspace.py"
+            SAVE_NAME="spoc_obj_completion_3d_belief"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_object_visibility_filtered"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_object_visibility_full"
+            ;;
+        room_comp_3d_belief)
+            SCRIPT_FILE="room_comp/spoc_room_completion_3d_belief_workspace.py"
+            SAVE_NAME="spoc_room_completion_3d_belief"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_door_passing"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_door_passing_full"
+            ;;
+        obj_perm_3d_belief)
+            SCRIPT_FILE="obj_perm/spoc_obj_permanence_3d_belief_workspace.py"
+            SAVE_NAME="spoc_obj_permanence_3d_belief"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_full_rotation_unit"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_full_rotation_main"
+            ;;
+        obj_comp_dfot_vggt)
+            SCRIPT_FILE="obj_comp/spoc_obj_completion_dfot_vggt_workspace.py"
+            SAVE_NAME="spoc_obj_completion_dfot_vggt"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_object_visibility_filtered"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_object_visibility_full"
+            ;;
+        room_comp_dfot_vggt)
+            SCRIPT_FILE="room_comp/spoc_room_completion_dfot_vggt_workspace.py"
+            SAVE_NAME="spoc_room_completion_dfot_vggt"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_door_passing"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_door_passing_full"
+            ;;
+        obj_perm_dfot_vggt)
+            SCRIPT_FILE="obj_perm/spoc_obj_permanence_dfot_vggt_workspace.py"
+            SAVE_NAME="spoc_obj_permanence_dfot_vggt"
+            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_full_rotation_unit"
+            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_full_rotation_main"
+            ;;
+        *)
+            echo "ERROR: Unknown agent '${agent}'."
+            echo
+            print_usage
+            exit 1
+            ;;
+    esac
+}
 
-# room completion with 3D belief
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/room_comp/spoc_room_completion_3d_belief_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_room_completion_3d_belief \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_door_passing
+print_usage() {
+    echo "Usage: bash $(basename "$0") <AGENT> [EXTRA_HYDRA_ARGS...]"
+    echo
+    echo "Available agents:"
+    echo "  obj_comp_3d_belief       Object completion (3D belief)"
+    echo "  room_comp_3d_belief      Room completion (3D belief)"
+    echo "  obj_perm_3d_belief       Object permanence (3D belief)"
+    echo "  obj_comp_dfot_vggt       Object completion (DFoT-VGGT)"
+    echo "  room_comp_dfot_vggt      Room completion (DFoT-VGGT)"
+    echo "  obj_perm_dfot_vggt       Object permanence (DFoT-VGGT)"
+    echo
+    echo "Extra Hydra overrides can be appended after the agent argument."
+}
 
-# object permanence with 3D belief
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/obj_perm/spoc_obj_permanence_3d_belief_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_obj_permanence_3d_belief \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_full_rotation_unit
+if [[ $# -lt 1 ]]; then
+    print_usage
+    exit 1
+fi
 
-# object completion with DFoT-VGGT
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/obj_comp/spoc_obj_completion_dfot_vggt_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_obj_completion_dfot_vggt_filtered \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_object_visibility_filtered
+AGENT="$1"
+shift 1
 
-# room completion with DFoT-VGGT
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/room_comp/spoc_room_completion_dfot_vggt_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_room_completion_dfot_vggt \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_door_passing
+EXTRA_HYDRA_ARGS=""
+get_agent_config "${AGENT}"
 
-# object permanence with DFoT-VGGT
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/wm_baselines/workspace/obj_perm/spoc_obj_permanence_dfot_vggt_workspace.py \
-    embodied_task.trajectory.save_path=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/spoc_obj_permanence_dfot_vggt \
-    embodied_task.episode_root=/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_full_rotation_unit
+if command -v conda >/dev/null 2>&1; then
+  CONDA_BASE="$(conda info --base)"
+  set +u
+  source "${CONDA_BASE}/etc/profile.d/conda.sh"
+  conda activate "${CONDA_ENV}"
+  set -u
+  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+else
+  echo "[WARN] conda not found in PATH. Skipping conda activate."
+fi
+
+SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_FILE}"
+SAVE_PATH="${OUTPUT_DIR}/${SAVE_NAME}"
+EPISODE_ROOT="${EPISODE_OVERRIDE:-}"
+
+echo "=============================================="
+echo " Agent:       ${AGENT}"
+echo " Script:      ${SCRIPT_PATH}"
+echo " Save path:   ${SAVE_PATH}"
+echo " Episode root: ${EPISODE_ROOT}"
+echo "=============================================="
+
+if [[ ! -f "${SCRIPT_PATH}" ]]; then
+    echo "WARNING: Script '${SCRIPT_PATH}' does not exist."
+    echo "         The command will likely fail. Continuing anyway..."
+fi
+
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 python "${SCRIPT_PATH}" \
+    +seed=42 \
+    embodied_task.trajectory.save_path="${SAVE_PATH}" \
+    embodied_task.episode_root="${EPISODE_ROOT}" \
+    ${EXTRA_HYDRA_ARGS} \
+    "$@"

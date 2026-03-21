@@ -320,16 +320,7 @@ class SpocRoomCompletionTaskManager(BaseTaskManager):
                 depth, self.camera.fx, self.camera.fy, self.camera.cx, self.camera.cy,
                 rgb=rgb, T_cam2world=pose, invalid_val=0
             )
-
-            # pcd = pcd.transform(np.linalg.inv(initial_pose))
-
-            # position = pose[:3, 3]
-            # rotation = pose[:3, :3]
-
             obs_occupancy.integrate(np.array(pcd.points), np.array([0,0,0]), np.eye(3), intrinsics=self.camera.intrinsics)
-
-        # ## DEBUG
-        # obs_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/obs_occupancy.png")
         ret = {
             "gt_occupancy": obs_occupancy,
         }
@@ -356,8 +347,6 @@ class SpocRoomCompletionTaskManager(BaseTaskManager):
         recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
         f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
         
-        # ## DEBUG
-        # belief_occupancy.save_occupancy_map("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/belief_occupancy.png")
         ret = {
             "belief_occupancy": belief_occupancy,
             "recognized_objects": recognized_objects,

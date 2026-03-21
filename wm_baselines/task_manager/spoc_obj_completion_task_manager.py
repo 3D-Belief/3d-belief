@@ -379,12 +379,32 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
         """Calculate rendered metrics for the current step."""
         imagined_rgb = assets["imagine_rgb"][-1]
         imagined_depth = assets["imagine_depth"][-1]
-        rgb = np.array(imagined_rgb)
-        depth = np.array(imagined_depth)[0]
+
+        rgb = np.asarray(imagined_rgb)
+        if rgb.ndim == 4:
+            rgb = rgb[0]
+        if rgb.ndim == 3 and rgb.shape[0] in (3, 4) and rgb.shape[-1] not in (3, 4):
+            rgb = np.transpose(rgb, (1, 2, 0))
+        if rgb.ndim == 3 and rgb.shape[-1] == 4:
+            rgb = rgb[..., :3]
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+        depth = np.asarray(imagined_depth)
+        if depth.ndim == 4:
+            depth = depth[0]
+        if depth.ndim == 3 and depth.shape[0] == 1:
+            depth = depth[0]
+        if depth.ndim == 3 and depth.shape[-1] == 1:
+            depth = depth[..., 0]
+
         target_obj = self.fix_object_name(self.current_target_obj)
-        detected = False
+        bbox_crop = None
+
         # object detection
-        detections, annotated = segment_label_with_gemini(image_np=rgb, label=target_obj, return_annotated=True)
+        detections, annotated = segment_label_with_gemini(
+            image_np=rgb, label=target_obj, return_annotated=True
+        )
+
         if len(detections) == 0 or detections.mask is None:
             print(f"Object '{target_obj}' NOT detected by VLM.")
             ret = {
@@ -396,48 +416,113 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
             if self.vlm is not None:
                 ret["vlm_obj_recognition"] = 0
             return ret
+
         box = detections.xyxy[0]
-        x_min, y_min, x_max, y_max = box.tolist()
+        pred_x_min, pred_y_min, pred_x_max, pred_y_max = box.tolist()
         target_mask = detections.mask[0]
-        detected = True
         print(f"Object '{target_obj}' detected by VLM.")
-        
-        x_min, x_max = int(x_min), int(x_max)
-        y_min, y_max = int(y_min), int(y_max)
-        bbox_2d = [x_min, y_min, x_max, y_max]
-        bbox_image = np.array(imagined_rgb).copy()
-        bbox_image = bbox_image.astype(np.uint8)
+
+        # Clamp predicted bbox to image size
+        H, W = rgb.shape[:2]
+        pred_x_min = max(0, min(int(round(pred_x_min)), W))
+        pred_x_max = max(0, min(int(round(pred_x_max)), W))
+        pred_y_min = max(0, min(int(round(pred_y_min)), H))
+        pred_y_max = max(0, min(int(round(pred_y_max)), H))
+
+        if pred_x_max <= pred_x_min or pred_y_max <= pred_y_min:
+            print(
+                f"Invalid predicted bbox after clamping: "
+                f"{(pred_x_min, pred_y_min, pred_x_max, pred_y_max)} for image shape {rgb.shape}"
+            )
+            ret = {
+                "rendered_bbox_2d": None,
+                "rendered_bbox_image": None,
+                "rendered_target_pcd": o3d.geometry.PointCloud(),
+                "rendered_bbox_3d": None,
+            }
+            if self.vlm is not None:
+                ret["vlm_obj_recognition"] = 0
+            return ret
+
+        bbox_2d = [pred_x_min, pred_y_min, pred_x_max, pred_y_max]
+        bbox_image = rgb.copy()
+
         gt_bbox = assets.get("gt_bbox_2d", None)
         if gt_bbox is not None:
             gt_x_min, gt_y_min, gt_x_max, gt_y_max = gt_bbox
             gt_h = assets["gt_h"]
             gt_w = assets["gt_w"]
-            x_min = int(gt_x_min / gt_w * rgb.shape[1])
-            x_max = int(gt_x_max / gt_w * rgb.shape[1])
-            y_min = int(gt_y_min / gt_h * rgb.shape[0])
-            y_max = int(gt_y_max / gt_h * rgb.shape[0])
-            bbox_crop = bbox_image[y_min:y_max, x_min:x_max]
-            # reshape to gt size
-            bbox_crop = cv2.resize(bbox_crop, ((gt_x_max - gt_x_min), (gt_y_max - gt_y_min)))
-            print("Rendered bbox (blue) vs GT bbox (green)")
-        # # DEBUG: save bbox image
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_bbox_image.png", bbox_image)
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_bbox_image_crop.png", bbox_crop)
+
+            # Project GT bbox into current rendered image coordinates
+            crop_x_min = int(round(gt_x_min / gt_w * W))
+            crop_x_max = int(round(gt_x_max / gt_w * W))
+            crop_y_min = int(round(gt_y_min / gt_h * H))
+            crop_y_max = int(round(gt_y_max / gt_h * H))
+
+            # Clamp crop box to rendered image bounds
+            crop_x_min = max(0, min(crop_x_min, W))
+            crop_x_max = max(0, min(crop_x_max, W))
+            crop_y_min = max(0, min(crop_y_min, H))
+            crop_y_max = max(0, min(crop_y_max, H))
+
+            target_w = int(gt_x_max - gt_x_min)
+            target_h = int(gt_y_max - gt_y_min)
+
+            if crop_x_max <= crop_x_min or crop_y_max <= crop_y_min:
+                print(
+                    f"Skipping bbox crop: invalid projected GT bbox "
+                    f"{(crop_x_min, crop_y_min, crop_x_max, crop_y_max)} "
+                    f"for rendered image shape {rgb.shape}"
+                )
+            elif target_w <= 0 or target_h <= 0:
+                print(
+                    f"Skipping bbox crop: invalid GT bbox size "
+                    f"{(gt_x_min, gt_y_min, gt_x_max, gt_y_max)}"
+                )
+            else:
+                bbox_crop = bbox_image[crop_y_min:crop_y_max, crop_x_min:crop_x_max]
+                if bbox_crop.size == 0:
+                    print(
+                        f"Skipping bbox crop: empty crop with projected GT bbox "
+                        f"{(crop_x_min, crop_y_min, crop_x_max, crop_y_max)} "
+                        f"and image shape {bbox_image.shape}"
+                    )
+                    bbox_crop = None
+                else:
+                    bbox_crop = cv2.resize(bbox_crop, (target_w, target_h))
+                    print("Rendered bbox crop resized to GT bbox size.")
+        else:
+            # fallback: crop the detected predicted bbox
+            bbox_crop = bbox_image[pred_y_min:pred_y_max, pred_x_min:pred_x_max]
+            if bbox_crop.size == 0:
+                bbox_crop = None
+
         # calculate 3D point cloud of the target object
         assert self.camera is not None, "Camera not set in TaskManager."
-        pose = self.observations[-1]['pose']
-        target_pcd = self._masked_depth_to_world_pcd(depth, target_mask, self.camera.intrinsics, T_world_cam=pose, rgb=rgb)
-        # # save target_pcd
-        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/imagined_target_pcd.ply", target_pcd)
+        pose = self.observations[-1]["pose"]
+        target_pcd = self._masked_depth_to_world_pcd(
+            depth,
+            target_mask,
+            self.camera.intrinsics,
+            T_world_cam=pose,
+            rgb=rgb,
+        )
+
         # extract target 3D bounding box from target pcd
-        ctr = target_pcd.get_center()  # centroid of all points (mean)
-        print("Center of rendered target PCD:", ctr)
-        target_pcd.translate(-ctr)
-        box_aabb = box3d_from_aabb(target_pcd)
+        if len(target_pcd.points) > 0:
+            ctr = target_pcd.get_center()
+            print("Center of rendered target PCD:", ctr)
+            target_pcd.translate(-ctr)
+            box_aabb = box3d_from_aabb(target_pcd)
+        else:
+            print("Rendered target PCD is empty.")
+            box_aabb = None
+
         # vlm object recognition
         if self.vlm is not None:
             response = self.vlm.prompt_score_obj_image(rgb, target_obj)
-            vlm_obj_recognition = int(response['parsed'])
+            vlm_obj_recognition = int(response["parsed"])
+
         ret = {
             "rendered_bbox_2d": bbox_2d,
             "rendered_bbox_image": bbox_crop,

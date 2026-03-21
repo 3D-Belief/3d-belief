@@ -96,10 +96,14 @@ class SplatBeliefState(nn.Module):
     
     @property
     def augmented_gaussians(self):
-        """Returns the augmented Gaussians, which are the sum of history and belief Gaussians."""
-        if self.history_gaussians is None or self.belief_gaussians is None:
-            return None
-        return self.history_gaussians + self.belief_gaussians
+        """Return the best available Gaussian set for rendering/debugging."""
+        if self.history_gaussians is not None and self.belief_gaussians is not None:
+            return self.history_gaussians + self.belief_gaussians
+        if self.belief_gaussians is not None:
+            return self.belief_gaussians
+        if self.history_gaussians is not None:
+            return self.history_gaussians
+        return None
     
     def forward(
         self, model_input, t, global_step=100000, state_t=None, 

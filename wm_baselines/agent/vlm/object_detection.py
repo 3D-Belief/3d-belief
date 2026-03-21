@@ -179,10 +179,27 @@ def segment_label_with_gemini(
         image = image_np.convert("RGB")
     else:
         image_np = np.asarray(image_np)
+
+        # Handle common extra dimensions
+        if image_np.ndim == 4:
+            # e.g. (1, H, W, 3) or (T, H, W, 3)
+            image_np = image_np[0]
+
+        # Handle channel-first RGB/RGBA
+        if image_np.ndim == 3 and image_np.shape[0] in (3, 4) and image_np.shape[-1] not in (3, 4):
+            image_np = np.transpose(image_np, (1, 2, 0))
+
+        # Drop alpha if RGBA
         if image_np.ndim == 3 and image_np.shape[-1] == 4:
             image_np = image_np[..., :3]
+
+        # Validate final shape
+        if image_np.ndim != 3 or image_np.shape[-1] != 3:
+            raise ValueError(f"Expected image shape (H, W, 3), got {image_np.shape}")
+
         if image_np.dtype != np.uint8:
             image_np = np.clip(image_np, 0, 255).astype(np.uint8)
+
         image = Image.fromarray(image_np, mode="RGB")
 
     width, height = image.size

@@ -115,18 +115,38 @@ def _as_uint8(img: np.ndarray) -> np.ndarray:
         arr = np.clip(arr, 0, 255)
     return arr.astype(np.uint8)
 
-def _to_pil(img: np.ndarray) -> Image.Image:
-    """Accept HxW, HxW1, HxWx3, HxWx4 and return a PIL Image."""
+def _to_pil(img):
+    if isinstance(img, Image.Image):
+        return img.convert("RGB")
+
+    img = np.asarray(img)
+
+    # Handle batched input, e.g. (1, H, W, 3) or (T, H, W, 3)
+    if img.ndim == 4:
+        img = img[0]
+
+    # Handle channel-first, e.g. (3, H, W) or (4, H, W)
+    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
+        img = np.transpose(img, (1, 2, 0))
+
     if img.ndim == 2:
-        return Image.fromarray(_as_uint8(img), mode="L")
-    if img.ndim == 3:
-        h, w, c = img.shape
-        if c == 1:
-            return Image.fromarray(_as_uint8(img[..., 0]), mode="L")
-        if c == 3:
-            return Image.fromarray(_as_uint8(img), mode="RGB")
-        if c == 4:
-            return Image.fromarray(_as_uint8(img), mode="RGBA")
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        return Image.fromarray(img, mode="L")
+
+    if img.ndim == 3 and img.shape[-1] == 1:
+        img = img[..., 0]
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        return Image.fromarray(img, mode="L")
+
+    if img.ndim == 3 and img.shape[-1] in (3, 4):
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        if img.shape[-1] == 4:
+            return Image.fromarray(img, mode="RGBA")
+        return Image.fromarray(img, mode="RGB")
+
     raise ValueError(f"Unsupported image shape {img.shape}; expected (H,W), (H,W,1|3|4)")
 
 def _save_np_to_temp_png(img: np.ndarray) -> Path:
