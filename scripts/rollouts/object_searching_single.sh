@@ -1,27 +1,16 @@
-#!/bin/bash
-#SBATCH --job-name=obj_search
-#SBATCH --partition=a100
-#SBATCH --gres=gpu:a100:1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
-#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_%j.out
-#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_%j.err
-
 set -euo pipefail
 
 # ================ Set up config parameters ====================
 CONDA_ENV="3d-belief"
 export XFORMERS_DISABLED=1
-export OBJAVERSE_DATA_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/2023_07_28"
-export OBJAVERSE_HOUSES_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/houses_2023_07_28"
+export OBJAVERSE_DATA_DIR="data/2023_07_28"
+export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 # Base output directory (each baseline will create a subfolder here)
-SAVE_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output"
+SAVE_ROOT="wm_baselines/output"
 # SPOC trajectories root
-EPISODE_ROOT=/scratch/tshu2/zwen19/3dbelief/3d-belief/data/spoc_trajectories_val
+EPISODE_ROOT=data/spoc_trajectories_val
 # Codebase root (used to build absolute paths below)
-CODEBASE="/scratch/tshu2/zwen19/3dbelief/3d-belief"
+CODEBASE="/home/ubuntu/tianmin-neurips/zwen19/3d-belief"
 # If you want to just print commands (no execution), set DRY_RUN=1
 DRY_RUN="${DRY_RUN:-0}"
 # Remember to export your OPENAI_API_KEY and GOOGLE_API_KEY in the environment for VLM-based agents
@@ -51,6 +40,7 @@ fi
 HYDRA_ENV=(HYDRA_FULL_ERROR=1 OC_CAUSE=1)
 
 COMMON_OVERRIDES=(
+  "+seed=42"
   "embodied_task.episode_root=${EPISODE_ROOT}"
   "embodied_task.subset_type=length"
   "embodied_task.subset=short"
