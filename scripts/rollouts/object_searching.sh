@@ -1,19 +1,13 @@
-# ==============================================================================
-# Object Searching Rollout Script
-#
-# Usage:
-#   bash object_searching.sh <AGENT> [EXTRA_ARGS...]
-#
-# Arguments:
-#   AGENT      - Agent name (see list below, required)
-#   EXTRA_ARGS - Any additional Hydra overrides passed through to the command
-#
-# Examples:
-#   bash object_searching.sh gemini_vlm_agent
-#   bash object_searching.sh gpt_vlm_agent
-#   bash object_searching.sh vggt_frontier embodied_task.timeout=150
-#
-# ==============================================================================
+#!/bin/bash
+#SBATCH --job-name=3dbelief_obj_search_vggt_gemini
+#SBATCH --partition=a100
+#SBATCH --gres=gpu:a100:1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_vggt_gemini_%j.out
+#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_vggt_gemini_%j.err
 
 set -euo pipefail
 
@@ -165,6 +159,7 @@ if [[ ! -f "${SCRIPT_PATH}" ]]; then
 fi
 
 HYDRA_FULL_ERROR=1 OC_CAUSE=1 python "${SCRIPT_PATH}" \
+    +seed=42 \
     embodied_task.trajectory.save_path="${SAVE_PATH}" \
     embodied_task.episode_root="${EPISODE_ROOT}" \
     embodied_task.subset_type=length \
