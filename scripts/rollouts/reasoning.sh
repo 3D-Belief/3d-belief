@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=125G
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/reasoning_%j.out
 #SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/reasoning_%j.err
@@ -15,7 +15,8 @@ set -euo pipefail
 # Usage: bash reasoning.sh <AGENT> [EXTRA_HYDRA_ARGS...]
 
 # Root of this repository (two levels up from scripts/rollouts)
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief"
 SCRIPT_DIR="${REPO_ROOT}/wm_baselines/workspace"
 OUTPUT_DIR="${REPO_ROOT}/outputs"
 CONDA_ENV="3d-belief"

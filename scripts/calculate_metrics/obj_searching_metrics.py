@@ -87,7 +87,7 @@ def fmt(x, places=4):
 def main(root: Path, per_episode: bool):
     logs = []
     for sub in sorted(p for p in root.iterdir() if p.is_dir()):
-        jf = sub / "0_mug" / "final_log.json"
+        jf = sub / "final_log.json"
         if jf.is_file():
             data = safe_load(jf)
             if data is not None:

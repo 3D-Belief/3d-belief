@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=obj_search
+#SBATCH --job-name=3dbelief_obj_search_geminis
 #SBATCH --partition=a100
 #SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
-#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_%j.out
-#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_%j.err
+#SBATCH --mem=64G
+#SBATCH --time=72:00:00
+#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_geminis_%j.out
+#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_geminis_%j.err
 
 set -euo pipefail
 
@@ -51,6 +51,7 @@ fi
 HYDRA_ENV=(HYDRA_FULL_ERROR=1 OC_CAUSE=1)
 
 COMMON_OVERRIDES=(
+  "+seed=42"
   "embodied_task.episode_root=${EPISODE_ROOT}"
   "embodied_task.subset_type=length"
   "embodied_task.subset=short"
@@ -103,45 +104,45 @@ run_exp () {
 NAV_WS="${CODEBASE}/wm_baselines/workspace/nav"
 
 
-# 3D Belief
-run_exp "spoc_obj_searching_3d_belief_semantic_goal_selector_previous_weight" \
-  "${NAV_WS}/spoc_obj_searching_3d_belief_semantic_goal_selector_workspace.py"
+# # 3D Belief
+# run_exp "spoc_obj_searching_3d_belief_semantic_goal_selector_previous_weight" \
+#   "${NAV_WS}/spoc_obj_searching_3d_belief_semantic_goal_selector_workspace.py"
 
-# GPT VLM Agent
-run_exp "spoc_obj_searching_vlm_agent" \
-  "${NAV_WS}/spoc_obj_searching_gpt_vlm_agent_workspace.py"
+# # GPT VLM Agent
+# run_exp "spoc_obj_searching_vlm_agent" \
+#   "${NAV_WS}/spoc_obj_searching_gpt_vlm_agent_workspace.py"
 
-# Gemini VLM Agent
-run_exp "spoc_obj_searching_gemini_vlm_agent" \
-  "${NAV_WS}/spoc_obj_searching_gemini_vlm_agent_workspace.py"
+# # Gemini VLM Agent
+# run_exp "spoc_obj_searching_gemini_vlm_agent" \
+#   "${NAV_WS}/spoc_obj_searching_gemini_vlm_agent_workspace.py"
 
-# Qwen-3 VLM Agent
-run_exp "spoc_obj_searching_qwen3_vlm_agent" \
-  "${NAV_WS}/spoc_obj_searching_qwen3_vlm_agent_workspace.py"
+# # Qwen-3 VLM Agent
+# run_exp "spoc_obj_searching_qwen3_vlm_agent" \
+#   "${NAV_WS}/spoc_obj_searching_qwen3_vlm_agent_workspace.py"
 
-# VGGT Frontier Agent
-run_exp "spoc_obj_searching_vggt_frontier" \
-  "${NAV_WS}/spoc_obj_searching_vggt_frontier_workspace.py"
+# # VGGT Frontier Agent
+# run_exp "spoc_obj_searching_vggt_frontier" \
+#   "${NAV_WS}/spoc_obj_searching_vggt_frontier_workspace.py"
 
-# VGGT GPT VLM Goal Selector Agent
-run_exp "spoc_obj_searching_vggt_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_vggt_gpt_vlm_goal_selector_workspace.py"
+# # VGGT GPT VLM Goal Selector Agent
+# run_exp "spoc_obj_searching_vggt_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_vggt_gpt_vlm_goal_selector_workspace.py"
 
 # VGGT Gemini VLM Goal Selector Agent
 run_exp "spoc_obj_searching_vggt_gemini_vlm_goal_selector" \
   "${NAV_WS}/spoc_obj_searching_vggt_gemini_vlm_goal_selector_workspace.py"
 
-# DFoT-VGGT GPT VLM Goal Selector Agent
-run_exp "spoc_obj_searching_dfot_vggt_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_dfot_vggt_gpt_vlm_goal_selector_workspace.py"
+# # DFoT-VGGT GPT VLM Goal Selector Agent
+# run_exp "spoc_obj_searching_dfot_vggt_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_dfot_vggt_gpt_vlm_goal_selector_workspace.py"
 
 # DFoT-VGGT Gemini VLM Goal Selector Agent
 run_exp "spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector" \
   "${NAV_WS}/spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector_workspace.py"
 
-# NWM-VGGT GPT VLM Goal Selector Agent
-run_exp "spoc_obj_searching_nwm_vggt_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_nwm_vggt_gpt_vlm_goal_selector_workspace.py"
+# # NWM-VGGT GPT VLM Goal Selector Agent
+# run_exp "spoc_obj_searching_nwm_vggt_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_nwm_vggt_gpt_vlm_goal_selector_workspace.py"
 
 # NWM-VGGT Gemini VLM Goal Selector Agent
 run_exp "spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector" \
