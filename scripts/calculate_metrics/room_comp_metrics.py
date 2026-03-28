@@ -82,14 +82,11 @@ def _collect_dataframe(root: Path) -> pd.DataFrame:
         if not data:
             continue
 
-        # Filter: keep only episodes with object_coverage > 0
         oc = data.get("object_coverage", 0)
         try:
             oc_val = float(oc)
         except (TypeError, ValueError):
             continue
-        # if not (oc_val > 0):
-        #     continue
 
         # Attach episode id (parent of metrics/):
         episode_id = p.parent.parent.name
@@ -144,7 +141,7 @@ def main():
 
     df = _collect_dataframe(root)
     if df.empty:
-        print("No valid metrics found after filtering object_coverage>0. Exiting.")
+        print("No valid metrics. Exiting.")
         return
 
     # Save raw concatenated data
@@ -160,7 +157,7 @@ def main():
     with open(outdir / "README.txt", "w") as f:
         f.write(
             "Outputs:\n"
-            "- all_metrics_concatenated.csv: flat table of all loaded rows (filtered by object_coverage>0).\n"
+            "- all_metrics_concatenated.csv: flat table of all loaded rows.\n"
             "- global_stats.csv / global_stats.json: global mean/std/count per metric.\n"
         )
 

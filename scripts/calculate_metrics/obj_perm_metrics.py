@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Analyze per-episode aggregated metrics (with per-file filtering).
+Analyze per-episode aggregated metrics.
 
 We keep only metrics JSON files that satisfy:
   - siglip_similarity > 0.99
@@ -100,11 +100,7 @@ def _episode_aggregate(
         data = _load_one_json(p)
         if not data:
             continue
-
-        # # Per-file filtering condition
-        # if not _file_passes_thresholds(data):
-        #     continue
-
+        
         n_kept += 1
 
         for k, v in data.items():
