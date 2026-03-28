@@ -32,7 +32,7 @@ class Camera(object):
 
 class SPOCDatasetSeq(Dataset):
     """
-    Seq dataset corresponding to your video-backed SPOCDataset (un-seq).
+    Seq dataset corresponding to the video-backed SPOCDataset (un-seq).
 
     - per scene: videos/rgb*.mp4, videos/depth*.mp4, pose/*.npy
     - frame index is pose index (0..len(pose_files)-1)
@@ -45,7 +45,7 @@ class SPOCDatasetSeq(Dataset):
     image_size: int = 64
     background_color: torch.tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
 
-    avg_key_frame_interval = 8  # heuristic, same spirit as your old seq version
+    avg_key_frame_interval = 8
 
     def __init__(
         self,
@@ -63,7 +63,7 @@ class SPOCDatasetSeq(Dataset):
         adjacent_angle: float = 0.523,      # ~30 deg
         adjacent_distance: float = 1.0,     # meters (pose translation space)
         use_depth_supervision: bool = True,
-        depth_scale: float = 1000.0,        # your un-seq uses /1000.0 (mm->m)
+        depth_scale: float = 1000.0,
     ) -> None:
         super().__init__()
         self.overfit_to_index = overfit_to_index
@@ -143,7 +143,6 @@ class SPOCDatasetSeq(Dataset):
         print("[SPOC-SEQ] length dataset (pose frames)", self.len)
 
     def __len__(self) -> int:
-        # NOTE: matches your current behavior (num scenes). If you want per-frame length, use self.len.
         return len(self.all_rgb_files)
 
     # ----------------------------
@@ -269,8 +268,6 @@ class SPOCDatasetSeq(Dataset):
         if num_frames < 2:
             return fallback()
 
-        # how many keyframes we want (same pattern as your old seq version)
-        # NOTE: your old code used: context_max_distance = self.context_max_distance * self.num_context
         num_keyframes = self.context_max_distance * self.num_context
 
         # start index heuristic (avoid going too close to end)
@@ -291,7 +288,6 @@ class SPOCDatasetSeq(Dataset):
 
         inv_pose_first = inverse_transformation(torch.tensor(np.array([cam0.c2w_mat])).float()[0])
 
-        # intms[0] mirrors your old logic: seed with repeats of the first frame
         intm_keys = ["rgbs", "depth", "depth_mask", "intrinsics", "pose"]
         intms = [{
             "rgbs": [self.normalize(torch.stack([rgb0], axis=0))] * self.num_intermediate,
@@ -428,7 +424,6 @@ class SPOCDatasetSeq(Dataset):
 
         assert len(ret["render_poses"]) == len(ret["rgbs"]) == len(ret["abs_camera_poses"]) == len(ret["intrinsics"])
 
-        # match your old seq return structure
         return (
             ret,
             [torch.stack([rgb], axis=0) for rgb in rgbs],
