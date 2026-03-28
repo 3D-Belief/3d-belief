@@ -4,9 +4,9 @@ nvidia-smi
 
 export MASTER_PORT=$((12000 + RANDOM % 1000))
 
-export CUDA_HOME=/usr/lib/nvidia-cuda-toolkit
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export PATH=$CONDA_PREFIX/bin:$PATH
+export CUDA_HOME=$CONDA_PREFIX
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 
 python splat_belief/experiment/temporal_inference.py \

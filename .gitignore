@@ -26,7 +26,8 @@ src/
 # jupyter notebooks
 
 .ipynb_checkpoints
-
+checkpoints/
+datasets/
 
 # miscellaneous
 
