@@ -83,7 +83,6 @@ class SPOCDatasetSeq(Dataset):
         scene_path_list = sorted([p for p in Path(image_root).glob("*/") if p.is_dir()])
         if max_scenes is not None:
             scene_path_list = scene_path_list[:max_scenes]
-
         self.stage = stage
         self.to_tensor = tf.ToTensor()
         self.rng = default_rng()
@@ -97,70 +96,92 @@ class SPOCDatasetSeq(Dataset):
             self.lang_identity = torch.zeros(1)
 
         self.len = 0
-        all_rgb_files = []
-        all_depth_files = []
-        all_pose_files = []
+        # Keep a simplified layout: require per-scene files:
+        #  - rgb_trajectory.mp4
+        #  - depth_trajectory.mp4
+        #  - pose/*.npy  (one .npy file per frame)
         self.scene_path_list = []
+        self.rgb_paths = []
+        self.depth_paths = []
+        self.pose_lists = []
+        self.num_frames_per_scene = []
 
         for scene_path in scene_path_list:
-            # Support new dataset layout: rgb_trajectory.mp4, all_depths.npz, all_poses.npz
             rgb_path = scene_path / "rgb_trajectory.mp4"
+            depth_mp4 = scene_path / "depth_trajectory.mp4"
             depth_npz = scene_path / "all_depths.npz"
             poses_npz = scene_path / "all_poses.npz"
+            pose_dir = scene_path / "pose"
 
+            # prefer the npz-style (rgb_trajectory.mp4 + all_depths.npz + all_poses.npz)
             if rgb_path.exists() and depth_npz.exists() and poses_npz.exists():
-                # load poses to get number of frames
-                poses_data = np.load(poses_npz)
-                num_frames = int(poses_data["poses"].shape[0])
+                poses_arr = self._load_npz_poses(str(poses_npz))
+                num_frames = int(poses_arr.shape[0])
                 self.len += num_frames
-                self.num_frames_per_scene.append(num_frames)
-
-                # store paths (keep as arrays for some backward compatibility where code used [0])
-                all_rgb_files.append(np.array([str(rgb_path)]))
-                all_depth_files.append(np.array([str(depth_npz)]))
-                all_pose_files.append(np.array([str(poses_npz)]))
                 self.scene_path_list.append(scene_path)
-            else:
-                # fallback: keep old behavior if videos/pose files present
-                rgb_files = sorted(scene_path.glob("videos/rgb*.mp4"))
-                depth_files = sorted(scene_path.glob("videos/depth*.mp4"))
-                pose_files = sorted(scene_path.glob("pose/*.npy"))
+                self.rgb_paths.append(str(rgb_path))
+                self.depth_paths.append(str(depth_npz))
+                # store a single npz path string for poses
+                self.pose_lists.append(str(poses_npz))
+                self.num_frames_per_scene.append(num_frames)
+                continue
+
+            # fallback to per-frame poses + mp4 depth (rgb_trajectory.mp4 + depth_trajectory.mp4 + pose/*.npy)
+            if rgb_path.exists() and depth_mp4.exists() and pose_dir.exists() and pose_dir.is_dir():
+                pose_files = sorted([p for p in pose_dir.glob("*.npy") if p.is_file()])
                 if len(pose_files) == 0:
                     continue
-                self.len += len(pose_files)
-                self.num_frames_per_scene.append(len(pose_files))
-                all_rgb_files.append(np.array([str(p) for p in rgb_files]))
-                all_depth_files.append(np.array([str(p) for p in depth_files]))
-                all_pose_files.append(np.array([str(p) for p in pose_files]))
+                num_frames = len(pose_files)
+                self.len += num_frames
                 self.scene_path_list.append(scene_path)
+                self.rgb_paths.append(str(rgb_path))
+                self.depth_paths.append(str(depth_mp4))
+                # store list of per-frame pose file strings
+                self.pose_lists.append([str(p) for p in pose_files])
+                self.num_frames_per_scene.append(num_frames)
+                continue
 
-        self.indices = torch.arange(0, len(self.scene_path_list))
-        self.all_rgb_files = all_rgb_files
-        self.all_depth_files = all_depth_files
-        self.all_pose_files = all_pose_files
+            # if neither layout matches, skip scene
+            continue
 
         print("[SPOC-SEQ] Scenes", len(self.scene_path_list))
         print("[SPOC-SEQ] length dataset (pose frames)", self.len)
 
+        # Backwards-compatible aliases expected by external code
+        # all_* lists are per-scene containers where each scene entry is indexable
+        # and len(all_rgb_files[scene_idx]) should return the number of frames.
+        self.all_rgb_files = []
+        self.all_depth_files = []
+        self.all_pose_files = []
+        for i, n in enumerate(self.num_frames_per_scene):
+            # Repeat the rgb/depth path n times so len(...) returns number of frames
+            self.all_rgb_files.append([self.rgb_paths[i]] * int(n))
+            self.all_depth_files.append([self.depth_paths[i]] * int(n))
+            pf = self.pose_lists[i]
+            if isinstance(pf, str):
+                # single npz path -> repeat n times
+                self.all_pose_files.append([pf] * int(n))
+            else:
+                # already a list of per-frame pose file paths
+                self.all_pose_files.append(pf)
+
     def __len__(self) -> int:
-        return len(self.all_rgb_files)
+        return len(self.scene_path_list)
 
     # ----------------------------
     # Video capture caching helpers
     # ----------------------------
     @lru_cache(maxsize=128)
-    def _get_caps(self, rgb_path: str, depth_path: str):
-        cap_rgb = cv2.VideoCapture(rgb_path)
-        if not cap_rgb.isOpened():
-            raise RuntimeError(f"Failed to open RGB video: {rgb_path}")
-        return cap_rgb
+    def _get_cap(self, path: str):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {path}")
+        return cap
 
-    def _read_rgb_depth_from_video(self, rgb_files, depth_files, frame_id: int):
-        # rgb_files / depth_files can be arrays (old style) or single-path arrays (new style)
-        rgb_path = str(rgb_files[0]) if hasattr(rgb_files, "__getitem__") else str(rgb_files)
-        depth_path = str(depth_files[0]) if hasattr(depth_files, "__getitem__") else str(depth_files)
-
-        cap_rgb = self._get_caps(rgb_path)
+    def _read_rgb_depth_from_video(self, rgb_path: str, depth_path: str, frame_id: int):
+        # rgb_path and depth_path are strings pointing to mp4 videos
+        cap_rgb = self._get_cap(rgb_path)
+        cap_depth = self._get_cap(depth_path)
 
         # RGB
         cap_rgb.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
@@ -176,24 +197,18 @@ class SPOCDatasetSeq(Dataset):
             antialias=True,
         )[0]
 
-        # Depth: support depth mp4 (old) or all_depths.npz (new)
-        if depth_path.endswith(".mp4"):
-            # old-style depth video
-            # open depth video capture on the fly
-            cap_depth = cv2.VideoCapture(depth_path)
-            cap_depth.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
-            ok, dframe = cap_depth.read()
-            cap_depth.release()
-            if not ok or dframe is None:
-                raise RuntimeError(f"Failed to read depth frame {frame_id} from {depth_path}")
-            dframe = dframe.astype(np.float32) / float(self.depth_scale)
-            depth = torch.tensor(dframe[..., 0], dtype=torch.float32).unsqueeze(0)
+        # Depth (mp4 with one channel or repeated channels)
+        cap_depth.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, dframe = cap_depth.read()
+        if not ok or dframe is None:
+            raise RuntimeError(f"Failed to read depth frame {frame_id} from {depth_path}")
+        dframe = dframe.astype(np.float32) / float(self.depth_scale)
+        # if depth has 3 channels, take first channel
+        if dframe.ndim == 3:
+            depth_single = dframe[..., 0]
         else:
-            # new-style .npz depths
-            depths_arr = self._load_npz_depths(depth_path)
-            depth_val = depths_arr[int(frame_id)]
-            depth = torch.tensor(depth_val.astype(np.float32)).unsqueeze(0)
-
+            depth_single = dframe
+        depth = torch.tensor(depth_single, dtype=torch.float32).unsqueeze(0)
         depth = F.interpolate(
             depth.unsqueeze(0),
             size=(self.image_size, self.image_size),
@@ -221,23 +236,67 @@ class SPOCDatasetSeq(Dataset):
           - an array-like (old format) where rgb_files[0] and depth_files[0] point to mp4s and pose_files is an array of .npy
           - an array-like containing single strings pointing to new-style files (rgb_trajectory.mp4, all_depths.npz, all_poses.npz)
         """
-        rgb, depth, depth_mask = self._read_rgb_depth_from_video(rgb_files, depth_files, frame_id)
+        # rgb_files/depth_files are strings pointing to either mp4 (video) or npz (depth stack)
+        rgb_path = str(rgb_files)
+        depth_path = str(depth_files)
 
-        # handle pose_files: either per-frame .npy files or a single .npz with 'poses'
-        if hasattr(pose_files, "__len__") and len(pose_files) > 1 and str(pose_files[0]).endswith(".npy"):
-            pose_file = str(pose_files[frame_id])
-            extrinsics = np.load(pose_file)
+        # read rgb
+        cap_rgb = self._get_cap(rgb_path)
+        cap_rgb.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, frame = cap_rgb.read()
+        if not ok or frame is None:
+            raise RuntimeError(f"Failed to read RGB frame {frame_id} from {rgb_path}")
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = torch.tensor(frame.astype(np.float32)).permute(2, 0, 1) / 255.0
+        rgb = F.interpolate(
+            rgb.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        # read depth: either mp4 or npz
+        if depth_path.endswith('.mp4'):
+            cap_depth = self._get_cap(depth_path)
+            cap_depth.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+            ok, dframe = cap_depth.read()
+            if not ok or dframe is None:
+                raise RuntimeError(f"Failed to read depth frame {frame_id} from {depth_path}")
+            dframe = dframe.astype(np.float32) / float(self.depth_scale)
+            if dframe.ndim == 3:
+                depth_single = dframe[..., 0]
+            else:
+                depth_single = dframe
+            depth = torch.tensor(depth_single, dtype=torch.float32).unsqueeze(0)
         else:
-            # assume single .npz
-            pose_npz_path = str(pose_files[0]) if hasattr(pose_files, "__getitem__") else str(pose_files)
-            poses_arr = self._load_npz_poses(pose_npz_path)
-            extrinsics = poses_arr[int(frame_id)]
+            # assume npz of depths
+            depths_arr = self._load_npz_depths(depth_path)
+            depth_val = depths_arr[int(frame_id)]
+            depth = torch.tensor(depth_val.astype(np.float32)).unsqueeze(0)
 
+        depth = F.interpolate(
+            depth.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        depth_mask = depth < self.z_filter
+
+        # pose: either a single npz path string or a list of per-frame .npy files
+        if isinstance(pose_files, str) and pose_files.endswith('.npz'):
+            poses_arr = self._load_npz_poses(pose_files)
+            extrinsics = poses_arr[int(frame_id)]
+        else:
+            # pose_files is expected to be a list-like of .npy paths
+            pose_file = str(pose_files[int(frame_id)])
+            extrinsics = np.load(pose_file)
+
+        # Convert to camera-centric convention (match spoc.py behavior)
         extrinsics = np.linalg.inv(extrinsics)
         conversion = np.diag([1, -1, -1, 1])
         extrinsics = conversion @ extrinsics
         cam_param = Camera(extrinsics)
-
         return rgb, depth, depth_mask, cam_param
 
     @lru_cache(maxsize=128)
@@ -249,22 +308,21 @@ class SPOCDatasetSeq(Dataset):
         return data[keys[0]]
 
     def __getitem__(self, index: int):
-        seed = hash((index, self.global_seed)) % (2**32) + time.time_ns() % (2**32)
+        seed = hash((index, self.global_seed)) % (2**32)
         self.rng = np.random.default_rng(seed)
-
-        scene_idx = self.rng.integers(0, len(self.all_rgb_files))
+        scene_idx = self.rng.integers(0, len(self.scene_path_list))
         if self.overfit_to_index is not None:
             scene_idx = self.overfit_to_index
 
         def fallback():
-            seed2 = hash((index, self.global_seed)) % (2**32) + time.time_ns() % (2**32)
+            seed2 = hash((index, self.global_seed)) % (2**32)
             self.rng = np.random.default_rng(seed2)
-            return self[self.rng.integers(0, len(self.all_rgb_files))]
+            return self[self.rng.integers(0, len(self.scene_path_list))]
 
-        rgb_files = self.all_rgb_files[scene_idx]
-        depth_files = self.all_depth_files[scene_idx]
-        pose_files = self.all_pose_files[scene_idx]
-        num_frames = len(pose_files)
+        rgb_path = self.rgb_paths[scene_idx]
+        depth_path = self.depth_paths[scene_idx]
+        pose_files = self.pose_lists[scene_idx]
+        num_frames = self.num_frames_per_scene[scene_idx]
         if num_frames < 2:
             return fallback()
 
@@ -278,7 +336,7 @@ class SPOCDatasetSeq(Dataset):
         first_id = ids.pop(0)
 
         # read first keyframe
-        rgb0, depth0, depth_mask0, cam0 = self.read_frame(rgb_files, depth_files, pose_files, first_id)
+        rgb0, depth0, depth_mask0, cam0 = self.read_frame(rgb_path, depth_path, pose_files, first_id)
 
         rgbs = [rgb0]
         depths = [depth0]
@@ -307,7 +365,7 @@ class SPOCDatasetSeq(Dataset):
         current_intm = {k: [] for k in intm_keys}
 
         for fid in ids:
-            rgb, depth, depth_mask, cam = self.read_frame(rgb_files, depth_files, pose_files, fid)
+            rgb, depth, depth_mask, cam = self.read_frame(rgb_path, depth_path, pose_files, fid)
 
             current_pose = cam.c2w_mat
             z_idx = current_pose[:, 2][:3]
@@ -432,11 +490,12 @@ class SPOCDatasetSeq(Dataset):
 
     def data_for_temporal(self, video_idx: int, frames_render: Union[int, List] = 20):
         scene_idx = video_idx
-        rgb_files = self.all_rgb_files[scene_idx]
-        depth_files = self.all_depth_files[scene_idx]
-        pose_files = self.all_pose_files[scene_idx]
-
-        num_frames = len(pose_files)
+        rgb_path = self.rgb_paths[scene_idx]
+        depth_path = self.depth_paths[scene_idx]
+        pose_files = self.pose_lists[scene_idx]
+        # num_frames stored in init
+        num_frames = self.num_frames_per_scene[scene_idx]
+        print(f"Scene {scene_idx} has {num_frames} frames")
         if num_frames < 2:
             raise ValueError(f"Scene {scene_idx} has too few frames: {num_frames}")
 
@@ -458,7 +517,7 @@ class SPOCDatasetSeq(Dataset):
         intrinsics = []
 
         for fid in ids:
-            rgb, depth, depth_mask, cam_param = self.read_frame(rgb_files, depth_files, pose_files, int(fid))
+            rgb, depth, depth_mask, cam_param = self.read_frame(rgb_path, depth_path, pose_files, int(fid))
             rgbs.append(rgb)
             if self.use_depth_supervision:
                 depths.append(depth)
