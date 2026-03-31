@@ -7,6 +7,7 @@ from .encoder_videodiff import EncoderVideoDiffusion, EncoderVideoDiffusionCfg
 from .encoder_uvitdiff import EncoderUViTDiffusion, EncoderUViTDiffusionCfg
 from .encoder_ditmvsplat import EncoderDiTMVSplat, EncoderDiTMVSplatCfg
 from .encoder_uvitmvsplat import EncoderUViTMVSplat, EncoderUViTMVSplatCfg
+from .encoder_uvitmvsplat_sg import EncoderUViTMVSplatSG, EncoderUViTMVSplatSGCfg
 from .visualization.encoder_visualizer import EncoderVisualizer
 from .visualization.encoder_visualizer_costvolume import EncoderVisualizerCostVolume
 
@@ -17,9 +18,10 @@ ENCODERS = {
     "uvitdiff": (EncoderUViTDiffusion, None),
     "ditmvsplat": (EncoderDiTMVSplat, None),
     "uvitmvsplat": (EncoderUViTMVSplat, None),
+    "uvitmvsplat_sg": (EncoderUViTMVSplatSG, None),
 }
 
-EncoderCfg = EncoderEpiDiffusionCfg | EncoderCostVolumeCfg | EncoderVideoDiffusionCfg | EncoderUViTDiffusionCfg | EncoderDiTMVSplatCfg | EncoderUViTMVSplatCfg
+EncoderCfg = EncoderEpiDiffusionCfg | EncoderCostVolumeCfg | EncoderVideoDiffusionCfg | EncoderUViTDiffusionCfg | EncoderDiTMVSplatCfg | EncoderUViTMVSplatCfg | EncoderUViTMVSplatSGCfg
 
 
 def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:

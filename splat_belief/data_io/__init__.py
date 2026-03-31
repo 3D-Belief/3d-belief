@@ -13,6 +13,7 @@ from data_io.hm3d_seq import HM3DDatasetSeq
 from data_io.spoc import SPOCDataset
 from data_io.spoc_seq import SPOCDatasetSeq
 from data_io.dl3dv import DL3DVDataset
+from data_io.procthor import ProcTHORDataset
 
 def _clone_cfg(cfg: DictConfig) -> DictConfig:
     return OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
@@ -31,6 +32,8 @@ def get_path(dataset_name: str) -> str:
     elif dataset_name == "spoc_seq":
         return ""
     elif dataset_name == "dl3dv":
+        return ""
+    elif dataset_name == "procthor":
         return ""
     raise NotImplementedError(f'Dataset "{dataset_name}" not supported.')
 
@@ -254,5 +257,29 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             num_intermediate=config.num_intermediate,
             adjacent_angle=config.adjacent_angle,
             use_depth_supervision=config.use_depth_supervision,
+        )
+    elif name == "procthor":
+        paths = config.dataset.root_dir if config.dataset.root_dir != "" else get_path(name)
+        ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
+        ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
+        return ProcTHORDataset(
+            root=paths,
+            vocab_dir=config.dataset.vocab_dir,
+            num_context=config.num_context,
+            num_target=config.num_target,
+            context_min_distance=ctxt_min,
+            context_max_distance=ctxt_max,
+            max_scenes=config.max_scenes,
+            stage=config.stage,
+            image_size=config.image_size,
+            adjacent_angle=config.adjacent_angle,
+            adjacent_distance=config.adjacent_distance,
+            overfit_to_index=config.overfit_to_index,
+            use_depth_supervision=config.use_depth_supervision,
+            intermediate=config.intermediate,
+            num_intermediate=config.num_intermediate,
+            near_threshold=float(getattr(config.dataset, "near_threshold", 2.0)),
+            max_nodes=int(getattr(config.dataset, "max_nodes", 128)),
+            max_edges=int(getattr(config.dataset, "max_edges", 512)),
         )
     raise NotImplementedError(f'Dataset "{name}" not supported.')

@@ -27,6 +27,7 @@ src/
 
 .ipynb_checkpoints
 checkpoints/
+checkpoints
 datasets/
 
 # miscellaneous

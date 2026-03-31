@@ -38,6 +38,7 @@ from splat_belief.splat.layers import *
 import lpips
 
 from scipy import interpolate
+import json as _json
 from splat_belief.utils.vision_utils import JsonLogger
 from splat_belief.splat.splat_belief import SplatBelief
 from splat_belief.splat.alignment import VGGTAlignmentLoss
@@ -1890,6 +1891,12 @@ class Trainer(object):
                             Image.fromarray(frame).save(
                                 os.path.join(save_folder_milestone_frames, f"rendered_{p}.png")
                             )
+
+                        # --- Save GT images and scene graph info ---
+                        _save_gt_and_sg(
+                            data, save_folder_milestone_frames,
+                            self.results_folder, milestone,
+                        )
                         
                         # Log videos to wandb
                         if wandb.run is not None:
@@ -1952,3 +1959,140 @@ def prepare_video_viz(out):
         depth_frames,
         semantics
     )
+
+
+def _unnormalize(img_tensor):
+    """Convert from [-1,1] to [0,255] uint8 (C,H,W) -> (H,W,C)."""
+    img = (img_tensor.clamp(-1, 1) + 1) * 0.5 * 255
+    return img.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+
+
+def _save_gt_and_sg(data, frames_folder, results_folder, milestone):
+    """Save GT images and scene graph info alongside rendered outputs.
+
+    Args:
+        data: batch dict on GPU (from the last training iteration).
+        frames_folder: per-milestone folder for individual frames.
+        results_folder: Path object for the top-level results directory.
+        milestone: current milestone number.
+    """
+    results_folder = str(results_folder)
+
+    # --- GT target images ---
+    if "trgt_rgb" in data:
+        trgt = data["trgt_rgb"]  # (B, N_trgt, C, H, W) or (B, C, H, W)
+        if trgt.dim() == 5:
+            trgt = trgt[:, 0]  # take first target view
+        for b in range(trgt.shape[0]):
+            gt_img = _unnormalize(trgt[b])
+            Image.fromarray(gt_img).save(
+                os.path.join(frames_folder, f"gt_target_b{b}.png")
+            )
+
+    # --- GT context images ---
+    if "ctxt_rgb" in data:
+        ctxt = data["ctxt_rgb"]  # (B, N_ctxt, C, H, W)
+        if ctxt.dim() == 5:
+            for b in range(ctxt.shape[0]):
+                for v in range(ctxt.shape[1]):
+                    ctx_img = _unnormalize(ctxt[b, v])
+                    Image.fromarray(ctx_img).save(
+                        os.path.join(frames_folder, f"gt_context_b{b}_v{v}.png")
+                    )
+        elif ctxt.dim() == 4:
+            for b in range(ctxt.shape[0]):
+                ctx_img = _unnormalize(ctxt[b])
+                Image.fromarray(ctx_img).save(
+                    os.path.join(frames_folder, f"gt_context_b{b}.png")
+                )
+
+    # --- Scene graph info (only if SG keys are present) ---
+    if "sg_node_types" not in data:
+        return
+
+    node_types = data["sg_node_types"].cpu()    # (B, max_nodes)
+    node_mask = data["sg_node_mask"].cpu()       # (B, max_nodes)
+    node_pos = data.get("sg_node_positions")     # (B, max_nodes, 3) or None
+    node_sizes = data.get("sg_node_sizes")       # (B, max_nodes, 3) or None
+    node_rots = data.get("sg_node_rotations")    # (B, max_nodes, 3) or None
+    edge_index = data.get("sg_edge_index")       # (B, 2, max_edges) or None
+    edge_types = data.get("sg_edge_types")       # (B, max_edges) or None
+    edge_mask = data.get("sg_edge_mask")         # (B, max_edges) or None
+
+    edge_type_names = {0: "CONTAINS", 1: "NEAR", 2: "SAME_ROOM"}
+
+    # Try to recover id_to_type from the backbone embeddings table
+    id_to_type = None
+    try:
+        from splat_belief.utils.procthor_utils import load_vocabulary
+        if wandb.run is not None:
+            wc = OmegaConf.to_container(wandb.config, resolve=True) if hasattr(wandb.config, '_metadata') else dict(wandb.config)
+            vocab_dir = None
+            if isinstance(wc, dict) and "dataset" in wc and isinstance(wc["dataset"], dict):
+                vocab_dir = wc["dataset"].get("vocab_dir")
+            if vocab_dir:
+                _, id_to_type = load_vocabulary(vocab_dir)
+    except Exception:
+        pass
+
+    for b in range(node_types.shape[0]):
+        mask_b = node_mask[b].bool()
+        n_valid = mask_b.sum().item()
+        types_b = node_types[b][mask_b].tolist()
+
+        sg_info = {
+            "num_nodes": n_valid,
+            "node_type_ids": types_b,
+        }
+        if id_to_type is not None:
+            sg_info["node_type_names"] = [
+                id_to_type[t] if t < len(id_to_type) else f"<unk:{t}>"
+                for t in types_b
+            ]
+        if node_pos is not None:
+            sg_info["node_positions"] = node_pos[b][mask_b].cpu().tolist()
+        if node_sizes is not None:
+            sg_info["node_bbox_sizes"] = node_sizes[b][mask_b].cpu().tolist()
+        if node_rots is not None:
+            sg_info["node_rotations"] = node_rots[b][mask_b].cpu().tolist()
+
+        if edge_index is not None and edge_mask is not None:
+            emask_b = edge_mask[b].cpu().bool()
+            n_edges = emask_b.sum().item()
+            ei = edge_index[b].cpu()
+            et = edge_types[b].cpu()
+            edges_list = []
+            for e in range(n_edges):
+                src, dst = ei[0, e].item(), ei[1, e].item()
+                etype = et[e].item()
+                edge_entry = {"src": src, "dst": dst, "type_id": etype,
+                              "type_name": edge_type_names.get(etype, str(etype))}
+                edges_list.append(edge_entry)
+            sg_info["num_edges"] = n_edges
+            sg_info["edges"] = edges_list
+
+        sg_path = os.path.join(frames_folder, f"scene_graph_b{b}.json")
+        with open(sg_path, "w") as f:
+            _json.dump(sg_info, f, indent=2)
+
+    # --- Side-by-side GT vs rendered (first batch element) ---
+    gt_path = os.path.join(frames_folder, "gt_target_b0.png")
+    rendered_path = os.path.join(frames_folder, "rendered_0.png")
+    if os.path.exists(gt_path) and os.path.exists(rendered_path):
+        gt_im = Image.open(gt_path)
+        rd_im = Image.open(rendered_path)
+        if gt_im.size[1] != rd_im.size[1]:
+            h = min(gt_im.size[1], rd_im.size[1])
+            gt_im = gt_im.resize((int(gt_im.size[0] * h / gt_im.size[1]), h))
+            rd_im = rd_im.resize((int(rd_im.size[0] * h / rd_im.size[1]), h))
+        combined = Image.new("RGB", (gt_im.size[0] + rd_im.size[0], gt_im.size[1]))
+        combined.paste(gt_im, (0, 0))
+        combined.paste(rd_im, (gt_im.size[0], 0))
+        cmp_path = os.path.join(results_folder, f"milestone_{milestone}_gt_vs_rendered.png")
+        combined.save(cmp_path)
+
+        if wandb.run is not None:
+            wandb.log({
+                f"comparison/milestone_{milestone}": wandb.Image(cmp_path,
+                    caption="Left: GT target | Right: Rendered"),
+            })
