@@ -59,6 +59,7 @@ site/
 # Data
 
 data/
+data
 artifacts/
 
 # Output files
