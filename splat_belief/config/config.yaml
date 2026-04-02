@@ -123,6 +123,13 @@ alignment:
   mid_channels: 128
   latents_info: null
 
+# Pose estimation via VGGT CameraHead
+pose_source: gt  # gt | predicted | mixed
+pose_estimator:
+  freeze_camera_head: true
+  num_refinement_iterations: 4
+  camera_head_ckpt: null  # path to finetuned CameraHead checkpoint (null = use pretrained VGGT weights)
+
 agent:
   camera: ${dataset.camera}
   save_scene: False

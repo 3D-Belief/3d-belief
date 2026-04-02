@@ -10,6 +10,8 @@ _target_: wm_baselines.world_model.belief_3d_model.Belief3DModel
 name: belief_3d_model
 
 fast_sampling: true
+pose_source: gt  # gt | predicted
+camera_head_ckpt: null  # path to finetuned CameraHead checkpoint, or null for pretrained
 
 camera:
   _target_: wm_baselines.agent.perception.camera.Camera

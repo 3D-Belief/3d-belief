@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import math
 from splat_belief.splat.types import Gaussians
 from splat_belief.splat.ply_export import export_gaussians_to_ply
+from splat_belief.splat.pose_estimator import VGGTPoseEstimator
 try:
     from general_utils import to_gpu, normalize_to_neg_one_to_one
 except ImportError:
@@ -67,6 +68,8 @@ class Belief3DModel(BaseWorldModel):
         obs_depth_min: float = 0.1,
         obs_depth_max: float = 10.0,
         disable_imagination: bool = False,
+        pose_source: str = "gt",
+        camera_head_ckpt: Optional[str] = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -104,6 +107,37 @@ class Belief3DModel(BaseWorldModel):
         self.obs_filter_border_gaussians = obs_filter_border_gaussians
         self.obs_depth_min = obs_depth_min
         self.obs_depth_max = obs_depth_max
+        self.pose_source = pose_source
+        # Reference pose estimator from diffusion model if available
+        self.pose_estimator = None
+        if pose_source == "predicted":
+            diffusion = getattr(self.model, 'ema', None)
+            if diffusion is not None:
+                diffusion = getattr(diffusion, 'ema_model', diffusion)
+            pe = getattr(diffusion, 'pose_estimator', None)
+            if pe is not None:
+                self.pose_estimator = pe
+                print("[Belief3DModel] Using predicted poses via VGGTPoseEstimator (from diffusion)")
+            else:
+                # Fallback: load standalone VGGT with pretrained (or finetuned) CameraHead
+                print("[Belief3DModel] No pose_estimator on diffusion model, loading standalone VGGT")
+                from splat_belief.splat.alignment.vggt.vggt import VGGT
+                vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
+                vggt_model.eval()
+                self.pose_estimator = VGGTPoseEstimator(
+                    vggt_model=vggt_model,
+                    freeze=True,
+                    num_refinement_iterations=4,
+                )
+                if camera_head_ckpt is not None:
+                    state = torch.load(camera_head_ckpt, map_location="cpu")
+                    self.pose_estimator.camera_head.load_state_dict(state)
+                    print(f"[Belief3DModel] Loaded finetuned CameraHead from {camera_head_ckpt}")
+                else:
+                    print("[Belief3DModel] Using pretrained VGGT CameraHead (no finetuned checkpoint)")
+                self.pose_estimator = self.pose_estimator.to(next(self.model.parameters()).device)
+        # Accumulated context images for multi-view pose estimation
+        self._context_images = []
     
     @property
     def augmented_scene(self) -> Gaussians:
@@ -146,6 +180,7 @@ class Belief3DModel(BaseWorldModel):
             "obs_steps": -1,
         }
         self.imagination_model = None
+        self._context_images = []
 
     def update_observation(self, observation: Dict[str, Any], force_update: bool = False) -> Dict[str, Any]:
         """Update the world model with a new observation."""
@@ -164,6 +199,10 @@ class Belief3DModel(BaseWorldModel):
         if self.initial_location.get('pose') is not None:
             pose_map = np.linalg.inv(self.initial_location['pose']) @ pose
             pose_map = self._project_pose_to_initial_ground(pose_map)
+
+        # Predict pose from images if pose_source=predicted
+        if self.pose_source == "predicted" and self.pose_estimator is not None:
+            pose_map = self._predict_pose_from_images(rgb, pose_map)
 
         self._update_resample_pcd(pose_map, force=force_update)
 
@@ -372,7 +411,41 @@ class Belief3DModel(BaseWorldModel):
         self.inc_scene = self.model.ema.ema_model.model.incremental_gaussians.clone()
         self.belief_scene = self.model.ema.ema_model.model.belief_gaussians.clone()
         self.state_step += 1
-    
+
+    @torch.no_grad()
+    def _predict_pose_from_images(self, rgb: np.ndarray, fallback_pose: np.ndarray) -> np.ndarray:
+        """Predict camera pose using VGGTPoseEstimator from accumulated context images.
+
+        Uses a sliding window of recent frames to estimate the current frame's pose
+        relative to the first frame (identity).
+
+        Args:
+            rgb: Current frame as HWC uint8 numpy array.
+            fallback_pose: GT-derived pose to use as fallback for the first frame.
+
+        Returns:
+            pose_map: [4, 4] numpy array in map frame.
+        """
+        # Convert to tensor [C, H, W] in [0, 1]
+        rgb_tensor = torch.tensor(rgb.astype(np.float32)).permute(2, 0, 1) / 255.0
+        self._context_images.append(rgb_tensor)
+
+        # For the first frame, return identity (same as GT normalization)
+        if len(self._context_images) == 1:
+            return np.eye(4, dtype=np.float32)
+
+        # Use the most recent K frames (sliding window)
+        max_window = 16
+        window = self._context_images[-max_window:]
+        images = torch.stack(window).unsqueeze(0)  # [1, S, C, H, W]
+
+        c2w, intrinsics = self.pose_estimator.predict_from_images(
+            images.cuda(), normalize_to_first=True
+        )
+
+        # Return the last frame's predicted pose
+        predicted_pose = c2w[0, -1].cpu().numpy()  # [4, 4]
+        return predicted_pose
     @with_timing
     def _imagine_in_place(
         self, 

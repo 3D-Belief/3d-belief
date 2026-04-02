@@ -82,6 +82,8 @@ class ProcTHORDataset(Dataset):
         near_threshold: float = 2.0,
         max_nodes: int = 128,
         max_edges: int = 512,
+        pose_source: str = "gt",
+        predicted_poses_filename: str = "predicted_poses.npz",
     ) -> None:
         super().__init__()
         self.num_context = num_context
@@ -99,6 +101,8 @@ class ProcTHORDataset(Dataset):
         self.near_threshold = near_threshold
         self.max_nodes = max_nodes
         self.max_edges = max_edges
+        self.pose_source = pose_source
+        self.predicted_poses_filename = predicted_poses_filename
 
         self.normalize = normalize_to_neg_one_to_one
         self.rng = default_rng()
@@ -122,13 +126,18 @@ class ProcTHORDataset(Dataset):
             pose_file = scene_path / "all_poses.npz"
             sg_file = scene_path / "all_scene_graphs.json"
 
-            if rgb_file.exists() and depth_file.exists() and pose_file.exists() and sg_file.exists():
+            required = rgb_file.exists() and depth_file.exists() and pose_file.exists() and sg_file.exists()
+            if self.pose_source == "predicted":
+                pred_pose_file = scene_path / self.predicted_poses_filename
+                required = required and pred_pose_file.exists()
+
+            if required:
                 poses_data = np.load(pose_file)
                 num_frames = poses_data["poses"].shape[0]
                 self.num_frames_per_scene.append(num_frames)
                 self.scene_path_list.append(scene_path)
 
-        print(f"[ProcTHOR] {len(self.scene_path_list)} scenes, vocab size {len(self.id_to_type)}")
+        print(f"[ProcTHOR] {len(self.scene_path_list)} scenes (pose_source={self.pose_source}), vocab size {len(self.id_to_type)}")
 
     # -------------------------------------------------------------------------
     # Frame reading (mirrors SPOC pattern)
@@ -167,14 +176,23 @@ class ProcTHORDataset(Dataset):
         depth_mask = (depth < self.z_filter)
 
         # Pose from npz
-        pose_file = scene_path / "all_poses.npz"
-        poses_data = np.load(pose_file)
-        extrinsics = poses_data["poses"][frame_id]  # c2w
-        extrinsics = np.linalg.inv(extrinsics)       # w2c
-        conversion = np.diag([1, -1, -1, 1])
-        extrinsics = conversion @ extrinsics
-
-        cam_param = Camera(extrinsics)
+        if self.pose_source == "predicted":
+            pred_file = scene_path / self.predicted_poses_filename
+            pred_data = np.load(pred_file)
+            # Predicted poses are already c2w in 3d-belief convention
+            c2w_3dbelief = pred_data["poses"][frame_id]
+            w2c_3dbelief = np.linalg.inv(c2w_3dbelief)
+            cam_param = Camera(w2c_3dbelief.astype(np.float32))
+            if "intrinsics" in pred_data:
+                cam_param.intrinsics = pred_data["intrinsics"][frame_id].astype(np.float32)
+        else:
+            pose_file = scene_path / "all_poses.npz"
+            poses_data = np.load(pose_file)
+            extrinsics = poses_data["poses"][frame_id]  # c2w
+            extrinsics = np.linalg.inv(extrinsics)       # w2c
+            conversion = np.diag([1, -1, -1, 1])
+            extrinsics = conversion @ extrinsics
+            cam_param = Camera(extrinsics)
         return rgb, depth, depth_mask, cam_param
 
     def read_scene_graph(self, scene_path: Path, frame_id: int) -> dict:

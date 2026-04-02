@@ -42,6 +42,7 @@ import json as _json
 from splat_belief.utils.vision_utils import JsonLogger
 from splat_belief.splat.splat_belief import SplatBelief
 from splat_belief.splat.alignment import VGGTAlignmentLoss
+from splat_belief.splat.pose_estimator import VGGTPoseEstimator
 
 # constants
 ModelPrediction = namedtuple(
@@ -163,6 +164,12 @@ class Diffusion(nn.Module):
             print("using vggt alignment loss")
             self.build_alignment_module(cfg)
 
+        # Pose estimation via VGGT CameraHead
+        self.pose_source = getattr(cfg, "pose_source", "gt") if cfg is not None else "gt"
+        self.pose_estimator = None
+        if self.pose_source != "gt" and self.use_vggt_alignment:
+            self.build_pose_estimator(cfg)
+
         assert objective in {
             "pred_noise",
             "pred_x0",
@@ -278,6 +285,29 @@ class Diffusion(nn.Module):
         else:
             print(f"Using default vggt layer for alignment loss: [-3:]")
 
+    def build_pose_estimator(self, cfg):
+        """Build VGGTPoseEstimator reusing the VGGT model from alignment loss."""
+        assert hasattr(self, "vggt_alignment_loss"), (
+            "build_pose_estimator requires build_alignment_module to be called first "
+            "(use_vggt_alignment must be True)"
+        )
+        pe_cfg = cfg.pose_estimator if hasattr(cfg, "pose_estimator") else {}
+        freeze = pe_cfg.get("freeze_camera_head", True) if isinstance(pe_cfg, dict) else getattr(pe_cfg, "freeze_camera_head", True)
+        num_iters = pe_cfg.get("num_refinement_iterations", 4) if isinstance(pe_cfg, dict) else getattr(pe_cfg, "num_refinement_iterations", 4)
+        camera_head_ckpt = pe_cfg.get("camera_head_ckpt", None) if isinstance(pe_cfg, dict) else getattr(pe_cfg, "camera_head_ckpt", None)
+
+        self.pose_estimator = VGGTPoseEstimator(
+            vggt_model=self.vggt_alignment_loss.vggt_model,
+            freeze_camera_head=freeze,
+            num_refinement_iterations=num_iters,
+        )
+        # Optionally load finetuned CameraHead weights
+        if camera_head_ckpt is not None:
+            ckpt = torch.load(camera_head_ckpt, map_location="cpu", weights_only=True)
+            self.pose_estimator.vggt_model.camera_head.load_state_dict(ckpt)
+            print(f"Loaded finetuned CameraHead from {camera_head_ckpt}")
+        print(f"Built VGGTPoseEstimator (freeze={freeze}, iters={num_iters}, pose_source={self.pose_source})")
+
     def alignment_loss(self, latents_list, context_images):
         """
         latents_list: list of latents, each is [b, 16, c, h, w]
@@ -291,6 +321,43 @@ class Diffusion(nn.Module):
             vggt_latents_list = latents_list[-3:]
             
         return self.vggt_alignment_loss(vggt_latents_list, context_images)
+
+    @torch.no_grad()
+    def _replace_poses_with_predicted(self, inp):
+        """Replace GT poses in inp dict with VGGT CameraHead predictions.
+
+        Concatenates context + target (+ intermediate) images, runs pose estimation,
+        then splits back and overwrites the pose keys in inp.
+        """
+        num_context = inp["ctxt_rgb"].shape[1]
+        num_target = inp["trgt_rgb"].shape[1]
+        has_intm = "intm_c2w" in inp
+
+        # Collect all images: [B, S, C, H, W] in [0, 1]
+        all_imgs = [self.unnormalize(inp["ctxt_rgb"]), self.unnormalize(inp["trgt_rgb"])]
+        if has_intm:
+            num_intm = inp["intm_rgb"].shape[1]
+            all_imgs.append(self.unnormalize(inp["intm_rgb"]))
+        all_images = torch.cat(all_imgs, dim=1)  # [B, S_total, C, H, W]
+
+        # Predict poses for all views
+        c2w, intrinsics_norm = self.pose_estimator.predict_from_images(
+            all_images, normalize_to_first=True
+        )
+
+        # Split back
+        idx = 0
+        inp["ctxt_c2w"] = c2w[:, idx : idx + num_context]
+        idx += num_context
+        inp["trgt_c2w"] = c2w[:, idx : idx + num_target]
+        idx += num_target
+        if has_intm:
+            inp["intm_c2w"] = c2w[:, idx : idx + num_intm]
+
+        # Use mean predicted intrinsics (should be consistent across views)
+        inp["intrinsics"] = intrinsics_norm[:, 0]  # [B, 3, 3]
+
+        return inp
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
@@ -761,7 +828,11 @@ class Diffusion(nn.Module):
             assert "ctxt_obj_binary_mask" in inp and "trgt_obj_binary_mask" in inp
             ctxt_obj_binary_mask = inp["ctxt_obj_binary_mask"][:, 0, ...]
             trgt_obj_binary_mask = inp["trgt_obj_binary_mask"][:, 0, ...]
-        
+
+        # Replace GT poses with predicted poses if configured
+        if self.pose_estimator is not None and self.pose_source != "gt":
+            inp = self._replace_poses_with_predicted(inp)
+
         model_out, depth, misc = self.model(inp, t, global_step=global_step)
 
         (

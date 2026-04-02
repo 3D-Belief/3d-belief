@@ -258,6 +258,12 @@ def get_train_settings(name, ngpus):
             "sampling": "patch",
             "lindisp": False,
         }
+    elif name == "predicted_poses":
+        return {
+            "batch_size": 1 * ngpus,
+            "num_context": 1,
+            "num_target": 1,
+        }
     elif name == "debug":
         return {
             "batch_size": 1 * ngpus,

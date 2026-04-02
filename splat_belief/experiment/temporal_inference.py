@@ -34,6 +34,8 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from PIL import Image
 from splat_belief.utils.model_utils import build_2d_model
+from splat_belief.splat.pose_estimator import VGGTPoseEstimator
+from splat_belief.splat.alignment.vggt.models.vggt import VGGT
 
 import clip
 import open_clip
@@ -171,6 +173,32 @@ def train(cfg: DictConfig):
         use_semantic=use_semantic,
     )
 
+    # ------------------------------------------------------------------
+    # Optional: build pose estimator for predicted-pose inference
+    # ------------------------------------------------------------------
+    pose_source = getattr(cfg, "pose_source", "gt")
+    pose_estimator = None
+    if pose_source == "predicted":
+        print("[temporal_inference] Building VGGTPoseEstimator for predicted poses")
+        pe_cfg = getattr(cfg, "pose_estimator", {})
+        camera_head_ckpt = pe_cfg.get("camera_head_ckpt", None) if isinstance(pe_cfg, dict) else getattr(pe_cfg, "camera_head_ckpt", None)
+        num_iters = pe_cfg.get("num_refinement_iterations", 4) if isinstance(pe_cfg, dict) else getattr(pe_cfg, "num_refinement_iterations", 4)
+
+        vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
+        vggt_model.eval()
+        for p in vggt_model.parameters():
+            p.requires_grad = False
+        if camera_head_ckpt is not None:
+            ckpt = torch.load(camera_head_ckpt, map_location="cpu", weights_only=True)
+            vggt_model.camera_head.load_state_dict(ckpt)
+            print(f"  Loaded finetuned CameraHead from {camera_head_ckpt}")
+        vggt_model = vggt_model.cuda()
+        pose_estimator = VGGTPoseEstimator(
+            vggt_model=vggt_model,
+            freeze_camera_head=True,
+            num_refinement_iterations=num_iters,
+        ).cuda()
+
     if cfg.inference_sample_from_dataset:
         interesting_indices = sample_video_idx_from_dataset(
             dataset, num_samples=cfg.inference_num_samples,
@@ -251,6 +279,25 @@ def train(cfg: DictConfig):
             near = video_dict["near"]
             far = video_dict["far"]
             lang = video_dict["lang"]
+
+            # ----------------------------------------------------------
+            # Replace poses with CameraHead predictions if requested
+            # ----------------------------------------------------------
+            if pose_source == "predicted" and pose_estimator is not None:
+                # Collect all RGB frames: each data_rgbs[i] is [1, 3, H, W] normalised
+                unnorm = unnormalize_to_zero_to_one
+                all_imgs = torch.stack(
+                    [unnorm(data_rgbs[j]) for j in range(len(data_rgbs))], dim=1
+                )  # [1, N, 3, H, W]
+                pred_c2w, pred_intrinsics = pose_estimator.predict_from_images(
+                    all_imgs.cuda(), normalize_to_first=True
+                )
+                # pred_c2w: [1, N, 4, 4], pred_intrinsics: [1, N, 3, 3]
+                gt_render_poses = render_poses  # keep GT for logging
+                render_poses = [pred_c2w[0, j : j + 1].cpu() for j in range(pred_c2w.shape[1])]
+                abs_camera_poses = render_poses  # abs poses = predicted (already normalised)
+                intrinsics = [pred_intrinsics[0, 0].cpu()] * len(render_poses)
+                print(f"  [predicted poses] Replaced {len(render_poses)} poses via CameraHead")
 
             video_length = len(render_poses)
             assert video_length==num_frames

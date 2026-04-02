@@ -9,6 +9,13 @@ export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 
+# ---- Pose source options ----
+# Default: GT poses (pose_source=gt)
+# Predicted poses with pretrained VGGT CameraHead:
+#   pose_source=predicted pose_estimator.camera_head_ckpt=null
+# Predicted poses with finetuned CameraHead:
+#   pose_source=predicted pose_estimator.camera_head_ckpt=/path/to/camera_head_best.pth
+
 python splat_belief/experiment/temporal_inference.py \
     dataset=spoc_seq \
     dataset.root_dir=/path/to/dataset \
@@ -48,5 +55,6 @@ python splat_belief/experiment/temporal_inference.py \
     semantic_config=splat_belief/config/semantic/onehot.yaml \
     checkpoint_path=/path/to/checkpoint \
     results_folder=outputs/inference/spoc_base \
+    pose_source=gt \
 
 conda deactivate

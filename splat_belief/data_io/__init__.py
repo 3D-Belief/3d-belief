@@ -281,5 +281,7 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             near_threshold=float(getattr(config.dataset, "near_threshold", 2.0)),
             max_nodes=int(getattr(config.dataset, "max_nodes", 128)),
             max_edges=int(getattr(config.dataset, "max_edges", 512)),
+            pose_source=str(getattr(config.dataset, "pose_source", "gt")),
+            predicted_poses_filename=str(getattr(config.dataset, "predicted_poses_filename", "predicted_poses.npz")),
         )
     raise NotImplementedError(f'Dataset "{name}" not supported.')

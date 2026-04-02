@@ -170,7 +170,25 @@ class VGGTAlignmentLoss(nn.Module):
         images_resized = rearrange(images_resized, '(b f) c h w -> b f c h w', b=b)
         images_resized = torch.clamp(images_resized, 0.0, 1.0)
         return images_resized
-    
+
+    @torch.no_grad()
+    def run_aggregator(self, images):
+        """Run VGGT aggregator on preprocessed images and cache raw tokens.
+
+        Args:
+            images: [B, T, C, H, W] raw images (will be preprocessed to 518x518).
+
+        Returns:
+            raw_aggregated_tokens_list: list of raw aggregator output tensors
+                (before interpolation), suitable for CameraHead.
+        """
+        images = images[:, :self.alignment_context_length, :, :, :]
+        images = self.vggt_processor(images)
+        aggregated_tokens_list, patch_start_idx = self.vggt_model.shortcut_forward(images)
+        # Cache raw tokens for CameraHead before any interpolation
+        self._cached_raw_tokens = aggregated_tokens_list
+        return aggregated_tokens_list
+
     def forward(self, latents, images):
         """
         Args:
@@ -185,6 +203,8 @@ class VGGTAlignmentLoss(nn.Module):
         with torch.no_grad():
             # target_feats = self.vggt_model.encode(images)  # list[Tensor], shape [B,T,1374, 2048]
             aggregated_tokens_list, patch_start_idx = self.vggt_model.shortcut_forward(images) #  24x []
+            # Cache raw tokens for CameraHead before interpolation
+            self._cached_raw_tokens = aggregated_tokens_list
             # interpolate to few dimension 
             target_h,target_w =  self.encoder_info[1], self.encoder_info[2]  # 1374, 2048
             aggregated_tokens_list = [F.interpolate(tokens, size=(target_h, target_w), mode='bilinear', align_corners=False) for tokens in aggregated_tokens_list]
