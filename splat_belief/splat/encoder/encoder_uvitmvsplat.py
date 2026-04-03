@@ -368,7 +368,7 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                 trgt_seg_flat = rearrange(trgt_seg_input, "b v c h w -> b v (h w) c")
                 trgt_seg_flat = trgt_seg_flat[:, :, :, None, None, :].expand(
                     -1, -1, -1, self.cfg.num_surfaces, gpp, -1)
-                target_seg = rearrange(trgt_seg_flat[:, v:], "b v r srf gpp c -> b (v r srf gpp) c")
+                target_seg = rearrange(trgt_seg_flat, "b v r srf gpp c -> b (v r srf gpp) c")
 
         # To semantic features
         if self.render_features or self.use_semantic:

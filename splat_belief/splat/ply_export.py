@@ -135,8 +135,11 @@ def export_gaussians_to_ply(
             # eigen‐decompose
             evals, evecs = torch.linalg.eigh(covs_b[i])
             scales_b[i]  = torch.sqrt(torch.clamp(evals, min=0.0))
-            # convert rotation matrix to quaternion (x,y,z,w)
-            qm = R.from_matrix(evecs.cpu().numpy()).as_quat()
+            # ensure right-handed frame before converting to quaternion
+            evecs_np = evecs.cpu().numpy()
+            if np.linalg.det(evecs_np) < 0:
+                evecs_np[:, 0] *= -1
+            qm = R.from_matrix(evecs_np).as_quat()
             rotations_b[i] = torch.tensor(qm, device=means_b.device)
 
         seg_b = gaussians.segmentation[b] if gaussians.segmentation is not None else None

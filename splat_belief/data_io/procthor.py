@@ -117,6 +117,11 @@ class ProcTHORDataset(Dataset):
                 self.num_frames_per_scene.append(num_frames)
                 self.scene_path_list.append(scene_path)
 
+        # Compatibility with sample_video_idx_from_dataset
+        self.all_rgb_files = [
+            [None] * n for n in self.num_frames_per_scene
+        ]
+
         print("[ProcTHOR] Scenes", len(self.scene_path_list))
         print("length dataset", self.len)
 

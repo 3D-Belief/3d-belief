@@ -315,18 +315,22 @@ def train(cfg: DictConfig):
                 ## autoregressively extend the scene
                 if not state_t==len(key_frame_indices)-1:
                     # input
-                    imagine_input = copy.deepcopy(inp) 
+                    imagine_input = copy.deepcopy(inp)
                     imagine_input.update({
                         "ctxt_c2w": torch.cat(render_poses[update_t:update_t+1], dim=0),
                         "ctxt_rgb": normalize(out["images"]),
                         "ctxt_abs_camera_poses": torch.cat(abs_camera_poses[update_t:update_t+1], dim=0)
                     })
+                    if seg_colors is not None:
+                        imagine_input["ctxt_seg_color"] = seg_colors[update_t]
                     # copy current model
                     imagine_model = copy.deepcopy(trainer.ema.ema_model)
                     for imagine_t in range(state_t+1, len(key_frame_indices)):
                         imagine_input["trgt_c2w"] = render_poses[key_frame_indices[imagine_t]]
                         imagine_input["trgt_rgb"] = data_rgbs[key_frame_indices[imagine_t]]
                         imagine_input["trgt_abs_camera_poses"] = abs_camera_poses[key_frame_indices[imagine_t]]
+                        if seg_colors is not None:
+                            imagine_input["trgt_seg_color"] = seg_colors[key_frame_indices[imagine_t]]
                         imagine_input["intrinsics"] = intrinsics[0]
                         imagine_input["image_shape"] = image_shape
                         imagine_input["render_poses"] = torch.cat(render_poses, dim=0)
@@ -346,6 +350,8 @@ def train(cfg: DictConfig):
                             imagine_input["ctxt_c2w"] = render_poses[key_frame_indices[imagine_t]]
                             imagine_input["ctxt_rgb"] = normalize(out["images"])
                             imagine_input["ctxt_abs_camera_poses"] = abs_camera_poses[key_frame_indices[imagine_t]]
+                            if seg_colors is not None:
+                                imagine_input["ctxt_seg_color"] = seg_colors[key_frame_indices[imagine_t]]
 
                 if use_depth_mask:
                     frames, depth_frames, semantics, depth_masks, seg_frames = prepare_video_viz(out)
