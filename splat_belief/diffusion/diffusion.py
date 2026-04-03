@@ -582,7 +582,7 @@ class Diffusion(nn.Module):
                 imgs.append(img)
 
                 # render the video
-                frames, depth_frames, semantics, render_poses = self.model.render_video(
+                frames, depth_frames, semantics, render_poses, *_ = self.model.render_video(
                     inp,
                     time_cond,
                     n=num_frames_render,

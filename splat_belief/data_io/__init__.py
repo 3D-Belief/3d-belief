@@ -11,6 +11,7 @@ from data_io.realestate_seq import RealEstate10kDatasetSeq
 from data_io.hm3d import HM3DDataset
 from data_io.hm3d_seq import HM3DDatasetSeq
 from data_io.spoc import SPOCDataset
+from data_io.procthor import ProcTHORDataset
 from data_io.spoc_seq import SPOCDatasetSeq
 from data_io.dl3dv import DL3DVDataset
 
@@ -27,6 +28,8 @@ def get_path(dataset_name: str) -> str:
     elif dataset_name == "hm3d_seq":
         return ""
     elif dataset_name == "spoc":
+        return ""
+    elif dataset_name == "procthor":
         return ""
     elif dataset_name == "spoc_seq":
         return ""
@@ -253,6 +256,28 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             intermediate=config.intermediate,
             num_intermediate=config.num_intermediate,
             adjacent_angle=config.adjacent_angle,
+            use_depth_supervision=config.use_depth_supervision,
+        )
+    elif name == "procthor":
+        paths = config.dataset.root_dir if config.dataset.root_dir != "" else get_path(name)
+        ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
+        ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
+        le = _get_lang()
+        return ProcTHORDataset(
+            root=paths,
+            num_context=config.num_context,
+            num_target=config.num_target,
+            context_min_distance=ctxt_min,
+            context_max_distance=ctxt_max,
+            max_scenes=config.max_scenes,
+            stage=config.stage,
+            image_size=config.image_size,
+            intermediate=config.intermediate,
+            num_intermediate=config.num_intermediate,
+            language_encoder=le,
+            adjacent_angle=config.adjacent_angle,
+            adjacent_distance=config.adjacent_distance,
+            overfit_to_index=config.overfit_to_index,
             use_depth_supervision=config.use_depth_supervision,
         )
     raise NotImplementedError(f'Dataset "{name}" not supported.')

@@ -60,6 +60,7 @@ class EncoderUViTMVSplatCfg:
     evolve_ctxt: bool
     inference_mode: bool
     use_depth_mask: bool
+    use_segmentation: bool = False
     render_features: bool = True
     freeze_depth_predictor: bool = False
     conditioning_type: Literal["ray_encoding", "plucker"] = "ray_encoding"
@@ -159,6 +160,8 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             nn.ReLU(),
             nn.Conv2d(cfg.d_feature, 1, kernel_size=1),
         )
+
+        self.use_segmentation = cfg.use_segmentation
 
         self.high_resolution_skip = nn.Sequential(
             nn.Conv2d(3, cfg.d_feature, 7, 1, 3),
@@ -351,6 +354,22 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
 
         gpp = self.cfg.gaussians_per_pixel
 
+        # GT segmentation color injection
+        context_seg, target_seg = None, None
+        if self.use_segmentation:
+            ctxt_seg_input = model_input.get("ctxt_seg_color")  # [B, V, 3, H, W] float
+            trgt_seg_input = model_input.get("trgt_seg_color")  # [B, 1, 3, H, W] float
+            if ctxt_seg_input is not None:
+                ctxt_seg_flat = rearrange(ctxt_seg_input, "b v c h w -> b v (h w) c")
+                ctxt_seg_flat = ctxt_seg_flat[:, :, :, None, None, :].expand(
+                    -1, -1, -1, self.cfg.num_surfaces, gpp, -1)
+                context_seg = rearrange(ctxt_seg_flat[:, :v], "b v r srf gpp c -> b (v r srf gpp) c")
+            if trgt_seg_input is not None:
+                trgt_seg_flat = rearrange(trgt_seg_input, "b v c h w -> b v (h w) c")
+                trgt_seg_flat = trgt_seg_flat[:, :, :, None, None, :].expand(
+                    -1, -1, -1, self.cfg.num_surfaces, gpp, -1)
+                target_seg = rearrange(trgt_seg_flat[:, v:], "b v r srf gpp c -> b (v r srf gpp) c")
+
         # To semantic features
         if self.render_features or self.use_semantic:
             semantic_features = rearrange(features, "b v c h w -> b v (h w) c")
@@ -444,7 +463,8 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                 rearrange(gaussians.covariances[:, :v], "b v r srf spp i j -> b (v r srf spp) i j"),
                 rearrange(gaussians.harmonics[:, :v], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
                 rearrange(opacity_multiplier * gaussians.opacities[:, :v], "b v r srf spp -> b (v r srf spp)"),
-                context_semantic
+                context_semantic,
+                segmentation=context_seg,
             )
 
             target_gaussians = Gaussians(
@@ -452,7 +472,8 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                 rearrange(gaussians.covariances[:, v:], "b v r srf spp i j -> b (v r srf spp) i j"),
                 rearrange(gaussians.harmonics[:, v:], "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"),
                 rearrange(opacity_multiplier * gaussians.opacities[:, v:], "b v r srf spp -> b (v r srf spp)"),
-                target_semantic
+                target_semantic,
+                segmentation=target_seg,
             )
         else:
             mask = mask_exp[0]
@@ -500,12 +521,25 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             else:
                 valid_feats_tgt = None
 
+            if self.use_segmentation:
+                if context_seg is not None:
+                    valid_seg_ctx = context_seg[0][mask_ctx_f].unsqueeze(0)
+                else:
+                    valid_seg_ctx = None
+                if target_seg is not None:
+                    valid_seg_tgt = target_seg[0][mask_tgt_f].unsqueeze(0)
+                else:
+                    valid_seg_tgt = None
+            else:
+                valid_seg_ctx, valid_seg_tgt = None, None
+
             context_gaussians = Gaussians(
                 valid_means_ctx,
                 valid_covs_ctx,
                 valid_harms_ctx,
                 valid_ops_ctx,
                 valid_feats_ctx,
+                segmentation=valid_seg_ctx,
             )
 
             target_gaussians = Gaussians(
@@ -514,6 +548,7 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                 valid_harms_tgt,
                 valid_ops_tgt,
                 valid_feats_tgt,
+                segmentation=valid_seg_tgt,
             )
 
         return context_gaussians, target_gaussians

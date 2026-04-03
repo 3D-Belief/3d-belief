@@ -309,6 +309,7 @@ class SplatBelief(nn.Module):
         self.gaussians = gaussians
         frames = []
         depth_frames = []
+        seg_frames = []
         semantics = []
 
         h = 128 if render_high_res else h
@@ -333,6 +334,12 @@ class SplatBelief(nn.Module):
             rgb = rgb * 255.0
             frames.append(rgb.float().cpu().detach().numpy().astype(np.uint8))
             depth_frames.append(depth.float().cpu().detach())
+            # Rendered GT segmentation
+            if output.segmentation is not None:
+                seg = output.segmentation[:, 0, ...]
+                seg = rearrange(seg, "b c h w -> b h w c")
+                seg = torch.clamp(seg, 0.0, 1.0)
+                seg_frames.append((seg * 255.0).float().cpu().detach().numpy().astype(np.uint8))
 
             if self.use_semantic:
                 features = output.features[:, 0:1, ...]
@@ -344,7 +351,7 @@ class SplatBelief(nn.Module):
                 semantics.append(semantic.float().cpu().detach().numpy().astype(np.uint8))
 
         print(f"frames {len(frames)}")
-        return frames, depth_frames, semantics, render_poses
+        return frames, depth_frames, semantics, render_poses, seg_frames
 
     @torch.no_grad()
     def compute_poses(

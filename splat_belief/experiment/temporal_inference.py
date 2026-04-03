@@ -251,6 +251,7 @@ def train(cfg: DictConfig):
             near = video_dict["near"]
             far = video_dict["far"]
             lang = video_dict["lang"]
+            seg_colors = video_dict.get("seg_colors", None)
 
             video_length = len(render_poses)
             assert video_length==num_frames
@@ -280,6 +281,8 @@ def train(cfg: DictConfig):
             inp["ctxt_c2w"] = torch.cat(render_poses[:1], dim=0)
             inp["ctxt_rgb"] = torch.cat(data_rgbs[:1], dim=0)
             inp["ctxt_abs_camera_poses"] = torch.cat(abs_camera_poses[:1], dim=0)
+            if seg_colors is not None:
+                inp["ctxt_seg_color"] = torch.cat(seg_colors[:1], dim=0)
             
             # list to store generated frames for all timesteps visualization
             all_generated_frames_history = []  # list of lists: [timestep][frame_predictions]
@@ -290,6 +293,8 @@ def train(cfg: DictConfig):
                 inp["trgt_c2w"] = render_poses[update_t]
                 inp["trgt_rgb"] = data_rgbs[update_t]
                 inp["trgt_abs_camera_poses"] = abs_camera_poses[update_t]
+                if seg_colors is not None:
+                    inp["trgt_seg_color"] = seg_colors[update_t]
                 inp["intrinsics"] = intrinsics[0]
                 inp["image_shape"] = image_shape
                 inp["render_poses"] = torch.cat(render_poses, dim=0)
@@ -343,9 +348,9 @@ def train(cfg: DictConfig):
                             imagine_input["ctxt_abs_camera_poses"] = abs_camera_poses[key_frame_indices[imagine_t]]
 
                 if use_depth_mask:
-                    frames, depth_frames, semantics, depth_masks = prepare_video_viz(out)
+                    frames, depth_frames, semantics, depth_masks, seg_frames = prepare_video_viz(out)
                 else:
-                    frames, depth_frames, semantics = prepare_video_viz(out)
+                    frames, depth_frames, semantics, seg_frames = prepare_video_viz(out)
                 
                 # store generated frames for this timestep's visualization
                 all_generated_frames_history.append(frames)
@@ -380,6 +385,9 @@ def train(cfg: DictConfig):
                     imageio.mimwrite(denoised_f_depth_mask, depth_masks, fps=10, quality=10)
                 denoised_f_semantic = os.path.join(save_folder_step, f"denoised_view_circle_semantic.mp4")
                 imageio.mimwrite(denoised_f_semantic, semantics, fps=10, quality=10)
+                if seg_frames:
+                    denoised_f_seg = os.path.join(save_folder_step, f"denoised_view_circle_segmentation.mp4")
+                    imageio.mimwrite(denoised_f_seg, seg_frames, fps=10, quality=10)
                 
                 # concate GT and rendered for visualization
                 output_f = os.path.join(save_folder_step, "concatenated_video.mp4")
@@ -429,6 +437,8 @@ def train(cfg: DictConfig):
                 inp["ctxt_c2w"] = torch.cat(render_poses[previous_t:previous_t+1], dim=0)
                 inp["ctxt_rgb"] = torch.cat(data_rgbs[previous_t:previous_t+1], dim=0)
                 inp["ctxt_abs_camera_poses"] = torch.cat(abs_camera_poses[previous_t:previous_t+1], dim=0)
+                if seg_colors is not None:
+                    inp["ctxt_seg_color"] = torch.cat(seg_colors[previous_t:previous_t+1], dim=0)
             
             
 def create_timestep_visualization(
@@ -665,19 +675,27 @@ def prepare_video_viz(out):
 
     # semantic
     semantics = out["semantic_videos"]
+
+    # segmentation
+    seg_frames = out.get("segmentation_videos", [])
+    if seg_frames:
+        for f in range(len(seg_frames)):
+            seg_frames[f] = rearrange(seg_frames[f], "b h w c -> h (b w) c")
     
     if out["depth_masks"] is not None:
         ret = (
             frames,
             depth_frames,
             semantics,
-            depth_masks
+            depth_masks,
+            seg_frames,
         )
     else:
         ret = (
             frames,
             depth_frames,
-            semantics
+            semantics,
+            seg_frames,
         )
 
     return ret

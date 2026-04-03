@@ -31,6 +31,7 @@ def export_ply(
     harmonics: Float[Tensor, "gaussian 3 d_sh"],
     opacities: Float[Tensor, " gaussian"],
     path: Path,
+    segmentation=None,
 ):
     # Shift the scene so that the median Gaussian is at the origin.
     means = means - means.median(dim=0).values
@@ -75,6 +76,11 @@ def export_ply(
     # Since our axes are swizzled for the spherical harmonics, we only export the DC
     # band.
     harmonics_view_invariant = harmonics[..., 0]
+
+    # Override color with segmentation instance color if provided
+    if segmentation is not None:
+        # segmentation: [G, 3] in [0, 1]. 3DGS viewers expect f_dc in [-0.5, 0.5]
+        harmonics_view_invariant = segmentation.detach().cpu() - 0.5
 
     dtype_full = [(attribute, "f4") for attribute in construct_list_of_attributes(0)]
     elements = np.empty(means.shape[0], dtype=dtype_full)
@@ -133,6 +139,8 @@ def export_gaussians_to_ply(
             qm = R.from_matrix(evecs.cpu().numpy()).as_quat()
             rotations_b[i] = torch.tensor(qm, device=means_b.device)
 
+        seg_b = gaussians.segmentation[b] if gaussians.segmentation is not None else None
+
         export_ply(
             extrinsics[b],    # (4,4)
             means_b,          # (N,3)
@@ -141,4 +149,5 @@ def export_gaussians_to_ply(
             harmonics_b,      # (N,3,d_sh)
             opacities_b,      # (N,)
             paths[b],         # Path to write .ply
+            segmentation=seg_b,
         )

@@ -48,6 +48,7 @@ class RenderOutput:
     color: Float[Tensor, "batch 3 height width"] | None
     depth: Float[Tensor, "batch height width"] | None
     features: Float[Tensor, "batch channels height width"] | None
+    segmentation: Float[Tensor, "batch 3 height width"] | None = None
 
 def render_cuda(
     extrinsics: Float[Tensor, "batch 4 4"],

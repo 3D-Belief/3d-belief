@@ -21,6 +21,7 @@ class DecoderOutput:
     color: Float[Tensor, "batch view 3 height width"]
     depth: Float[Tensor, "batch view height width"] | None
     features: Float[Tensor, "batch view channels height width"] | None
+    segmentation: Float[Tensor, "batch view 3 height width"] | None = None
 
 
 T = TypeVar("T")

@@ -247,12 +247,20 @@ class SplatBeliefState(nn.Module):
         context_rendered_depth = rerender_output.depth
         context_rendered_features = rerender_output.features # b v c h w
 
+        # Rendered segmentation
+        target_rendered_segmentation = output.segmentation
+        context_rendered_segmentation = rerender_output.segmentation
+
         misc = {
             "rendered_ctxt_rgb": context_rendered_color,
             "rendered_trgt_rgb": target_rendered_color,
             "rendered_ctxt_depth": context_rendered_depth,
             "rendered_trgt_depth": target_rendered_depth,
         }
+        if target_rendered_segmentation is not None:
+            misc["rendered_trgt_segmentation"] = target_rendered_segmentation
+        if context_rendered_segmentation is not None:
+            misc["rendered_ctxt_segmentation"] = context_rendered_segmentation
 
         # Render intermediate
         if "intm_c2w" in model_input:
@@ -275,6 +283,8 @@ class SplatBeliefState(nn.Module):
                 "rendered_intm_rgb": intm_rendered_color,
                 "rendered_intm_depth": intm_rendered_depth,
             })
+            if intm_output.segmentation is not None:
+                misc["rendered_intm_segmentation"] = intm_output.segmentation
         
         extract_dino = False if self.dino_model is None else True
         # Sample from target rendered semantic feature maps
@@ -375,7 +385,14 @@ class SplatBeliefState(nn.Module):
             semantic = semantic.float().cpu().detach().numpy()
             if not raw_intensity:
                 semantic = semantic.astype(np.uint8)
-        return rgb, depth, semantic
+        # Rendered GT segmentation
+        rendered_seg = None
+        if output.segmentation is not None:
+            rendered_seg = output.segmentation[:, 0, ...]
+            rendered_seg = rearrange(rendered_seg, "b c h w -> b h w c")
+            rendered_seg = torch.clamp(rendered_seg, 0.0, 1.0)
+            rendered_seg = (rendered_seg * 255.0).float().cpu().detach().numpy().astype(np.uint8)
+        return rgb, depth, semantic, rendered_seg
 
     @torch.no_grad()
     def render_video(
@@ -407,6 +424,7 @@ class SplatBeliefState(nn.Module):
         
         frames = []
         depth_frames = []
+        seg_frames = []
         semantics = []
         if self.use_depth_mask:
             depth_masks = []
@@ -447,6 +465,12 @@ class SplatBeliefState(nn.Module):
             rgb = rgb * 255.0
             frames.append(rgb.float().cpu().detach().numpy().astype(np.uint8))
             depth_frames.append(depth.float().cpu().detach())
+            # Rendered GT segmentation
+            if output.segmentation is not None:
+                seg = output.segmentation[:, 0, ...]
+                seg = rearrange(seg, "b c h w -> b h w c")
+                seg = torch.clamp(seg, 0.0, 1.0)
+                seg_frames.append((seg * 255.0).float().cpu().detach().numpy().astype(np.uint8))
             if self.use_depth_mask:
                 depth_masks.append((depth_mask * 255.0).cpu().detach().numpy().astype(np.uint8))
 
@@ -461,9 +485,9 @@ class SplatBeliefState(nn.Module):
             
         print(f"frames {len(frames)}")
         if self.use_depth_mask:
-            return frames, depth_frames, semantics, render_poses, depth_masks
+            return frames, depth_frames, semantics, render_poses, depth_masks, seg_frames
         else:
-            return frames, depth_frames, semantics, render_poses
+            return frames, depth_frames, semantics, render_poses, seg_frames
 
     @torch.no_grad()
     def compute_poses(
@@ -533,6 +557,7 @@ class SplatBeliefState(nn.Module):
             model.history_gaussians.harmonics = self.history_gaussians.harmonics[:1]
             model.history_gaussians.opacities = self.history_gaussians.opacities[:1]
             model.history_gaussians.features = self.history_gaussians.features[:1] if self.history_gaussians.features is not None else None
+            model.history_gaussians.segmentation = self.history_gaussians.segmentation[:1] if self.history_gaussians.segmentation is not None else None
         else:
             model.history_gaussians = None
         if self.incremental_gaussians is not None:
@@ -542,6 +567,7 @@ class SplatBeliefState(nn.Module):
             model.incremental_gaussians.harmonics = self.incremental_gaussians.harmonics[:1]
             model.incremental_gaussians.opacities = self.incremental_gaussians.opacities[:1]
             model.incremental_gaussians.features = self.incremental_gaussians.features[:1] if self.incremental_gaussians.features is not None else None
+            model.incremental_gaussians.segmentation = self.incremental_gaussians.segmentation[:1] if self.incremental_gaussians.segmentation is not None else None
         else:
             model.incremental_gaussians = None
         if self.belief_gaussians is not None:
@@ -551,6 +577,7 @@ class SplatBeliefState(nn.Module):
             model.belief_gaussians.harmonics = self.belief_gaussians.harmonics[:1]
             model.belief_gaussians.opacities = self.belief_gaussians.opacities[:1]
             model.belief_gaussians.features = self.belief_gaussians.features[:1] if self.belief_gaussians.features is not None else None
+            model.belief_gaussians.segmentation = self.belief_gaussians.segmentation[:1] if self.belief_gaussians.segmentation is not None else None
         else:
             model.belief_gaussians = None
 

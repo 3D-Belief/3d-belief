@@ -69,11 +69,48 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
     
         depth = rearrange(depth, "(b v) h w -> b v h w", b=b, v=v)
         features = rearrange(features, "(b v) c h w -> b v c h w", b=b, v=v) if features is not None else None
+        # Render segmentation if available
+        segmentation = None
+        if gaussians.segmentation is not None:
+            segmentation = self.render_segmentation(
+                gaussians, extrinsics, intrinsics, near, far, image_shape,
+            )
+
         return DecoderOutput(
             color,
             depth,
             features,
+            segmentation,
         )
+
+
+    def render_segmentation(
+        self,
+        gaussians: Gaussians,
+        extrinsics: Float[Tensor, "batch view 4 4"],
+        intrinsics: Float[Tensor, "batch view 3 3"],
+        near: Float[Tensor, "batch view"],
+        far: Float[Tensor, "batch view"],
+        image_shape: tuple[int, int],
+    ) -> Float[Tensor, "batch view 3 height width"]:
+        """Render GT segmentation colors attached to each Gaussian."""
+        b, v, _, _ = extrinsics.shape
+        seg = repeat(gaussians.segmentation, "b g c -> (b v) g c", v=v)
+        # Render segmentation as color using colors_precomp (use_sh=False)
+        result = render_cuda(
+            rearrange(extrinsics, "b v i j -> (b v) i j"),
+            rearrange(intrinsics, "b v i j -> (b v) i j"),
+            rearrange(near, "b v -> (b v)"),
+            rearrange(far, "b v -> (b v)"),
+            image_shape,
+            repeat(self.background_color, "c -> (b v) c", b=b, v=v),
+            repeat(gaussians.means, "b g xyz -> (b v) g xyz", v=v),
+            repeat(gaussians.covariances, "b g i j -> (b v) g i j", v=v),
+            repeat(gaussians.opacities, "b g -> (b v) g", v=v),
+            gaussian_color_sh_coefficients=seg.unsqueeze(-1),  # [bv, g, 3, 1]
+            use_sh=False,
+        )
+        return rearrange(result.color, "(b v) c h w -> b v c h w", b=b, v=v)
 
     def render_depth_and_features(
         self,

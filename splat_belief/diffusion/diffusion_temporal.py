@@ -485,7 +485,7 @@ class DiffusionTemporal(nn.Module):
             inp["noisy_trgt_rgb"] = img
 
         time_embed = torch.full((1,), t, device=device, dtype=torch.long)
-        frames, depth_frames, *_ = self.model.render_video(
+        frames, depth_frames, *rest = self.model.render_video(
             inp, time_embed, 20,
         )
 
@@ -565,21 +565,23 @@ class DiffusionTemporal(nn.Module):
 
                 # render the video
                 depth_masks = None
+                seg_frames = []
                 if "render_poses" not in inp:
                     frames = None
                     depth_frames = None
                     render_poses = None
                     semantics = None
+                    seg_frames = []
                 else:
                     if self.use_depth_mask:
-                        frames, depth_frames, semantics, render_poses, depth_masks = self.model.render_video(
+                        frames, depth_frames, semantics, render_poses, depth_masks, seg_frames = self.model.render_video(
                             inp,
                             time_cond,
                             n=num_frames_render,
                             render_high_res=render_high_res,
                         )
                     else:
-                        frames, depth_frames, semantics, render_poses = self.model.render_video(
+                        frames, depth_frames, semantics, render_poses, seg_frames = self.model.render_video(
                             inp,
                             time_cond,
                             n=num_frames_render,
@@ -605,6 +607,7 @@ class DiffusionTemporal(nn.Module):
             "depth_masks": depth_masks,
             "depth_videos": depth_frames,
             "semantic_videos": semantics,
+            "segmentation_videos": seg_frames,
             "inp": inp,
             "render_poses": render_poses,
             "time_cond": time_cond,

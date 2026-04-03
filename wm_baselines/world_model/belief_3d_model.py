@@ -738,7 +738,7 @@ class Belief3DModel(BaseWorldModel):
         depth_frames = []
         semantics = []
         for _, pose in enumerate(render_poses):
-            rgb, depth, semantic = self.render_image(pose, intrinsics, near, far, h, w)
+            rgb, depth, semantic, *_ = self.render_image(pose, intrinsics, near, far, h, w)
             rgb_frames.append(rgb)
             depth_frames.append(depth)
             if semantic is not None:
@@ -800,7 +800,7 @@ class Belief3DModel(BaseWorldModel):
         depth_frames = []
         semantics = []
         for _, pose in enumerate(render_poses):
-            rgb, depth, semantic = self.render_any_scene_image(augmented_scene, pose, intrinsics, near, far, h, w, query_label=query_label)
+            rgb, depth, semantic, *_ = self.render_any_scene_image(augmented_scene, pose, intrinsics, near, far, h, w, query_label=query_label)
             rgb_frames.append(rgb)
             depth_frames.append(depth)
             if semantic is not None:

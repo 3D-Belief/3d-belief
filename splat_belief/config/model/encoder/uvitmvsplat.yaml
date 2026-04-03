@@ -71,6 +71,7 @@ evolve_ctxt: false
 inference_mode: false
 
 render_features: false
+use_segmentation: false
 conditioning_type: ray_encoding
 
 freeze_depth_predictor: false

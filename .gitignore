@@ -103,3 +103,5 @@ archive/
 *.zip
 
 *.egg-info
+
+.claude
