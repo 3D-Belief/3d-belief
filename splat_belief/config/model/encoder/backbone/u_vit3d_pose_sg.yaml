@@ -33,3 +33,9 @@ sg_gcn_layers: 3
 sg_n_heads: 8
 sg_d_head: 32
 sg_dropout_prob: 0.1
+sg_spatial_mode: center         # "center" | "bbox" | "bbox_surface" (bbox for objects + surface for walls)
+
+# Wall conditioning (requires include_walls=true in dataset config)
+include_walls: false
+wall_height_default: 2.5       # fallback ceiling height if not in data
+wall_thickness: 0.15           # assumed wall thickness for AABB

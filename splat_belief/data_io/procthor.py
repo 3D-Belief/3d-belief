@@ -82,6 +82,9 @@ class ProcTHORDataset(Dataset):
         near_threshold: float = 2.0,
         max_nodes: int = 128,
         max_edges: int = 512,
+        include_walls: bool = False,
+        wall_height_default: float = 2.5,
+        wall_thickness: float = 0.15,
         pose_source: str = "gt",
         predicted_poses_filename: str = "predicted_poses.npz",
     ) -> None:
@@ -101,6 +104,9 @@ class ProcTHORDataset(Dataset):
         self.near_threshold = near_threshold
         self.max_nodes = max_nodes
         self.max_edges = max_edges
+        self.include_walls = include_walls
+        self.wall_height_default = wall_height_default
+        self.wall_thickness = wall_thickness
         self.pose_source = pose_source
         self.predicted_poses_filename = predicted_poses_filename
 
@@ -207,6 +213,9 @@ class ProcTHORDataset(Dataset):
             near_threshold=self.near_threshold,
             max_nodes=self.max_nodes,
             max_edges=self.max_edges,
+            include_walls=self.include_walls,
+            wall_height_default=self.wall_height_default,
+            wall_thickness=self.wall_thickness,
         )
 
     # -------------------------------------------------------------------------

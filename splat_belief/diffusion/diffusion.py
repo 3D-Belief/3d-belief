@@ -2,6 +2,8 @@
 
 import math
 from pathlib import Path
+import glob
+from PIL import ImageDraw, ImageFont
 from collections import OrderedDict
 from omegaconf import OmegaConf
 import numpy as np
@@ -1966,7 +1968,7 @@ class Trainer(object):
                         # --- Save GT images and scene graph info ---
                         _save_gt_and_sg(
                             data, save_folder_milestone_frames,
-                            self.results_folder, milestone,
+                            self.results_folder, milestone, out=out,
                         )
                         
                         # Log videos to wandb
@@ -2038,7 +2040,191 @@ def _unnormalize(img_tensor):
     return img.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
 
 
-def _save_gt_and_sg(data, frames_folder, results_folder, milestone):
+def _unnormalize_01(img_tensor):
+    """Convert from [0,1] to [0,255] uint8 (C,H,W) -> (H,W,C)."""
+    img = img_tensor.clamp(0, 1) * 255
+    return img.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+
+
+def _project_bboxes_to_image(
+    node_positions,  # (M, 3) world-space centres
+    node_sizes,      # (M, 3) full AABB dimensions
+    node_mask,       # (M,) bool
+    camera_c2w,      # (4, 4)
+    intrinsics,      # (3, 3)
+    image_hw,        # (H, W)
+    node_names=None, # list of str or None
+    node_is_wall=None,      # (M,) bool – optional
+    wall_endpoints=None,    # (M, 2, 3) – optional
+    wall_heights=None,      # (M,) – optional
+):
+    """Project 3D AABBs (and wall quads) into a camera view, return list of 2D boxes sorted far-to-near.
+
+    Returns list of dicts with keys: u_min, v_min, u_max, v_max, depth, name, color.
+    """
+
+    M = node_positions.shape[0]
+    H, W = image_hw
+    w2c = torch.inverse(camera_c2w.float())
+    R = w2c[:3, :3]
+    t_vec = w2c[:3, 3]
+    fx, fy = intrinsics[0, 0].item(), intrinsics[1, 1].item()
+    cx, cy = intrinsics[0, 2].item(), intrinsics[1, 2].item()
+
+    # 8 corner offsets for AABBs
+    signs = node_positions.new_tensor(
+        [[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
+         [ 1, -1, -1], [ 1, -1, 1], [ 1, 1, -1], [ 1, 1, 1]]
+    )
+
+    boxes = []
+    # Distinct colors for up to 30 objects
+    palette = [
+        (255, 0, 0), (0, 255, 0), (0, 100, 255), (255, 255, 0), (255, 0, 255),
+        (0, 255, 255), (255, 128, 0), (128, 0, 255), (0, 255, 128), (255, 64, 64),
+        (64, 255, 64), (64, 64, 255), (200, 200, 0), (200, 0, 200), (0, 200, 200),
+        (255, 160, 122), (144, 238, 144), (173, 216, 230), (238, 130, 238),
+        (245, 222, 179), (188, 143, 143), (72, 61, 139), (0, 128, 128),
+        (255, 215, 0), (219, 112, 147), (46, 139, 87), (210, 105, 30),
+        (100, 149, 237), (250, 128, 114), (152, 251, 152),
+    ]
+    # Dedicated wall color (orange-red)
+    wall_color = (255, 100, 50)
+
+    has_walls = (node_is_wall is not None and wall_endpoints is not None
+                 and wall_heights is not None)
+
+    for i in range(M):
+        if not node_mask[i]:
+            continue
+
+        is_wall = has_walls and node_is_wall[i].item()
+
+        if is_wall:
+            # 4 quad corners: bottom p1, bottom p2, top p1, top p2
+            p1 = wall_endpoints[i, 0]  # (3,)
+            p2 = wall_endpoints[i, 1]  # (3,)
+            h = wall_heights[i].item()
+            corners = torch.stack([
+                p1,
+                p2,
+                p1 + torch.tensor([0, h, 0], device=p1.device, dtype=p1.dtype),
+                p2 + torch.tensor([0, h, 0], device=p1.device, dtype=p1.dtype),
+            ])  # (4, 3)
+        else:
+            half = node_sizes[i] / 2                        # (3,)
+            corners = node_positions[i].unsqueeze(0) + half.unsqueeze(0) * signs  # (8, 3)
+
+        # Transform to camera space
+        corners_cam = (R @ corners.T).T + t_vec
+        z_vals = corners_cam[:, 2]
+        visible = z_vals > 0.01
+        if not visible.any():
+            continue
+        # Project visible corners
+        z_safe = z_vals.clamp(min=0.01)
+        u_px = (fx * (corners_cam[:, 0] / z_safe) + cx) * W    # pixel coords
+        v_px = (fy * (corners_cam[:, 1] / z_safe) + cy) * H
+
+        u_vis = u_px[visible]
+        v_vis = v_px[visible]
+        u_min = u_vis.min().item()
+        u_max = u_vis.max().item()
+        v_min = v_vis.min().item()
+        v_max = v_vis.max().item()
+
+        # Skip if completely outside the image
+        if u_max < 0 or u_min > W or v_max < 0 or v_min > H:
+            continue
+
+        # Center depth for sorting
+        center_cam = R @ node_positions[i] + t_vec
+        depth = center_cam[2].item()
+
+        name = node_names[i] if node_names is not None else f"obj_{i}"
+        color = wall_color if is_wall else palette[i % len(palette)]
+        boxes.append({
+            "u_min": max(0, u_min), "v_min": max(0, v_min),
+            "u_max": min(W, u_max), "v_max": min(H, v_max),
+            "depth": depth, "name": name, "color": color,
+        })
+
+    # Sort far to near so closer objects are drawn on top
+    boxes.sort(key=lambda b: -b["depth"])
+    return boxes
+
+
+def _draw_bboxes_on_image(pil_img, boxes):
+    """Draw projected bounding boxes on a PIL image with a legend panel.
+
+    Returns a new image: [original with bbox outlines | legend panel].
+    boxes is sorted far-to-near (far drawn first, near on top).
+    """
+
+    # --- Draw bbox rectangles (no inline labels) ---
+    draw = ImageDraw.Draw(pil_img)
+    for box in boxes:
+        rect = [box["u_min"], box["v_min"], box["u_max"], box["v_max"]]
+        draw.rectangle(rect, outline=box["color"], width=2)
+
+    # --- Build legend panel ---
+    # Deduplicate: show each unique (name, color) once, ordered near-to-far
+    seen = set()
+    legend_items = []
+    for box in reversed(boxes):  # near first
+        key = (box["name"], box["color"])
+        if key not in seen:
+            seen.add(key)
+            legend_items.append({"name": box["name"], "color": box["color"],
+                                 "depth": box["depth"]})
+
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+    except (OSError, IOError):
+        font = ImageFont.load_default()
+
+    swatch_size = 12
+    row_height = swatch_size + 6
+    padding = 6
+    # Measure max text width
+    tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    max_tw = 0
+    for item in legend_items:
+        label = f"{item['name']} ({item['depth']:.1f}m)"
+        try:
+            bb = tmp_draw.textbbox((0, 0), label, font=font)
+            tw = bb[2] - bb[0]
+        except AttributeError:
+            tw, _ = tmp_draw.textsize(label, font=font)
+        max_tw = max(max_tw, tw)
+
+    legend_w = padding + swatch_size + 4 + max_tw + padding
+    legend_h = pil_img.size[1]
+
+    legend = Image.new("RGB", (legend_w, legend_h), (255, 255, 255))
+    ld = ImageDraw.Draw(legend)
+
+    y = padding
+    for item in legend_items:
+        if y + row_height > legend_h - padding:
+            break
+        c = item["color"]
+        ld.rectangle([padding, y, padding + swatch_size, y + swatch_size],
+                     fill=c, outline=(0, 0, 0))
+        label = f"{item['name']} ({item['depth']:.1f}m)"
+        ld.text((padding + swatch_size + 4, y - 1), label,
+                fill=(0, 0, 0), font=font)
+        y += row_height
+
+    # --- Combine image + legend ---
+    combined = Image.new("RGB", (pil_img.size[0] + legend_w, pil_img.size[1]),
+                         (255, 255, 255))
+    combined.paste(pil_img, (0, 0))
+    combined.paste(legend, (pil_img.size[0], 0))
+    return combined
+
+
+def _save_gt_and_sg(data, frames_folder, results_folder, milestone, out=None):
     """Save GT images and scene graph info alongside rendered outputs.
 
     Args:
@@ -2046,6 +2232,7 @@ def _save_gt_and_sg(data, frames_folder, results_folder, milestone):
         frames_folder: per-milestone folder for individual frames.
         results_folder: Path object for the top-level results directory.
         milestone: current milestone number.
+        out: output dict from sampling (contains 'images' key with denoised target).
     """
     results_folder = str(results_folder)
 
@@ -2146,12 +2333,67 @@ def _save_gt_and_sg(data, frames_folder, results_folder, milestone):
         with open(sg_path, "w") as f:
             _json.dump(sg_info, f, indent=2)
 
-    # --- Side-by-side GT vs rendered (first batch element) ---
+    # --- Projected bbox overlay on GT target images ---
+    has_sg_geom = (node_pos is not None and node_sizes is not None)
+    has_camera = ("trgt_abs_camera_poses" in data and "intrinsics" in data)
+    if has_sg_geom and has_camera:
+        trgt_c2w = data["trgt_abs_camera_poses"].cpu()   # (B, V_t, 4, 4)
+        intr = data["intrinsics"].cpu()                   # (B, 3, 3)
+        trgt_rgb = data["trgt_rgb"]                       # (B, V_t, C, H, W) or (B, C, H, W)
+        if trgt_rgb.dim() == 5:
+            trgt_rgb = trgt_rgb[:, 0]                     # (B, C, H, W)
+        _, _, H_img, W_img = trgt_rgb.shape
+
+        # Optional wall tensors
+        w_is_wall = data.get("sg_node_is_wall")
+        w_endpoints = data.get("sg_wall_endpoints")
+        w_heights = data.get("sg_wall_heights")
+
+        # Build per-node name list from id_to_type
+        for b in range(trgt_c2w.shape[0]):
+            mask_b = node_mask[b].bool()
+            if id_to_type is not None:
+                names = [
+                    id_to_type[t] if t < len(id_to_type) else f"obj_{t}"
+                    for t in node_types[b].tolist()
+                ]
+            else:
+                names = [f"obj_{i}" for i in range(node_types.shape[1])]
+
+            # Target view (first target)
+            c2w_b = trgt_c2w[b, 0] if trgt_c2w.dim() == 4 else trgt_c2w[b]
+            boxes = _project_bboxes_to_image(
+                node_pos[b].cpu(), node_sizes[b].cpu(), mask_b,
+                c2w_b, intr[b], (H_img, W_img), node_names=names,
+                node_is_wall=w_is_wall[b].cpu() if w_is_wall is not None else None,
+                wall_endpoints=w_endpoints[b].cpu() if w_endpoints is not None else None,
+                wall_heights=w_heights[b].cpu() if w_heights is not None else None,
+            )
+            if boxes:
+                gt_img = _unnormalize(trgt_rgb[b])
+                overlay = Image.fromarray(gt_img.copy())
+                overlay = _draw_bboxes_on_image(overlay, boxes)
+                overlay.save(os.path.join(frames_folder, f"gt_target_bbox_b{b}.png"))
+
+    # --- Side-by-side GT target vs denoised/rendered target (first batch element) ---
     gt_path = os.path.join(frames_folder, "gt_target_b0.png")
-    rendered_path = os.path.join(frames_folder, "rendered_0.png")
-    if os.path.exists(gt_path) and os.path.exists(rendered_path):
+    # Use denoised target from diffusion output if available
+    rendered_target_path = None
+    if out is not None and "images" in out:
+        denoised = out["images"]  # (B, C, H, W) in [0, 1]
+        if denoised.dim() == 4 and denoised.shape[0] > 0:
+            rd_img = _unnormalize_01(denoised[0])
+            rendered_target_path = os.path.join(frames_folder, "denoised_target_b0.png")
+            Image.fromarray(rd_img).save(rendered_target_path)
+    # Fallback to last rendered frame (target viewpoint) if no denoised output
+    if rendered_target_path is None:
+        rendered_frames = sorted(glob.glob(os.path.join(frames_folder, "rendered_*.png")))
+        if rendered_frames:
+            rendered_target_path = rendered_frames[-1]
+
+    if os.path.exists(gt_path) and os.path.exists(rendered_target_path):
         gt_im = Image.open(gt_path)
-        rd_im = Image.open(rendered_path)
+        rd_im = Image.open(rendered_target_path)
         if gt_im.size[1] != rd_im.size[1]:
             h = min(gt_im.size[1], rd_im.size[1])
             gt_im = gt_im.resize((int(gt_im.size[0] * h / gt_im.size[1]), h))
@@ -2165,5 +2407,26 @@ def _save_gt_and_sg(data, frames_folder, results_folder, milestone):
         if wandb.run is not None:
             wandb.log({
                 f"comparison/milestone_{milestone}": wandb.Image(cmp_path,
-                    caption="Left: GT target | Right: Rendered"),
+                    caption="Left: GT target | Right: Denoised target"),
+            })
+
+    # --- Side-by-side GT target with bbox overlay vs denoised target ---
+    bbox_path = os.path.join(frames_folder, "gt_target_bbox_b0.png")
+    if os.path.exists(bbox_path) and rendered_target_path is not None and os.path.exists(rendered_target_path):
+        gt_bbox_im = Image.open(bbox_path)
+        rd_im = Image.open(rendered_target_path)
+        if gt_bbox_im.size[1] != rd_im.size[1]:
+            h = min(gt_bbox_im.size[1], rd_im.size[1])
+            gt_bbox_im = gt_bbox_im.resize((int(gt_bbox_im.size[0] * h / gt_bbox_im.size[1]), h))
+            rd_im = rd_im.resize((int(rd_im.size[0] * h / rd_im.size[1]), h))
+        combined_bbox = Image.new("RGB", (gt_bbox_im.size[0] + rd_im.size[0], gt_bbox_im.size[1]))
+        combined_bbox.paste(gt_bbox_im, (0, 0))
+        combined_bbox.paste(rd_im, (gt_bbox_im.size[0], 0))
+        cmp_bbox_path = os.path.join(results_folder, f"milestone_{milestone}_gt_bbox_vs_rendered.png")
+        combined_bbox.save(cmp_bbox_path)
+
+        if wandb.run is not None:
+            wandb.log({
+                f"comparison/milestone_{milestone}_bbox": wandb.Image(cmp_bbox_path,
+                    caption="Left: GT target + projected bboxes | Right: Denoised target"),
             })

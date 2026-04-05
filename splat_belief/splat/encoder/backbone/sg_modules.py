@@ -194,10 +194,15 @@ class SGCrossAttention(nn.Module):
     Cross-attention from image features (query) to scene graph node tokens (key/value).
     Uses GLIGEN-style zero-initialized gating for stable training.
 
-    Optionally adds a spatial attention bias: each object's 3D center is projected
+    Optionally adds a spatial attention bias: each object's 3D geometry is projected
     into each camera view and a Gaussian bias encourages image patches to attend
     to nearby SG tokens.  The bias is gated (zero-init) so it has no effect at
     the start of training.
+
+    spatial_mode:
+        "center" — isotropic Gaussian from projected 3D center (depth-adaptive σ)
+        "bbox"   — anisotropic Gaussian from projected 8-corner AABB
+        "bbox_surface" — bbox for objects + surface-aware bias for walls
     """
 
     def __init__(
@@ -206,8 +211,11 @@ class SGCrossAttention(nn.Module):
         context_dim: int,
         n_heads: int = 8,
         d_head: int = 32,
+        spatial_mode: str = "center",
     ):
         super().__init__()
+        assert spatial_mode in ("center", "bbox", "bbox_surface"), f"Unknown spatial_mode: {spatial_mode}"
+        self.spatial_mode = spatial_mode
         inner_dim = n_heads * d_head
         self.n_heads = n_heads
         self.d_head = d_head
@@ -228,6 +236,10 @@ class SGCrossAttention(nn.Module):
         # Spatial bias: learnable log-sigma per head + zero-init gate
         self.spatial_log_sigma = nn.Parameter(torch.zeros(n_heads))
         self.spatial_gate = nn.Parameter(torch.zeros(1))
+
+        # Depth-dependent bias: closer objects get higher bias (occlusion prior)
+        # Zero-init → no effect at start; model learns to use depth weighting
+        self.depth_log_alpha = nn.Parameter(torch.zeros(n_heads))
 
     # ------------------------------------------------------------------
     def _compute_spatial_bias(
@@ -288,12 +300,294 @@ class SGCrossAttention(nn.Module):
         # bias: -(sq_dist * z²) / (2 * sigma²)  →  (B, T, H, P, M)
         bias = -sq_dist.unsqueeze(2) * inv_two_sigma_sq.unsqueeze(3)
 
+        # Depth-dependent bias: -alpha * log(z) → closer objects get higher bias
+        depth_bonus = -torch.log(z)                          # (B, T, M)
+        depth_term = self.depth_log_alpha[None, None, :, None, None] \
+                     * depth_bonus[:, :, None, None, :]      # (B, T, H, 1, M)
+        bias = bias + depth_term
+
         # Zero out objects behind the camera (original z before clamp)
         behind = (p_cam[..., 2] <= 0.0)                      # (B, T, M)
         bias.masked_fill_(behind[:, :, None, None, :], 0.0)
 
         # Flatten (B, T) → (B*T)
         bias = rearrange(bias, "b t h p m -> (b t) h p m")  # (BT, H, P, M)
+        return bias
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_bbox_corners(
+        positions: Tensor,  # (B, M, 3) world-space centres
+        sizes: Tensor,      # (B, M, 3) full AABB dimensions (dx, dy, dz)
+    ) -> Tensor:
+        """Compute 8 AABB corners in world space → (B, M, 8, 3)."""
+        half = sizes / 2                                     # (B, M, 3)
+        # 8 sign combinations: (8, 3) with ±1 per axis
+        signs = positions.new_tensor(
+            [[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
+             [ 1, -1, -1], [ 1, -1, 1], [ 1, 1, -1], [ 1, 1, 1]],
+        )                                                    # (8, 3)
+        # (B, M, 1, 3) * (8, 3) → (B, M, 8, 3)
+        offsets = half.unsqueeze(2) * signs                  # broadcast
+        corners = positions.unsqueeze(2) + offsets           # (B, M, 8, 3)
+        return corners
+
+    # ------------------------------------------------------------------
+    def _compute_spatial_bias_bbox(
+        self,
+        sg_node_positions: Tensor,  # (B, M, 3)
+        sg_node_sizes: Tensor,      # (B, M, 3)
+        camera_c2w: Tensor,         # (B, T, 4, 4)
+        intrinsics: Tensor,         # (B, 3, 3)
+        patch_h: int,
+        patch_w: int,
+    ) -> Tensor:
+        """
+        Anisotropic Gaussian bias from projected 3D AABBs.
+
+        Projects all 8 AABB corners into each camera view, derives a 2D bounding
+        rectangle, then computes a Gaussian whose σ_x and σ_y match the bbox
+        half-widths.  Returns (B*T, n_heads, P, M).
+        """
+        B, M, _ = sg_node_positions.shape
+        T = camera_c2w.shape[1]
+        device = sg_node_positions.device
+        dtype = sg_node_positions.dtype
+
+        # --- 8 world-space AABB corners → (B, M, 8, 3) ---
+        corners = self._compute_bbox_corners(sg_node_positions, sg_node_sizes)
+
+        # --- world → camera ---
+        w2c = torch.inverse(camera_c2w)                      # (B, T, 4, 4)
+        R = w2c[:, :, :3, :3]                                # (B, T, 3, 3)
+        t_vec = w2c[:, :, :3, 3]                             # (B, T, 3)
+
+        # Transform corners: (B, M, 8, 3) → (B, T, M, 8, 3)
+        corners_exp = corners.unsqueeze(1).expand(-1, T, -1, -1, -1)  # (B, T, M, 8, 3)
+        # Batched matmul: R @ corner + t
+        p_cam = torch.einsum("btij,btmcj->btmci", R, corners_exp) \
+                + t_vec[:, :, None, None, :]                 # (B, T, M, 8, 3)
+
+        z_corners = p_cam[..., 2]                            # (B, T, M, 8)
+        visible = z_corners > 0                              # (B, T, M, 8)
+        z_safe = z_corners.clamp(min=1e-4)
+
+        # --- perspective project ---
+        fx = intrinsics[:, 0, 0]                             # (B,)
+        fy = intrinsics[:, 1, 1]
+        cx = intrinsics[:, 0, 2]
+        cy = intrinsics[:, 1, 2]
+
+        u_corners = fx[:, None, None, None] * (p_cam[..., 0] / z_safe) \
+                    + cx[:, None, None, None]                # (B, T, M, 8)
+        v_corners = fy[:, None, None, None] * (p_cam[..., 1] / z_safe) \
+                    + cy[:, None, None, None]                # (B, T, M, 8)
+
+        # --- derive 2D bounding rect from visible corners ---
+        INF = torch.tensor(float("inf"), device=device, dtype=dtype)
+        u_for_min = torch.where(visible, u_corners, INF)
+        u_for_max = torch.where(visible, u_corners, -INF)
+        v_for_min = torch.where(visible, v_corners, INF)
+        v_for_max = torch.where(visible, v_corners, -INF)
+
+        u_min = u_for_min.min(dim=-1).values                # (B, T, M)
+        u_max = u_for_max.max(dim=-1).values
+        v_min = v_for_min.min(dim=-1).values
+        v_max = v_for_max.max(dim=-1).values
+
+        # Replace INF/-INF with safe defaults for fully-behind-camera objects
+        # to prevent NaN in cu/cv which poisons the backward pass.
+        any_visible = visible.any(dim=-1)                    # (B, T, M)
+        fully_behind = ~any_visible
+        u_min = torch.where(fully_behind, torch.zeros_like(u_min), u_min)
+        u_max = torch.where(fully_behind, torch.ones_like(u_max), u_max)
+        v_min = torch.where(fully_behind, torch.zeros_like(v_min), v_min)
+        v_max = torch.where(fully_behind, torch.ones_like(v_max), v_max)
+
+        # bbox centre & half-extents (clamped to avoid degenerate boxes)
+        cu = (u_min + u_max) / 2                             # (B, T, M)
+        cv = (v_min + v_max) / 2
+        EPS = 0.01
+        half_w = ((u_max - u_min) / 2).clamp(min=EPS)       # (B, T, M)
+        half_h = ((v_max - v_min) / 2).clamp(min=EPS)
+
+        # --- patch centre grid in [0, 1] ---
+        grid_y = (torch.arange(patch_h, device=device, dtype=dtype) + 0.5) / patch_h
+        grid_x = (torch.arange(patch_w, device=device, dtype=dtype) + 0.5) / patch_w
+        gy, gx = torch.meshgrid(grid_y, grid_x, indexing="ij")
+        gx = gx.reshape(-1)                                 # (P,)
+        gy = gy.reshape(-1)
+
+        # --- normalised squared distance: (B, T, P, M) ---
+        du = (gx[None, None, :, None] - cu[:, :, None, :]) / half_w[:, :, None, :]
+        dv = (gy[None, None, :, None] - cv[:, :, None, :]) / half_h[:, :, None, :]
+        sq_dist_norm = du ** 2 + dv ** 2                     # (B, T, P, M)
+
+        # --- per-head Gaussian bias ---
+        sigma = self.spatial_log_sigma.exp()                 # (H,)
+        inv_two_sigma_sq = 1.0 / (2.0 * sigma ** 2 + 1e-8)  # (H,)
+        # (B, T, P, M) * (H,) → (B, T, H, P, M)
+        bias = -sq_dist_norm.unsqueeze(2) * inv_two_sigma_sq[None, None, :, None, None]
+
+        # Depth-dependent bias: project centers to get camera-space z
+        pos_exp = sg_node_positions.unsqueeze(1).expand(-1, T, -1, -1)  # (B, T, M, 3)
+        center_cam = torch.einsum("btij,btmj->btmi", R, pos_exp) \
+                     + t_vec.unsqueeze(2)                    # (B, T, M, 3)
+        z_center = center_cam[..., 2].clamp(min=1e-4)       # (B, T, M)
+        depth_bonus = -torch.log(z_center)                   # (B, T, M)
+        depth_term = self.depth_log_alpha[None, None, :, None, None] \
+                     * depth_bonus[:, :, None, None, :]      # (B, T, H, 1, M)
+        bias = bias + depth_term
+
+        # Clamp to avoid extreme negative values that cause NaN gradients in softmax
+        bias = bias.clamp(min=-50.0)
+
+        # Objects fully behind camera (no visible corner) → neutral bias
+        # (any_visible already computed above)
+        bias.masked_fill_(~any_visible[:, :, None, None, :], 0.0)
+
+        # Flatten (B, T) → (B*T)
+        bias = rearrange(bias, "b t h p m -> (b t) h p m")  # (BT, H, P, M)
+        return bias
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_wall_quad_corners(
+        wall_endpoints: Tensor,  # (B, M, 2, 3) — bottom endpoints in world space
+        wall_heights: Tensor,    # (B, M) — ceiling height per wall
+    ) -> Tensor:
+        """Compute 4 wall quad corners → (B, M, 4, 3).
+
+        Order: bottom_p1, bottom_p2, top_p1, top_p2
+        """
+        p1 = wall_endpoints[:, :, 0, :]                     # (B, M, 3)
+        p2 = wall_endpoints[:, :, 1, :]                     # (B, M, 3)
+        h = wall_heights.unsqueeze(-1)                       # (B, M, 1)
+        y_offset = torch.zeros_like(p1)
+        y_offset[..., 1] = h.squeeze(-1)                    # (B, M) → y component
+        top_p1 = p1 + y_offset                              # (B, M, 3)
+        top_p2 = p2 + y_offset                              # (B, M, 3)
+        corners = torch.stack([p1, p2, top_p1, top_p2], dim=2)  # (B, M, 4, 3)
+        return corners
+
+    # ------------------------------------------------------------------
+    def _compute_spatial_bias_surface(
+        self,
+        wall_endpoints: Tensor,     # (B, M_w, 2, 3) bottom endpoints
+        wall_heights: Tensor,       # (B, M_w) ceiling heights
+        camera_c2w: Tensor,         # (B, T, 4, 4)
+        intrinsics: Tensor,         # (B, 3, 3)
+        patch_h: int,
+        patch_w: int,
+    ) -> Tensor:
+        """
+        Surface-aware spatial bias for wall tokens.
+
+        Projects 4 wall quad corners, finds the projected bounding rect,
+        and computes a **box-distance** bias: zero inside the rect (uniform
+        high bias), Gaussian falloff outside.
+
+        Returns (B*T, n_heads, P, M_w).
+        """
+        B, M_w, _, _ = wall_endpoints.shape
+        T = camera_c2w.shape[1]
+        device = wall_endpoints.device
+        dtype = wall_endpoints.dtype
+
+        if M_w == 0:
+            P = patch_h * patch_w
+            return torch.zeros(B * T, self.n_heads, P, 0, device=device, dtype=dtype)
+
+        # --- 4 wall quad corners: (B, M_w, 4, 3) ---
+        corners = self._compute_wall_quad_corners(wall_endpoints, wall_heights)
+
+        # --- world → camera ---
+        w2c = torch.inverse(camera_c2w)                      # (B, T, 4, 4)
+        R = w2c[:, :, :3, :3]                                # (B, T, 3, 3)
+        t_vec = w2c[:, :, :3, 3]                             # (B, T, 3)
+
+        # Transform corners: (B, M_w, 4, 3) → (B, T, M_w, 4, 3)
+        corners_exp = corners.unsqueeze(1).expand(-1, T, -1, -1, -1)
+        p_cam = torch.einsum("btij,btmcj->btmci", R, corners_exp) \
+                + t_vec[:, :, None, None, :]                 # (B, T, M_w, 4, 3)
+
+        z_corners = p_cam[..., 2]                            # (B, T, M_w, 4)
+        visible = z_corners > 0                              # (B, T, M_w, 4)
+        z_safe = z_corners.clamp(min=1e-4)
+
+        # --- perspective project ---
+        fx = intrinsics[:, 0, 0]
+        fy = intrinsics[:, 1, 1]
+        cx = intrinsics[:, 0, 2]
+        cy = intrinsics[:, 1, 2]
+
+        u_corners = fx[:, None, None, None] * (p_cam[..., 0] / z_safe) \
+                    + cx[:, None, None, None]                # (B, T, M_w, 4)
+        v_corners = fy[:, None, None, None] * (p_cam[..., 1] / z_safe) \
+                    + cy[:, None, None, None]
+
+        # --- derive 2D bounding rect from visible corners ---
+        INF = torch.tensor(float("inf"), device=device, dtype=dtype)
+        u_for_min = torch.where(visible, u_corners, INF)
+        u_for_max = torch.where(visible, u_corners, -INF)
+        v_for_min = torch.where(visible, v_corners, INF)
+        v_for_max = torch.where(visible, v_corners, -INF)
+
+        u_min = u_for_min.min(dim=-1).values                # (B, T, M_w)
+        u_max = u_for_max.max(dim=-1).values
+        v_min = v_for_min.min(dim=-1).values
+        v_max = v_for_max.max(dim=-1).values
+
+        any_visible = visible.any(dim=-1)                    # (B, T, M_w)
+        fully_behind = ~any_visible
+        u_min = torch.where(fully_behind, torch.zeros_like(u_min), u_min)
+        u_max = torch.where(fully_behind, torch.ones_like(u_max), u_max)
+        v_min = torch.where(fully_behind, torch.zeros_like(v_min), v_min)
+        v_max = torch.where(fully_behind, torch.ones_like(v_max), v_max)
+
+        cu = (u_min + u_max) / 2                             # (B, T, M_w)
+        cv = (v_min + v_max) / 2
+        EPS = 0.01
+        half_w = ((u_max - u_min) / 2).clamp(min=EPS)
+        half_h = ((v_max - v_min) / 2).clamp(min=EPS)
+
+        # --- patch centre grid in [0, 1] ---
+        grid_y = (torch.arange(patch_h, device=device, dtype=dtype) + 0.5) / patch_h
+        grid_x = (torch.arange(patch_w, device=device, dtype=dtype) + 0.5) / patch_w
+        gy, gx = torch.meshgrid(grid_y, grid_x, indexing="ij")
+        gx = gx.reshape(-1)                                 # (P,)
+        gy = gy.reshape(-1)
+
+        # --- box-distance: 0 inside rect, positive outside ---
+        # du_raw = |gx - cu| / half_w → 0 at center, 1 at edge
+        du_raw = (gx[None, None, :, None] - cu[:, :, None, :]).abs() / half_w[:, :, None, :]
+        dv_raw = (gy[None, None, :, None] - cv[:, :, None, :]).abs() / half_h[:, :, None, :]
+        # Clamp to zero inside rect (du_raw <= 1 means inside)
+        du_clamped = (du_raw - 1.0).clamp(min=0.0)          # (B, T, P, M_w)
+        dv_clamped = (dv_raw - 1.0).clamp(min=0.0)
+        sq_dist_box = du_clamped ** 2 + dv_clamped ** 2      # 0 inside, >0 outside
+
+        # --- per-head Gaussian bias ---
+        sigma = self.spatial_log_sigma.exp()                 # (H,)
+        inv_two_sigma_sq = 1.0 / (2.0 * sigma ** 2 + 1e-8)  # (H,)
+        bias = -sq_dist_box.unsqueeze(2) * inv_two_sigma_sq[None, None, :, None, None]
+
+        # --- depth-dependent bias: use midpoint depth ---
+        mid = (wall_endpoints[:, :, 0, :] + wall_endpoints[:, :, 1, :]) / 2  # (B, M_w, 3)
+        mid[..., 1] = wall_heights / 2  # midpoint at half height
+        mid_exp = mid.unsqueeze(1).expand(-1, T, -1, -1)    # (B, T, M_w, 3)
+        mid_cam = torch.einsum("btij,btmj->btmi", R, mid_exp) \
+                  + t_vec.unsqueeze(2)                       # (B, T, M_w, 3)
+        z_center = mid_cam[..., 2].clamp(min=1e-4)          # (B, T, M_w)
+        depth_bonus = -torch.log(z_center)
+        depth_term = self.depth_log_alpha[None, None, :, None, None] \
+                     * depth_bonus[:, :, None, None, :]      # (B, T, H, 1, M_w)
+        bias = bias + depth_term
+
+        bias = bias.clamp(min=-50.0)
+        bias.masked_fill_(~any_visible[:, :, None, None, :], 0.0)
+
+        bias = rearrange(bias, "b t h p m -> (b t) h p m")
         return bias
 
     # ------------------------------------------------------------------
@@ -304,9 +598,13 @@ class SGCrossAttention(nn.Module):
         sg_node_mask: Tensor,                      # (B, M) bool
         temporal_length: int = 2,
         sg_node_positions: Optional[Tensor] = None,  # (B, M, 3)
+        sg_node_sizes: Optional[Tensor] = None,      # (B, M, 3) — needed for bbox mode
         camera_c2w: Optional[Tensor] = None,         # (B, T, 4, 4)
         intrinsics: Optional[Tensor] = None,         # (B, 3, 3)
         patch_grid_size: Optional[tuple] = None,     # (h, w)
+        sg_wall_endpoints: Optional[Tensor] = None,  # (B, M, 2, 3) — for bbox_surface
+        sg_wall_heights: Optional[Tensor] = None,    # (B, M) — for bbox_surface
+        sg_node_is_wall: Optional[Tensor] = None,    # (B, M) bool — for bbox_surface
     ) -> Tensor:
         BT, N, C = x.shape
         B = BT // temporal_length
@@ -336,16 +634,51 @@ class SGCrossAttention(nn.Module):
         attn_bias.masked_fill_(~mask_exp.unsqueeze(1).unsqueeze(2), float("-inf"))
 
         # Spatial Gaussian bias (optional)
-        if (
+        has_spatial = (
             sg_node_positions is not None
             and camera_c2w is not None
             and intrinsics is not None
             and patch_grid_size is not None
-        ):
+        )
+        if has_spatial:
             ph, pw = patch_grid_size
-            spatial_bias = self._compute_spatial_bias(
-                sg_node_positions, camera_c2w, intrinsics, ph, pw,
-            )                                                    # (BT, H, P, M)
+
+            if self.spatial_mode == "bbox_surface" and sg_node_is_wall is not None \
+                    and sg_wall_endpoints is not None and sg_wall_heights is not None \
+                    and sg_node_sizes is not None:
+                # Dispatch: bbox bias for objects, surface bias for walls
+                is_wall = sg_node_is_wall                    # (B, M) bool
+                is_obj = ~is_wall & sg_node_mask             # (B, M) bool
+
+                # Compute full bbox bias for all nodes (cheap, then overwrite wall positions)
+                spatial_bias = self._compute_spatial_bias_bbox(
+                    sg_node_positions, sg_node_sizes,
+                    camera_c2w, intrinsics, ph, pw,
+                )                                            # (BT, H, P, M)
+
+                # Check if there are any walls
+                if is_wall.any():
+                    # Compute surface bias for wall nodes
+                    # We need wall-specific endpoints/heights for wall nodes only.
+                    # But wall_endpoints and wall_heights are stored at the same M positions.
+                    surface_bias = self._compute_spatial_bias_surface(
+                        sg_wall_endpoints, sg_wall_heights,
+                        camera_c2w, intrinsics, ph, pw,
+                    )                                        # (BT, H, P, M)
+
+                    # Replace wall positions in the full bias tensor
+                    wall_mask_exp = repeat(is_wall, "b m -> (b t) 1 1 m", t=T)
+                    spatial_bias = torch.where(wall_mask_exp, surface_bias, spatial_bias)
+
+            elif self.spatial_mode in ("bbox", "bbox_surface") and sg_node_sizes is not None:
+                spatial_bias = self._compute_spatial_bias_bbox(
+                    sg_node_positions, sg_node_sizes,
+                    camera_c2w, intrinsics, ph, pw,
+                )
+            else:
+                spatial_bias = self._compute_spatial_bias(
+                    sg_node_positions, camera_c2w, intrinsics, ph, pw,
+                )
             attn_bias = attn_bias + self.spatial_gate * spatial_bias
 
         attn = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)

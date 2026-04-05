@@ -34,6 +34,11 @@ class BackboneUViT3DPoseSGCfg(BackboneUViT3DPoseCfg):
     sg_n_heads: int = 8                # for cross-attention
     sg_d_head: int = 32
     sg_dropout_prob: float = 0.1       # SG dropout for classifier-free guidance
+    sg_spatial_mode: str = "center"    # "center", "bbox", or "bbox_surface"
+    # Wall conditioning
+    include_walls: bool = False        # parse walls from seen_object_ids
+    wall_height_default: float = 2.5   # fallback ceiling height if not in data
+    wall_thickness: float = 0.15       # assumed wall thickness for AABB
 
 
 class UViT3DPoseSG(UViT3DPose):
@@ -79,6 +84,7 @@ class UViT3DPoseSG(UViT3DPose):
                     context_dim=cfg.sg_dim,
                     n_heads=cfg.sg_n_heads,
                     d_head=cfg.sg_d_head,
+                    spatial_mode=cfg.sg_spatial_mode,
                 )
 
     def _encode_scene_graph(self, model_input: dict) -> tuple[Tensor, Tensor]:
@@ -123,8 +129,12 @@ class UViT3DPoseSG(UViT3DPose):
         sg_node_mask: Tensor,
         is_up: bool = False,
         sg_node_positions: Optional[Tensor] = None,
+        sg_node_sizes: Optional[Tensor] = None,
         camera_c2w: Optional[Tensor] = None,
         intrinsics: Optional[Tensor] = None,
+        sg_wall_endpoints: Optional[Tensor] = None,
+        sg_wall_heights: Optional[Tensor] = None,
+        sg_node_is_wall: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Run a UViT level with scene graph conditioning injected.
@@ -153,9 +163,13 @@ class UViT3DPoseSG(UViT3DPose):
                 x_seq, sg_node_tokens, sg_node_mask,
                 temporal_length=self.temporal_length,
                 sg_node_positions=sg_node_positions,
+                sg_node_sizes=sg_node_sizes,
                 camera_c2w=camera_c2w,
                 intrinsics=intrinsics,
                 patch_grid_size=(h, w),
+                sg_wall_endpoints=sg_wall_endpoints,
+                sg_wall_heights=sg_wall_heights,
+                sg_node_is_wall=sg_node_is_wall,
             )
             x = rearrange(x_seq, "(b t) (h w) c -> (b t) c h w", t=self.temporal_length, h=h, w=w)
 
@@ -188,6 +202,7 @@ class UViT3DPoseSG(UViT3DPose):
 
         # ---- Camera info for spatial cross-attention bias ----
         sg_node_positions = model_input.get("sg_node_positions")   # (B, M, 3)
+        sg_node_sizes = model_input.get("sg_node_sizes")           # (B, M, 3)
         intrinsics = model_input.get("intrinsics")                 # (B, 3, 3)
         ctxt_abs = model_input.get("ctxt_abs_camera_poses")        # (B, V_c, 4, 4)
         trgt_abs = model_input.get("trgt_abs_camera_poses")        # (B, V_t, 4, 4)
@@ -195,6 +210,11 @@ class UViT3DPoseSG(UViT3DPose):
             camera_c2w = torch.cat([ctxt_abs, trgt_abs], dim=1)    # (B, T, 4, 4)
         else:
             camera_c2w = None
+
+        # ---- Wall conditioning tensors (only present when include_walls=True) ----
+        sg_wall_endpoints = model_input.get("sg_wall_endpoints")   # (B, M, 2, 3)
+        sg_wall_heights = model_input.get("sg_wall_heights")       # (B, M)
+        sg_node_is_wall = model_input.get("sg_node_is_wall")       # (B, M) bool
 
         # ---- Standard UViT setup (from UViT3DPose.forward) ----
         h_in, w_in = x.shape[-2], x.shape[-1]
@@ -239,8 +259,12 @@ class UViT3DPoseSG(UViT3DPose):
                 x, embs[i_level], i_level,
                 sg_node_tokens, sg_global_emb, sg_node_mask,
                 sg_node_positions=sg_node_positions,
+                sg_node_sizes=sg_node_sizes,
                 camera_c2w=camera_c2w,
                 intrinsics=intrinsics,
+                sg_wall_endpoints=sg_wall_endpoints,
+                sg_wall_heights=sg_wall_heights,
+                sg_node_is_wall=sg_node_is_wall,
             )
             hs_before.append(x)
             if return_latents:
@@ -253,8 +277,12 @@ class UViT3DPoseSG(UViT3DPose):
             x, embs[-1], self.num_levels - 1,
             sg_node_tokens, sg_global_emb, sg_node_mask,
             sg_node_positions=sg_node_positions,
+            sg_node_sizes=sg_node_sizes,
             camera_c2w=camera_c2w,
             intrinsics=intrinsics,
+            sg_wall_endpoints=sg_wall_endpoints,
+            sg_wall_heights=sg_wall_heights,
+            sg_node_is_wall=sg_node_is_wall,
         )
         if return_latents:
             latents_list.append(x)
@@ -269,8 +297,12 @@ class UViT3DPoseSG(UViT3DPose):
                 sg_node_tokens, sg_global_emb, sg_node_mask,
                 is_up=True,
                 sg_node_positions=sg_node_positions,
+                sg_node_sizes=sg_node_sizes,
                 camera_c2w=camera_c2w,
                 intrinsics=intrinsics,
+                sg_wall_endpoints=sg_wall_endpoints,
+                sg_wall_heights=sg_wall_heights,
+                sg_node_is_wall=sg_node_is_wall,
             )
             if return_latents:
                 latents_list.append(x)

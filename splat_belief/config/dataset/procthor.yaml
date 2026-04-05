@@ -17,6 +17,9 @@ vocab_dir: ""
 near_threshold: 2.0
 max_nodes: 128
 max_edges: 512
+include_walls: false
+wall_height_default: 2.5
+wall_thickness: 0.15
 pose_source: gt  # gt | predicted
 predicted_poses_filename: predicted_poses.npz
 camera:

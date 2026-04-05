@@ -3,9 +3,12 @@ Utilities for ProcTHOR scene graph processing:
 - Build vocabulary of object types and edge types
 - Pre-compute CLIP/SigLIP text embeddings for object types
 - Scene graph parsing helpers
+- Wall line-segment extraction from seen_object_ids
 """
 import json
+import math
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -23,6 +26,9 @@ EDGE_TYPE_PAD = -1
 # Node type for padding
 NODE_TYPE_PAD = 0
 
+# Special type name for walls (added beyond scanned object vocabulary)
+WALL_TYPE_NAME = "Wall"
+
 
 def scan_vocabulary(dataset_root: str) -> Tuple[Dict[str, int], List[str]]:
     """
@@ -34,10 +40,8 @@ def scan_vocabulary(dataset_root: str) -> Tuple[Dict[str, int], List[str]]:
     """
     all_types = set()
     dataset_root = Path(dataset_root)
-    for ep_dir in sorted(dataset_root.iterdir()):
-        sg_path = ep_dir / "all_scene_graphs.json"
-        if not sg_path.exists():
-            continue
+    # Find all episode dirs (support flat layout and split subdirs like train/, unit/)
+    for sg_path in sorted(dataset_root.glob("**/all_scene_graphs.json")):
         with open(sg_path) as f:
             sg_data = json.load(f)
         for frame_data in sg_data:
@@ -50,6 +54,9 @@ def scan_vocabulary(dataset_root: str) -> Tuple[Dict[str, int], List[str]]:
     sorted_types = sorted(all_types)
     # ID 0 is reserved for padding
     id_to_type = ["<pad>"] + sorted_types
+    # Append structural types (Wall) after all scanned object types
+    if WALL_TYPE_NAME not in all_types:
+        id_to_type.append(WALL_TYPE_NAME)
     type_to_id = {t: i for i, t in enumerate(id_to_type)}
     return type_to_id, id_to_type
 
@@ -151,6 +158,9 @@ def parse_scene_graph(
     near_threshold: float = 2.0,
     max_nodes: int = 128,
     max_edges: int = 512,
+    include_walls: bool = False,
+    wall_height_default: float = 2.5,
+    wall_thickness: float = 0.15,
 ) -> dict:
     """
     Parse a single frame's scene graph into tensors.
@@ -161,20 +171,58 @@ def parse_scene_graph(
         near_threshold: distance threshold for "near" edges (meters)
         max_nodes: maximum number of nodes (padded)
         max_edges: maximum number of edges (padded)
+        include_walls: whether to parse wall line-segments from seen_object_ids
+        wall_height_default: fallback ceiling height if not found in data
+        wall_thickness: assumed wall thickness for AABB size
 
     Returns:
         dict with sg_node_types, sg_node_positions, sg_node_rotations,
-        sg_node_sizes, sg_edge_index, sg_edge_types, sg_node_mask, sg_edge_mask
+        sg_node_sizes, sg_edge_index, sg_edge_types, sg_node_mask, sg_edge_mask,
+        and when include_walls=True: sg_wall_endpoints, sg_wall_heights, sg_node_is_wall
     """
     nodes = []  # list of (type_id, pos, rot, size)
     room_assignments = []  # room index for each node
+    is_wall_flags = []  # bool per node
+    wall_endpoint_list = []  # (2, 3) per node; zeros for objects
+    wall_height_list = []  # float per node; 0 for objects
+
+    # Build room_id → room_idx mapping from scene_graph
+    room_id_to_idx = {}
+    for room_idx, room in enumerate(frame_data["scene_graph"]):
+        room_id_str = room.get("id", "")
+        # Extract numeric room id from "room|N"
+        parts = room_id_str.split("|")
+        if len(parts) >= 2:
+            try:
+                room_id_to_idx[int(parts[1])] = room_idx
+            except ValueError:
+                pass
 
     for room_idx, room in enumerate(frame_data["scene_graph"]):
         for child in room.get("children", []):
             _add_node(child, type_to_id, nodes, room_assignments, room_idx)
+            is_wall_flags.append(False)
+            wall_endpoint_list.append(np.zeros((2, 3), dtype=np.float32))
+            wall_height_list.append(0.0)
             # Also add nested children (objects on top of furniture)
             for sub in child.get("children", []):
                 _add_node(sub, type_to_id, nodes, room_assignments, room_idx)
+                is_wall_flags.append(False)
+                wall_endpoint_list.append(np.zeros((2, 3), dtype=np.float32))
+                wall_height_list.append(0.0)
+
+    # Parse walls if requested
+    if include_walls and WALL_TYPE_NAME in type_to_id:
+        wall_nodes = _parse_walls(
+            frame_data, type_to_id, wall_height_default, wall_thickness,
+            room_id_to_idx,
+        )
+        for wn in wall_nodes:
+            nodes.append((wn["type_id"], wn["pos"], wn["rot"], wn["size"]))
+            room_assignments.append(wn["room_idx"])
+            is_wall_flags.append(True)
+            wall_endpoint_list.append(wn["endpoints"])
+            wall_height_list.append(wn["height"])
 
     n_nodes = min(len(nodes), max_nodes)
 
@@ -204,6 +252,9 @@ def parse_scene_graph(
     node_rotations = torch.zeros(max_nodes, 3, dtype=torch.float32)
     node_sizes = torch.zeros(max_nodes, 3, dtype=torch.float32)
     node_mask = torch.zeros(max_nodes, dtype=torch.bool)
+    node_is_wall = torch.zeros(max_nodes, dtype=torch.bool)
+    wall_endpoints = torch.zeros(max_nodes, 2, 3, dtype=torch.float32)
+    wall_heights = torch.zeros(max_nodes, dtype=torch.float32)
 
     for i in range(n_nodes):
         type_id, pos, rot, size = nodes[i]
@@ -212,6 +263,11 @@ def parse_scene_graph(
         node_rotations[i] = torch.tensor(rot, dtype=torch.float32)
         node_sizes[i] = torch.tensor(size, dtype=torch.float32)
         node_mask[i] = True
+        node_is_wall[i] = is_wall_flags[i] if i < len(is_wall_flags) else False
+        if i < len(wall_endpoint_list):
+            wall_endpoints[i] = torch.from_numpy(wall_endpoint_list[i])
+        if i < len(wall_height_list):
+            wall_heights[i] = wall_height_list[i]
 
     edge_index = torch.zeros(2, max_edges, dtype=torch.long)
     edge_types = torch.zeros(max_edges, dtype=torch.long)
@@ -224,7 +280,7 @@ def parse_scene_graph(
         edge_types[i] = etype
         edge_mask[i] = True
 
-    return {
+    result = {
         "sg_node_types": node_types,
         "sg_node_positions": node_positions,
         "sg_node_rotations": node_rotations,
@@ -234,6 +290,13 @@ def parse_scene_graph(
         "sg_node_mask": node_mask,
         "sg_edge_mask": edge_mask,
     }
+
+    if include_walls:
+        result["sg_wall_endpoints"] = wall_endpoints
+        result["sg_wall_heights"] = wall_heights
+        result["sg_node_is_wall"] = node_is_wall
+
+    return result
 
 
 def _add_node(
@@ -248,7 +311,9 @@ def _add_node(
     type_id = type_to_id.get(obj_type, NODE_TYPE_PAD)
 
     pos = obj.get("position", {"x": 0, "y": 0, "z": 0})
-    pos = [pos["x"], pos["y"], pos["z"]]
+    # Negate z: ProcTHOR JSON uses Unity left-handed coords (z-forward),
+    # but camera poses in all_poses.npz use right-handed coords (z-negated).
+    pos = [pos["x"], pos["y"], -pos["z"]]
 
     rot = obj.get("rotation", {"x": 0, "y": 0, "z": 0})
     rot = [rot["x"], rot["y"], rot["z"]]
@@ -265,6 +330,94 @@ def _add_node(
 
     nodes.append((type_id, pos, rot, size))
     room_assignments.append(room_idx)
+
+
+def _parse_walls(
+    frame_data: dict,
+    type_to_id: Dict[str, int],
+    wall_height_default: float,
+    wall_thickness: float,
+    room_id_to_idx: Dict[int, int],
+) -> List[dict]:
+    """
+    Extract wall line-segments and ceiling heights from seen_object_ids.
+
+    Wall IDs follow the format: wall|<room_id>|<x1>|<z1>|<x2>|<z2>
+    Ceiling IDs follow: Ceiling_room|<room_id>|0|<height>|0
+
+    Returns list of wall node dicts, each with:
+        type_id, pos, rot, size, room_idx, endpoints (2,3), height
+    """
+    wall_type_id = type_to_id.get(WALL_TYPE_NAME, NODE_TYPE_PAD)
+    seen_ids = frame_data.get("seen_object_ids", [])
+
+    # First pass: extract ceiling heights per room
+    room_ceil_height: Dict[int, float] = {}
+    for obj_id in seen_ids:
+        if not isinstance(obj_id, str):
+            continue
+        if obj_id.startswith("Ceiling_room|"):
+            parts = obj_id.split("|")
+            if len(parts) >= 4:
+                try:
+                    rid = int(parts[1])
+                    h = float(parts[3])
+                    room_ceil_height[rid] = h
+                except (ValueError, IndexError):
+                    pass
+
+    # Second pass: extract wall line-segments
+    wall_nodes = []
+    for obj_id in seen_ids:
+        if not isinstance(obj_id, str):
+            continue
+        if not obj_id.startswith("wall|"):
+            continue
+        parts = obj_id.split("|")
+        if len(parts) < 6:
+            continue
+        try:
+            rid = int(parts[1])
+            x1, z1 = float(parts[2]), float(parts[3])
+            x2, z2 = float(parts[4]), float(parts[5])
+        except (ValueError, IndexError):
+            continue
+
+        ceil_h = room_ceil_height.get(rid, wall_height_default)
+        room_idx = room_id_to_idx.get(rid, 0)
+
+        # Apply z-negation (Unity left-handed → right-handed)
+        p1 = np.array([x1, 0.0, -z1], dtype=np.float32)
+        p2 = np.array([x2, 0.0, -z2], dtype=np.float32)
+
+        # Midpoint position (center of wall at half height)
+        mid = (p1 + p2) / 2.0
+        pos = [float(mid[0]), ceil_h / 2.0, float(mid[2])]
+
+        # Rotation: angle of segment in XZ plane
+        dx = p2[0] - p1[0]
+        dz = p2[2] - p1[2]
+        angle_y = math.degrees(math.atan2(dx, dz))  # rotation about Y axis
+        rot = [0.0, angle_y, 0.0]
+
+        # Size: (length, height, thickness)
+        length = float(np.linalg.norm(p2 - p1))
+        size = [length, ceil_h, wall_thickness]
+
+        # Raw endpoints for spatial bias (bottom corners in world space)
+        endpoints = np.stack([p1, p2], axis=0)  # (2, 3)
+
+        wall_nodes.append({
+            "type_id": wall_type_id,
+            "pos": pos,
+            "rot": rot,
+            "size": size,
+            "room_idx": room_idx,
+            "endpoints": endpoints,
+            "height": ceil_h,
+        })
+
+    return wall_nodes
 
 
 if __name__ == "__main__":
