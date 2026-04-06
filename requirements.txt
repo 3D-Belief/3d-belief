@@ -51,3 +51,4 @@ google-genai
 supervision
 sentencepiece
 torcheval
+gdown

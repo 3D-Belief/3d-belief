@@ -64,3 +64,4 @@ hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "dat
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 ```
 
+### Benchmarking Path Planning

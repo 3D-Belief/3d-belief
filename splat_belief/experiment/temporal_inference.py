@@ -184,7 +184,14 @@ def train(cfg: DictConfig):
             seed = cfg.seed
             if seed == -1:
                 seed = hash((idx, 42)) % (2**32) + time.time_ns() % (2**32)
+            random.seed(seed)
+            np.random.seed(seed)
             torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
             # import ipdb; ipdb.set_trace()
             print(f"Starting rendering sample {i}")
             video_idx = i[0]

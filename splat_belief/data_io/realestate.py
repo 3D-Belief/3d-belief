@@ -74,6 +74,7 @@ class RealEstate10kDatasetOM(Dataset):
         pose_root: Optional[Union[str, Path]] = None,
         image_size: Optional[int] = 64,
         adjacent_angle: Optional[float] = np.pi/4,
+        adjacent_distance: Optional[float] = 1.0,
         use_depth_supervision: bool = False,
     ) -> None:
         super().__init__()
@@ -83,6 +84,7 @@ class RealEstate10kDatasetOM(Dataset):
         self.context_min_distance = context_min_distance
         self.context_max_distance = context_max_distance
         self.adjacent_angle = adjacent_angle
+        self.adjacent_distance = adjacent_distance
         self.use_depth_supervision = use_depth_supervision
         self.image_size = image_size
         self.intermediate = intermediate
@@ -202,27 +204,27 @@ class RealEstate10kDatasetOM(Dataset):
         if start_idx+1>=len(rgb_files)-1:
             return fallback()
 
-        # z axis of in pose pf the start idx
+        # z axis and translation of the start pose
         _, cam_param = self.read_image(rgb_files, start_idx)
         pose_ctxt = cam_param.c2w_mat
         z_start = pose_ctxt[:, 2][:3]
+        t_start = pose_ctxt[:, 3][:3]
 
-        for idx in range(start_idx+1, num_frames):
+        for idx in range(start_idx + 1, num_frames):
             _, cam_param = self.read_image(rgb_files, idx)
             pose_idx = cam_param.c2w_mat
             z_idx = pose_idx[:, 2][:3]
+            t_idx = pose_idx[:, 3][:3]
             angle = rotation_angle(z_start, z_idx)
+            dist = np.linalg.norm(t_idx - t_start)
             end_idx = idx
-            if angle > self.adjacent_angle or idx-start_idx > self.context_max_distance:
+            if (
+                angle > self.adjacent_angle
+                or dist > self.adjacent_distance
+                or idx - start_idx > self.context_max_distance
+            ):
                 end_idx = idx
                 break
-        
-        # print("scene_idx")
-        # print(scene_idx)
-        # print("start_idx")
-        # print(start_idx)
-        # print("end_idx")
-        # print(end_idx)
 
         flip = self.rng.choice([True, False])
         if flip:

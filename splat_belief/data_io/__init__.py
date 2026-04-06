@@ -121,6 +121,7 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             num_intermediate=config.num_intermediate,
             language_encoder=le,
             adjacent_angle=config.adjacent_angle,
+            adjacent_distance=config.adjacent_distance,
             overfit_to_index=config.overfit_to_index,
             use_depth_supervision=config.use_depth_supervision,
         )
@@ -210,6 +211,7 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             num_intermediate=config.num_intermediate,
             language_encoder=le,
             adjacent_angle=config.adjacent_angle,
+            adjacent_distance=config.adjacent_distance,
             overfit_to_index=config.overfit_to_index,
             use_depth_supervision=config.use_depth_supervision,
         )

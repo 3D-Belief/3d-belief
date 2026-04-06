@@ -98,8 +98,6 @@ def _discover_metric_files(root: Path) -> List[Path]:
         except (TypeError, ValueError):
             continue
 
-        # if bev_val > 0.3 and iou3d_val > 0.3:
-        # Episode passes filter: include *all* its metrics files
         files.extend(metrics_files)
         # print the episode path
         print(f"Including episode: {episode_dir.name}")
