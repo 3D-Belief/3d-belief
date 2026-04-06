@@ -89,6 +89,7 @@ inference_num_samples: 12
 inference_min_frames: 20
 inference_max_frames: 30
 inference_save_scene: False
+inference_save_bboxes: False
 
 history_frames: 5
 

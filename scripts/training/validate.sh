@@ -7,7 +7,7 @@ export MASTER_PORT=$((12000 + RANDOM % 1000))
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-export CUDA_VISIBLE_DEVICES=5
+export CUDA_VISIBLE_DEVICES=0
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 
 python splat_belief/experiment/temporal_inference.py \
@@ -47,6 +47,7 @@ python splat_belief/experiment/temporal_inference.py \
     clean_target=false \
     use_history=false \
     inference_save_scene=true \
+    inference_save_bboxes=true \
     semantic_config=splat_belief/config/semantic/onehot.yaml \
     checkpoint_path=checkpoints/3d_belief_spoc.pt \
     results_folder=outputs/inference/procthor_seg \

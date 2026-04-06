@@ -7,3 +7,6 @@
 [submodule "third_party/nwm"]
 	path = third_party/nwm
 	url = https://github.com/3D-Belief/nwm.git
+[submodule "third_party/sam2"]
+	path = third_party/sam2
+	url = https://github.com/facebookresearch/sam2.git

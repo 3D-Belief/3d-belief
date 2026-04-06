@@ -17,6 +17,7 @@ from einops import rearrange
 
 from splat import SplatBeliefState
 from splat_belief.splat.ply_export import export_ply, export_gaussians_to_ply
+from splat_belief.splat.bbox_export import export_bounding_boxes_to_json
 from splat_belief.splat.decoder import get_decoder
 from splat_belief.splat.encoder import get_encoder
 from splat_belief.embodied.semantic_mapper import SemanticMapper
@@ -81,6 +82,7 @@ def train(cfg: DictConfig):
     semantic_viz = cfg.semantic_viz
 
     inference_save_scene = cfg.inference_save_scene
+    inference_save_bboxes = cfg.inference_save_bboxes
 
     clip_model = None
     if use_semantic:
@@ -394,6 +396,14 @@ def train(cfg: DictConfig):
                 if seg_frames:
                     denoised_f_seg = os.path.join(save_folder_step, f"denoised_view_circle_segmentation.mp4")
                     imageio.mimwrite(denoised_f_seg, seg_frames, fps=10, quality=10)
+
+                    # Save individual segmentation frames as PNGs (egocentric views)
+                    seg_frames_dir = os.path.join(save_folder_step, "segmentation_frames")
+                    os.makedirs(seg_frames_dir, exist_ok=True)
+                    for p, seg_frame in enumerate(seg_frames):
+                        Image.fromarray(seg_frame).save(
+                            os.path.join(seg_frames_dir, f"segmentation_{p}.png")
+                        )
                 
                 # concate GT and rendered for visualization
                 output_f = os.path.join(save_folder_step, "concatenated_video.mp4")
@@ -415,6 +425,13 @@ def train(cfg: DictConfig):
                         gaussians,
                         render_poses[0].to("cuda"),
                         ply_path
+                    )
+
+                if inference_save_bboxes:
+                    bbox_path = Path(f"{save_folder_step}/bboxes_{video_idx}_{start_idx}_{end_idx}.json")
+                    export_bounding_boxes_to_json(
+                        gaussians, bbox_path,
+                        scene_dir=dataset.scene_path_list[video_idx],
                     )
                 
                 # create timestep visualization for current step

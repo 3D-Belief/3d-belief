@@ -125,10 +125,72 @@ class ProcTHORDataset(Dataset):
         print("[ProcTHOR] Scenes", len(self.scene_path_list))
         print("length dataset", self.len)
 
+    def _get_semantic_meta(self, scene_path):
+        """Load and cache the full semantic meta for a scene."""
+        if not hasattr(self, "_semantic_meta_cache"):
+            self._semantic_meta_cache = {}
+
+        key = str(scene_path)
+        if key not in self._semantic_meta_cache:
+            meta_path = scene_path / "all_semantic_meta.json"
+            if not meta_path.exists():
+                self._semantic_meta_cache[key] = None
+                return None
+
+            import json
+            with open(meta_path) as f:
+                self._semantic_meta_cache[key] = json.load(f)
+
+        return self._semantic_meta_cache[key]
+
+    def _get_gt_colors_for_frame(self, scene_path, frame_id):
+        """Get GT segmentation colors only for the specified frame."""
+        if not hasattr(self, "_gt_colors_frame_cache"):
+            self._gt_colors_frame_cache = {}
+
+        key = (str(scene_path), frame_id)
+        if key not in self._gt_colors_frame_cache:
+            meta = self._get_semantic_meta(scene_path)
+            if meta is None:
+                self._gt_colors_frame_cache[key] = None
+                return None
+
+            gt_colors = set()
+            # Use this frame's objects only
+            if frame_id < len(meta):
+                for obj in meta[frame_id]["objects"].values():
+                    gt_colors.add(tuple(obj["color"]))
+
+            if not gt_colors:
+                self._gt_colors_frame_cache[key] = None
+                return None
+
+            self._gt_colors_frame_cache[key] = np.array(sorted(gt_colors), dtype=np.float32)
+
+        return self._gt_colors_frame_cache[key]
+
+    def _snap_seg_to_gt(self, seg_frame, scene_path, frame_id):
+        """Snap each pixel in seg_frame (H, W, 3 uint8) to the nearest GT color
+        from the same frame. Fixes MP4 lossy compression drift."""
+        gt_colors = self._get_gt_colors_for_frame(scene_path, frame_id)
+        if gt_colors is None:
+            return seg_frame
+
+        h, w, _ = seg_frame.shape
+        pixels = seg_frame.reshape(-1, 3).astype(np.float32)  # (H*W, 3)
+
+        # Nearest-neighbor: compute squared L2 to each GT color
+        # (H*W, 1, 3) - (1, K, 3) -> (H*W, K, 3) -> sum -> (H*W, K)
+        dists = ((pixels[:, None, :] - gt_colors[None, :, :]) ** 2).sum(axis=2)
+        nearest_idx = dists.argmin(axis=1)  # (H*W,)
+
+        snapped = gt_colors[nearest_idx].astype(np.uint8).reshape(h, w, 3)
+        return snapped
+
     def read_frame(self, scene_path, frame_id):
         """
         Read RGB frame, depth, segmentation color, and camera pose.
-        
+
         Returns:
             rgb: RGB image tensor [3, H, W]
             depth: Depth map [H, W]
@@ -173,6 +235,10 @@ class ProcTHORDataset(Dataset):
         ret, seg_frame = cap.read()
         seg_frame = cv2.cvtColor(seg_frame, cv2.COLOR_BGR2RGB)
         cap.release()
+
+        # Snap MP4-corrupted colors to exact GT colors before any processing
+        seg_frame = self._snap_seg_to_gt(seg_frame, scene_path, frame_id)
+
         seg_color = torch.tensor(seg_frame.astype(np.float32)).permute(2, 0, 1) / 255.0
         seg_color = F.interpolate(
             seg_color.unsqueeze(0),
