@@ -91,3 +91,30 @@ Then, after a model rollout is done, you can evaluate the model's performance at
 ```bash
 python scripts/calculate_metrics/obj_searching_metrics.py <path_to_predicted_trajectories>
 ```
+
+### Benchmark 3D-CORE
+
+3D-CORE includes three tasks:
+- object completion (`obj_comp_*`)
+- room completion (`room_comp_*`)
+- object permanence (`obj_perm_*`)
+
+Run one task/model pair with:
+```bash
+bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
+```
+Available agent keys:
+- `obj_comp_3d_belief`, `room_comp_3d_belief`, `obj_perm_3d_belief`
+- `obj_comp_dfot_vggt`, `room_comp_dfot_vggt`, `obj_perm_dfot_vggt`
+
+We use Gemini-2.5-Flash in evaluation, so make sure to export your key accordingly:
+```bash
+export GOOGLE_API_KEY=...
+```
+
+Evaluate each reasoning task with:
+```bash
+python scripts/calculate_metrics/obj_comp_metrics.py <path_to_predicted_trajectories>
+python scripts/calculate_metrics/room_comp_metrics.py <path_to_predicted_trajectories>
+python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajectories>
+```
