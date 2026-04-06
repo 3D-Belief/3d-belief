@@ -9,9 +9,17 @@ try:
     from rollout_utils import visualize_semantic_query_intensity_map
 except ImportError:
     def visualize_semantic_query_intensity_map(semantic):
-        """Fallback: return the raw semantic map as-is when rollout_utils is unavailable."""
+        """Fallback: apply a colormap to produce an RGB heatmap when rollout_utils is unavailable."""
         import numpy as np
-        return (np.clip(semantic, 0, 1) * 255).astype(np.uint8) if semantic.max() <= 1.0 else semantic.astype(np.uint8)
+        import matplotlib.cm as cm
+        arr = np.asarray(semantic, dtype=np.float32)
+        vmin, vmax = arr.min(), arr.max()
+        if vmax - vmin > 1e-8:
+            arr = (arr - vmin) / (vmax - vmin)
+        else:
+            arr = np.zeros_like(arr)
+        rgba = cm.turbo(arr)  # (H, W, 4) float in [0,1]
+        return (rgba[..., :3] * 255).astype(np.uint8)
 from wm_baselines.agent.perception.occupancy import OccupancyMap
 from wm_baselines.planner.base_planner import BasePlanner
 from wm_baselines.utils.planning_utils import rotation_angle, goals_and_forwards_to_poses

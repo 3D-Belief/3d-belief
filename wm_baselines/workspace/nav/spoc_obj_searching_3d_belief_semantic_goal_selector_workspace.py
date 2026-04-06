@@ -52,6 +52,8 @@ class SpocObjSearching3DBeliefSemanticGoalSelectorWorkspace(BaseWorkspace):
         for ep_idx, ep in enumerate(self.task_manager.episodes):
             try:
                 print(f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: {self.task_manager.current_ep_name}")
+                if self.seed is not None:
+                    self._set_seed(self.seed + ep_idx)
                 self.env_interface.reset()
                 self.agent.reset()
                 current_ep_name = self.task_manager.current_ep_name

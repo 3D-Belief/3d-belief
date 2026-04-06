@@ -186,10 +186,10 @@ class NWMVGGTModel(BaseWorldModel):
     def reset(self):
         resolution = self.obs_occupancy.resolution
         obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
         resolution = self.belief_occupancy.resolution
         obstacle_height_thresh = self.belief_occupancy.obstacle_height_thresh
-        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
         self.initial_location = {}
         self.step = -1
         self._metrics = {
@@ -293,7 +293,7 @@ class NWMVGGTModel(BaseWorldModel):
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
             resolution = self.obs_occupancy.resolution
             obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
                 position, 

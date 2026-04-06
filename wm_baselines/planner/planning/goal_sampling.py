@@ -210,7 +210,7 @@ def sample_frontier_goals(
     - clearance safety, approach-angle preference, NMS diversity.
     Returns (goals_xyz, forward_dirs).
     """
-    rng = rng if rng is not None else np.random.default_rng()
+    rng = rng if rng is not None else getattr(occ, "rng", np.random.default_rng())
     occ_grid = occ.occupancy
     nz, nx = occ_grid.shape
     res = float(occ.resolution)
@@ -395,7 +395,7 @@ def sample_frontier_goals_relaxed_random(
 
     Returns (goals_xyz, forward_dirs).
     """
-    rng = rng if rng is not None else np.random.default_rng()
+    rng = rng if rng is not None else getattr(occ, "rng", np.random.default_rng())
     assert occ.occupancy is not None, "call set_point_cloud() first"
 
     occ_grid = occ.occupancy
@@ -583,7 +583,7 @@ def sample_frontier_goals_balanced_turns(
       - If no candidates survive, Pass 2 (relaxed): min_goal_dist_m <= d <= fallback_max_goal_dist_m
         If fallback_max_goal_dist_m is None, there is no upper bound in fallback.
     """
-    rng = rng if rng is not None else np.random.default_rng()
+    rng = rng if rng is not None else getattr(occ, "rng", np.random.default_rng())
     assert occ.occupancy is not None, "call set_point_cloud() first"
 
     occ_grid = occ.occupancy

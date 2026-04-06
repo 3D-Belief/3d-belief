@@ -104,7 +104,7 @@ class VGGTModel(BaseWorldModel):
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
             resolution = self.obs_occupancy.resolution
             obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
                 position, 
@@ -128,7 +128,7 @@ class VGGTModel(BaseWorldModel):
         """Reset the occupancy maps."""
         resolution = self.obs_occupancy.resolution
         obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
         self.initial_location = {}
         self.step = -1
         self._metrics = {

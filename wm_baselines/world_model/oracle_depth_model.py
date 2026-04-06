@@ -51,7 +51,7 @@ class OracleDepthModel(BaseWorldModel):
         """Reset the occupancy maps."""
         resolution = self.obs_occupancy.resolution
         obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
         self.model.reset()
         self.initial_location = {}
         self.resample_pcd = True

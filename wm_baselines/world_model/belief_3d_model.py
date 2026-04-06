@@ -120,10 +120,10 @@ class Belief3DModel(BaseWorldModel):
         """Reset the occupancy maps."""
         resolution = self.obs_occupancy.resolution
         obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
         resolution = self.belief_occupancy.resolution
         obstacle_height_thresh = self.belief_occupancy.obstacle_height_thresh
-        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
+        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
 
         self.model.model.model.reset_timestep()
         self.model.ema.ema_model.model.reset_timestep()

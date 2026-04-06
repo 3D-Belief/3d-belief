@@ -15,6 +15,18 @@ class BaseWorldModel:
         self.obs_occupancy : Optional[OccupancyMap] = None  # optionally maintain an occupancy map
         self.belief_occupancy : Optional[OccupancyMap] = None  # optionally maintain a belief occupancy map
         self._metrics : Dict[str, float] = {}  # time taken for inference in seconds
+        self._seed : Optional[int] = None
+
+    def set_seed(self, seed: int):
+        """Propagate seed to occupancy maps for reproducible goal sampling."""
+        import numpy as np
+        self._seed = seed
+        if self.obs_occupancy is not None:
+            self.obs_occupancy._seed = seed
+            self.obs_occupancy.rng = np.random.default_rng(seed)
+        if self.belief_occupancy is not None:
+            self.belief_occupancy._seed = seed
+            self.belief_occupancy.rng = np.random.default_rng(seed)
 
     @property
     def metrics(self) -> Dict[str, float]:

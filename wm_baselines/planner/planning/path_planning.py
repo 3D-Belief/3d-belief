@@ -302,17 +302,19 @@ def plan_rrt_star(
     x_min, x_max = occ.x_min, occ.x_min + occ.nx * occ.resolution
     z_min, z_max = occ.z_min, occ.z_min + occ.nz * occ.resolution
 
+    rng = getattr(occ, 'rng', np.random.default_rng())
+
     start_node = Node(*start_2d)
     nodes: List[Node] = [start_node]
     goal_node: Optional[Node] = None
 
     for i in range(max_iterations):
         # sample
-        if np.random.rand() < goal_sample_rate:
+        if rng.random() < goal_sample_rate:
             rnd = Node(*goal_2d)
         else:
-            rnd = Node(np.random.uniform(x_min, x_max),
-                       np.random.uniform(z_min, z_max))
+            rnd = Node(rng.uniform(x_min, x_max),
+                       rng.uniform(z_min, z_max))
 
         # nearest & steer
         ni = nearest_index(nodes, rnd)
@@ -401,7 +403,7 @@ def plan_random_walk(
     - If the walk fails, returns a minimal two-point fallback (snapped start -> snapped goal).
     """
     assert occ.occupancy is not None, "call set_point_cloud() first"
-    rng = rng or np.random.default_rng()
+    rng = rng or getattr(occ, 'rng', np.random.default_rng())
 
     def _is_traversable_mask():
         occv = occ.occupancy

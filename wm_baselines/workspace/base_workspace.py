@@ -38,14 +38,18 @@ class BaseWorkspace:
         """Set random seed for reproducibility."""
         random.seed(seed)
         np.random.seed(seed)
+        # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+        torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
-            # NOTE: Uncomment if you want to make cudnn deterministic
             # torch.backends.cudnn.deterministic = True
-            # torch.backends.cudnn.benchmark = False  
+            # torch.backends.cudnn.benchmark = False
+        # torch.use_deterministic_algorithms(True, warn_only=True)
         if hasattr(self.env_interface, 'seed'):
           self.env_interface.seed(seed)
+        if hasattr(self.agent, 'world_model') and hasattr(self.agent.world_model, 'set_seed'):
+            self.agent.world_model.set_seed(seed)
 
     def run(self):
         """Run the main loop of the workspace. Must be implemented by subclass."""

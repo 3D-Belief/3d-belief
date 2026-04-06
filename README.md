@@ -64,4 +64,30 @@ hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "dat
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 ```
 
-### Benchmarking Path Planning
+### Benchmark Path Planning
+To benchmark the performance of 3d-Belief and other baseline models on the object searching task, you need to set up the paths first at `wm_baselines/config/paths.yaml`.
+
+Then, if you want to run VLM-based models, export your keys:
+```bash
+export OPENAI_API_KEY=...
+export GOOGLE_API_KEY=...
+```
+
+Run one model (`run_obj_searching_single`):
+```bash
+bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
+```
+You can replace the model key with others such as:
+`gpt_vlm_agent`, `gemini_vlm_agent`, `qwen3_vlm_agent`, `vggt_frontier`,
+`vggt_gpt_vlm_goal_selector`, `dfot_vggt_gpt_vlm_goal_selector`
+
+To run all the models sequentially:
+```bash
+bash scripts/rollouts/object_searching_single.sh
+```
+Since all the models run on a single GPU, this script may take a quite a while.
+
+Then, after a model rollout is done, you can evaluate the model's performance at:
+```bash
+python scripts/calculate_metrics/obj_searching_metrics.py <path_to_predicted_trajectories>
+```
