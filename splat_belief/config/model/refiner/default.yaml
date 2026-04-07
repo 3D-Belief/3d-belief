@@ -1,0 +1,15 @@
+enabled: false
+num_iterations: 60
+lr_means: 1.6e-4
+lr_harmonics: 2.5e-3
+lr_opacity: 0.05
+lr_scaling: 1.0e-3
+lr_rotation: 1.0e-3
+rgb_loss_weight: 1.0
+use_ssim: false
+ssim_weight: 0.2
+window_size: 10
+densify_every: 150
+densify_grad_threshold: 0.0002
+opacity_prune_threshold: 0.7
+size_prune_threshold: 0.1

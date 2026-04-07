@@ -130,6 +130,36 @@ pose_estimator:
   num_refinement_iterations: 4
   camera_head_ckpt: null  # path to finetuned CameraHead checkpoint (null = use pretrained VGGT weights)
 
+# Online Gaussian refinement (Splat-SLAM-inspired test-time optimization)
+refiner:
+  enabled: false
+  num_iterations: 30
+  lr_means: 1.6e-4
+  lr_harmonics: 2.5e-3
+  lr_opacity: 0.05
+  lr_scaling: 1.0e-3
+  lr_rotation: 1.0e-3
+  rgb_loss_weight: 1.0
+  use_ssim: false
+  ssim_weight: 0.2
+  window_size: 10
+  # Regularization
+  prior_weight: 0.1
+  freeze_geometry: false
+  harmonics_dc_only: true
+  min_observations: 2
+  # LR decay
+  use_lr_decay: true
+  lr_means_final: 1.6e-6
+  # Visibility masking
+  use_visibility_masking: true
+  visibility_margin: 0.05
+  # Densification
+  densify_every: 150
+  densify_grad_threshold: 0.0002
+  opacity_prune_threshold: 0.7
+  size_prune_threshold: 0.1
+
 agent:
   camera: ${dataset.camera}
   save_scene: False

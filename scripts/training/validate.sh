@@ -16,6 +16,12 @@ export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 # Predicted poses with finetuned CameraHead:
 #   pose_source=predicted pose_estimator.camera_head_ckpt=/path/to/camera_head_best.pth
 
+# ---- Online Gaussian refinement (Splat-SLAM-inspired) ----
+# To enable: add  refiner.enabled=true  to the command below.
+# Adjust iterations/LRs as needed:
+#   refiner.num_iterations=60  refiner.lr_means=1.6e-4  etc.
+# The refiner runs at test time only (no training changes).
+
 python splat_belief/experiment/temporal_inference.py \
     dataset=spoc_seq \
     dataset.root_dir=/path/to/dataset \
@@ -56,5 +62,6 @@ python splat_belief/experiment/temporal_inference.py \
     checkpoint_path=/path/to/checkpoint \
     results_folder=outputs/inference/spoc_base \
     pose_source=gt \
+    refiner.enabled=false \
 
 conda deactivate

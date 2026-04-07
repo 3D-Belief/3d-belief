@@ -129,8 +129,12 @@ def export_gaussians_to_ply(
             # eigen‐decompose
             evals, evecs = torch.linalg.eigh(covs_b[i])
             scales_b[i]  = torch.sqrt(torch.clamp(evals, min=0.0))
+            # ensure right-handed frame (eigh can return left-handed)
+            evecs_np = evecs.cpu().numpy()
+            if np.linalg.det(evecs_np) < 0:
+                evecs_np[:, 0] *= -1
             # convert rotation matrix to quaternion (x,y,z,w)
-            qm = R.from_matrix(evecs.cpu().numpy()).as_quat()
+            qm = R.from_matrix(evecs_np).as_quat()
             rotations_b[i] = torch.tensor(qm, device=means_b.device)
 
         export_ply(

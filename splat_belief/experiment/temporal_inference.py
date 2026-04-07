@@ -16,6 +16,7 @@ import data_io
 from einops import rearrange
 
 from splat import SplatBeliefState
+from splat_belief.splat.gaussian_refiner import GaussianRefinerCfg
 from splat_belief.splat.ply_export import export_ply, export_gaussians_to_ply
 from splat_belief.splat.decoder import get_decoder
 from splat_belief.splat.encoder import get_encoder
@@ -25,6 +26,7 @@ import random
 import imageio
 import copy
 import numpy as np
+import gc
 from splat_belief.utils.vision_utils import *
 from torchvision.utils import make_grid
 from accelerate import DistributedDataParallelKwargs
@@ -36,6 +38,9 @@ from PIL import Image
 from splat_belief.utils.model_utils import build_2d_model
 from splat_belief.splat.pose_estimator import VGGTPoseEstimator
 from splat_belief.splat.alignment.vggt.models.vggt import VGGT
+
+import json
+import lpips
 
 import clip
 import open_clip
@@ -117,6 +122,14 @@ def train(cfg: DictConfig):
             semantic_viz=semantic_viz
         )
 
+    # Build refiner config
+    refiner_cfg_dict = getattr(cfg, "refiner", {})
+    if isinstance(refiner_cfg_dict, dict):
+        refiner_cfg = GaussianRefinerCfg(**refiner_cfg_dict) if refiner_cfg_dict else GaussianRefinerCfg()
+    else:
+        # OmegaConf DictConfig
+        refiner_cfg = GaussianRefinerCfg(**dict(refiner_cfg_dict))
+
     model = SplatBeliefState(
         encoder,
         encoder_visualizer,
@@ -131,6 +144,7 @@ def train(cfg: DictConfig):
         clip_model=clip_model,
         dino_model=dino_model,
         use_depth_mask=use_depth_mask,
+        refiner_cfg=refiner_cfg,
     ).cuda()
 
     diffusion = DiffusionTemporal(
@@ -176,6 +190,10 @@ def train(cfg: DictConfig):
     # ------------------------------------------------------------------
     # Optional: build pose estimator for predicted-pose inference
     # ------------------------------------------------------------------
+
+    # Perceptual metric for evaluation
+    lpips_metric = lpips.LPIPS(net='vgg').cuda().eval()
+
     pose_source = getattr(cfg, "pose_source", "gt")
     pose_estimator = None
     if pose_source == "predicted":
@@ -200,6 +218,10 @@ def train(cfg: DictConfig):
         ).cuda()
 
     if cfg.inference_sample_from_dataset:
+        # Seed RNG right before sampling so scene selection is deterministic
+        # regardless of model initialization path (e.g. refiner on/off).
+        random.seed(cfg.seed)
+        np.random.seed(cfg.seed)
         interesting_indices = sample_video_idx_from_dataset(
             dataset, num_samples=cfg.inference_num_samples,
             min_frames=cfg.inference_min_frames, max_frames=cfg.inference_max_frames, 
@@ -322,6 +344,9 @@ def train(cfg: DictConfig):
 
             trainer.model.model.reset_timestep()
             trainer.ema.ema_model.model.reset_timestep()
+            # Free GPU memory between scenes
+            gc.collect()
+            torch.cuda.empty_cache()
             previous_t = 0
             inp = {}
             inp["ctxt_c2w"] = torch.cat(render_poses[:1], dim=0)
@@ -365,6 +390,10 @@ def train(cfg: DictConfig):
                     })
                     # copy current model
                     imagine_model = copy.deepcopy(trainer.ema.ema_model)
+                    # Disable refiner on imagination model — refinement should
+                    # only run against real observations, not imagined frames.
+                    if hasattr(imagine_model.model, 'refiner') and imagine_model.model.refiner is not None:
+                        imagine_model.model.refiner.cfg = GaussianRefinerCfg(enabled=False)
                     for imagine_t in range(state_t+1, len(key_frame_indices)):
                         imagine_input["trgt_c2w"] = render_poses[key_frame_indices[imagine_t]]
                         imagine_input["trgt_rgb"] = data_rgbs[key_frame_indices[imagine_t]]
@@ -440,7 +469,7 @@ def train(cfg: DictConfig):
                 # save the scene
                 ply_path = Path(f"{save_folder_step}/scene_{video_idx}_{start_idx}_{end_idx}.ply")
                 vis_model = imagine_model if not state_t==len(key_frame_indices)-1 else trainer.ema.ema_model
-                gaussians = vis_model.model.history_gaussians + vis_model.model.belief_gaussians
+                gaussians = vis_model.model.augmented_gaussians
                 gaussians = gaussians.float()
                 
                 if inference_save_scene:
@@ -450,6 +479,68 @@ def train(cfg: DictConfig):
                         ply_path
                     )
                 
+                # ---- Quantitative metrics at final keyframe step ----
+                if state_t == len(key_frame_indices) - 1:
+                    all_kf_indices = set([0] + key_frame_indices)
+                    per_frame_metrics = []
+                    for fi in range(len(frames)):
+                        pred_np = frames[fi].astype(np.float32) / 255.0  # [H, W, 3]
+                        gt_np = rgbs[fi].astype(np.float32) / 255.0
+                        # L1
+                        l1_val = float(np.mean(np.abs(pred_np - gt_np)))
+                        # MSE -> PSNR
+                        mse_val = float(np.mean((pred_np - gt_np) ** 2))
+                        psnr_val = float(10.0 * np.log10(1.0 / max(mse_val, 1e-10)))
+                        # SSIM (per-channel, then average)
+                        from skimage.metrics import structural_similarity as sk_ssim
+                        ssim_val = float(sk_ssim(gt_np, pred_np, channel_axis=2, data_range=1.0))
+                        # LPIPS
+                        with torch.no_grad():
+                            pred_t = torch.from_numpy(pred_np).permute(2, 0, 1).unsqueeze(0).cuda() * 2.0 - 1.0
+                            gt_t = torch.from_numpy(gt_np).permute(2, 0, 1).unsqueeze(0).cuda() * 2.0 - 1.0
+                            lpips_val = float(lpips_metric(pred_t, gt_t).item())
+                        is_kf = fi in all_kf_indices
+                        per_frame_metrics.append({
+                            "frame": fi, "psnr": psnr_val, "ssim": ssim_val,
+                            "lpips": lpips_val, "l1": l1_val, "is_keyframe": is_kf,
+                        })
+                    # Aggregate
+                    def _mean(lst, key):
+                        vals = [m[key] for m in lst]
+                        return float(np.mean(vals)) if vals else 0.0
+                    kf_metrics = [m for m in per_frame_metrics if m["is_keyframe"]]
+                    nkf_metrics = [m for m in per_frame_metrics if not m["is_keyframe"]]
+                    refiner_enabled = getattr(cfg, "refiner", {}).get("enabled", False) if isinstance(getattr(cfg, "refiner", {}), dict) else getattr(getattr(cfg, "refiner", None), "enabled", False)
+                    metrics_summary = {
+                        "scene_idx": video_idx,
+                        "start_idx": start_idx,
+                        "end_idx": end_idx,
+                        "num_frames": len(frames),
+                        "num_keyframes": len(kf_metrics),
+                        "refiner_enabled": bool(refiner_enabled),
+                        "seed": seed,
+                        "per_frame": per_frame_metrics,
+                        "mean_psnr": _mean(per_frame_metrics, "psnr"),
+                        "mean_ssim": _mean(per_frame_metrics, "ssim"),
+                        "mean_lpips": _mean(per_frame_metrics, "lpips"),
+                        "mean_l1": _mean(per_frame_metrics, "l1"),
+                        "keyframe_mean_psnr": _mean(kf_metrics, "psnr"),
+                        "keyframe_mean_ssim": _mean(kf_metrics, "ssim"),
+                        "keyframe_mean_lpips": _mean(kf_metrics, "lpips"),
+                        "keyframe_mean_l1": _mean(kf_metrics, "l1"),
+                        "nonkeyframe_mean_psnr": _mean(nkf_metrics, "psnr"),
+                        "nonkeyframe_mean_ssim": _mean(nkf_metrics, "ssim"),
+                        "nonkeyframe_mean_lpips": _mean(nkf_metrics, "lpips"),
+                        "nonkeyframe_mean_l1": _mean(nkf_metrics, "l1"),
+                    }
+                    metrics_path = os.path.join(save_folder_sample, "metrics.json")
+                    with open(metrics_path, "w") as mf:
+                        json.dump(metrics_summary, mf, indent=2)
+                    print(f"  [metrics] PSNR={metrics_summary['mean_psnr']:.2f}  "
+                          f"SSIM={metrics_summary['mean_ssim']:.4f}  "
+                          f"LPIPS={metrics_summary['mean_lpips']:.4f}  "
+                          f"L1={metrics_summary['mean_l1']:.4f}")
+
                 # create timestep visualization for current step
                 create_timestep_visualization(
                     rgbs=rgbs, 

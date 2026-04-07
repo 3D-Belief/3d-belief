@@ -563,6 +563,23 @@ class DiffusionTemporal(nn.Module):
                 img = x_start
                 imgs.append(img)
 
+                # Online Gaussian refinement at final denoising step
+                _, _, _, h_img, w_img = inp["ctxt_rgb"].shape
+                refined_gaussians = self.model.refine_current_gaussians((h_img, w_img))
+                if refined_gaussians is not None:
+                    # Re-render from the refined Gaussians for the final output
+                    refined_output = self.model.decoder.forward(
+                        refined_gaussians.float(),
+                        inp["trgt_c2w"],
+                        inp["intrinsics"].unsqueeze(1),
+                        inp["near"].float().unsqueeze(1),
+                        inp["far"].float().unsqueeze(1),
+                        (h_img, w_img),
+                        depth_mode=self.model.depth_mode,
+                    )
+                    img = self.normalize(torch.clamp(refined_output.color[:, 0], 0.0, 1.0))
+                    imgs[-1] = img
+
                 # render the video
                 depth_masks = None
                 if "render_poses" not in inp:

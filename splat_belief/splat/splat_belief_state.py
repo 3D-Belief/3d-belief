@@ -16,7 +16,8 @@ from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from splat_belief.embodied.semantic_mapper import SemanticMapper
-from splat_belief.utils.model_utils import forward_2d_model_batch    
+from splat_belief.utils.model_utils import forward_2d_model_batch
+from .gaussian_refiner import GaussianRefiner, GaussianRefinerCfg
 
 class SplatBeliefState(nn.Module):
     encoder: Encoder
@@ -56,6 +57,7 @@ class SplatBeliefState(nn.Module):
         feature_patch_max_scale: float = 0.5,
         feature_patch_num_samples: int = 15,
         use_depth_mask: bool = False,
+        refiner_cfg: Optional[GaussianRefinerCfg] = None,
     ) -> None:
         super().__init__()
 
@@ -83,6 +85,15 @@ class SplatBeliefState(nn.Module):
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
         
+        # Online Gaussian refinement (Splat-SLAM-inspired)
+        # Always create the refiner so that code paths (add_observation, etc.)
+        # are identical regardless of the enabled flag.  The enabled flag only
+        # controls whether the actual optimisation loop runs.
+        if refiner_cfg is not None:
+            self.refiner = GaussianRefiner(refiner_cfg, decoder)
+        else:
+            self.refiner = None
+        
         # Internal counter for time steps.
         self.current_timestep = None
         # Containers for Gaussians
@@ -103,6 +114,29 @@ class SplatBeliefState(nn.Module):
             return self.belief_gaussians
         if self.history_gaussians is not None:
             return self.history_gaussians
+        return None
+    
+    def refine_current_gaussians(self, image_shape: tuple[int, int]):
+        """Run online Gaussian refinement against stored observations.
+        
+        Only refines history_gaussians (from real observations), leaving
+        belief_gaussians (imagined future) untouched so imagination renders
+        are not affected by refinement artifacts.
+        
+        Returns:
+            Augmented (refined history + belief) Gaussians if refinement
+            actually ran, else None.
+        """
+        if self.history_gaussians is None:
+            return None
+        if self.refiner is not None:
+            refined_history = self.refiner.refine(self.history_gaussians, image_shape)
+            if refined_history is not None:
+                self.history_gaussians = refined_history
+                torch.cuda.empty_cache()
+                # Return the full augmented set for the final re-render
+                return self.augmented_gaussians
+        # No refinement happened — return None so caller knows not to re-render
         return None
     
     def forward(
@@ -175,6 +209,15 @@ class SplatBeliefState(nn.Module):
             self.incremental_gaussians = context_gaussians
             # Update belief Gaussians
             self.belief_gaussians = target_gaussians
+
+            # Store observed frame for online refinement (once per new state_t)
+            if self.refiner is not None:
+                obs_rgb = self.unnormalize(model_input["ctxt_rgb"][:, 0])  # [B, 3, H, W]
+                obs_c2w = model_input["ctxt_c2w"][:, 0]  # [B, 4, 4]
+                obs_intrinsics = model_input["intrinsics"]  # [B, 3, 3]
+                obs_near = model_input["near"].float()  # [B]
+                obs_far = model_input["far"].float()  # [B]
+                self.refiner.add_observation(obs_rgb, obs_c2w, obs_intrinsics, obs_near, obs_far)
         else:
             assert self.current_timestep==state_t
             if self.use_history:
@@ -416,8 +459,7 @@ class SplatBeliefState(nn.Module):
 
         print(f"render_poses {render_poses.shape}")
 
-        # Augmented gaussians
-        gaussians = self.history_gaussians + self.belief_gaussians
+        gaussians = self.augmented_gaussians
 
         for i in range(n):
             output = self.decoder.forward(
@@ -520,6 +562,8 @@ class SplatBeliefState(nn.Module):
         self.history_rgb = None
         self.history_pose = None
         self.first_ctxt_c2w = None
+        if self.refiner is not None:
+            self.refiner.reset()
 
     def copy_states_to_ema(self, model: SplatBeliefState):
         model.current_timestep = self.current_timestep
