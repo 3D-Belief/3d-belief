@@ -18,6 +18,7 @@ from splat_belief.utils.vision_utils import normalize_to_neg_one_to_one
 from splat_belief.utils.procthor_utils import (
     load_vocabulary,
     parse_scene_graph,
+    collect_room_bounds,
     NODE_TYPE_PAD,
 )
 
@@ -207,6 +208,8 @@ class ProcTHORDataset(Dataset):
         with open(sg_file) as f:
             sg_data = json.load(f)
         frame_data = sg_data[frame_id]
+        # Pre-compute room bounds across the full episode for door inference
+        room_bounds = collect_room_bounds(sg_data) if self.include_walls else None
         return parse_scene_graph(
             frame_data,
             self.type_to_id,
@@ -216,6 +219,7 @@ class ProcTHORDataset(Dataset):
             include_walls=self.include_walls,
             wall_height_default=self.wall_height_default,
             wall_thickness=self.wall_thickness,
+            room_bounds=room_bounds,
         )
 
     # -------------------------------------------------------------------------

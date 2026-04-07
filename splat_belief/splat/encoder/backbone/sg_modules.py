@@ -716,3 +716,116 @@ class SGFiLMProjection(nn.Module):
             (B, C_level)
         """
         return self.mlp(global_emb)
+
+
+# ---------------------------------------------------------------------------
+# Dense Layout Embedding: per-pixel class (via frozen CLIP) + sinusoidal depth
+# ---------------------------------------------------------------------------
+class LayoutEmbedding(nn.Module):
+    """
+    Embeds rasterized layout maps into dense feature tensors.
+
+    Per-pixel class IDs are looked up in a frozen CLIP embedding table
+    (open-vocabulary) and projected via a learned linear layer.
+    Depth values are encoded with sinusoidal positional encoding.
+    The two are summed to produce the layout embedding.
+    """
+
+    def __init__(
+        self,
+        clip_dim: int,
+        embed_dim: int,
+        clip_embeddings_path: str,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+
+        # Frozen CLIP type embeddings: (N_types, clip_dim)
+        # Row 0 = background (zeros)
+        clip_embs = torch.load(clip_embeddings_path, map_location="cpu")
+        self.register_buffer("clip_type_embeddings", clip_embs)
+
+        # Learned projection from CLIP space → layout embed dim
+        self.cls_proj = nn.Linear(clip_dim, embed_dim)
+
+        # Sinusoidal depth encoding
+        # Timesteps produces (*, num_channels) for scalar inputs
+        from ..common.embeddings import Timesteps
+        self.depth_encoder = Timesteps(num_channels=embed_dim)
+
+    def forward(
+        self,
+        layout_cls: Tensor,    # (BT, H, W) long — class IDs
+        layout_depth: Tensor,  # (BT, H, W) float — camera-space depth
+    ) -> Tensor:
+        """
+        Returns:
+            layout_emb: (BT, embed_dim, H, W)
+        """
+        BT, H, W = layout_cls.shape
+
+        # Class embedding: lookup → project
+        # Clamp to valid range for safety
+        cls_ids = layout_cls.clamp(0, self.clip_type_embeddings.shape[0] - 1)
+        cls_emb = self.clip_type_embeddings[cls_ids]         # (BT, H, W, clip_dim)
+        cls_emb = self.cls_proj(cls_emb)                     # (BT, H, W, embed_dim)
+
+        # Depth embedding: sinusoidal encoding
+        depth_flat = layout_depth.reshape(-1)                # (BT*H*W,)
+        depth_emb = self.depth_encoder(depth_flat)           # (BT*H*W, embed_dim)
+        depth_emb = depth_emb.reshape(BT, H, W, self.embed_dim)
+
+        # Combine: additive fusion
+        layout_emb = cls_emb + depth_emb                     # (BT, H, W, embed_dim)
+        layout_emb = rearrange(layout_emb, "bt h w d -> bt d h w")
+        return layout_emb
+
+
+# ---------------------------------------------------------------------------
+# Dense Layout Injection: gated projection per backbone level
+# ---------------------------------------------------------------------------
+class DenseLayoutInjection(nn.Module):
+    """
+    Injects dense layout embeddings into image features at a specific
+    backbone level via a gated additive projection.
+
+    Uses GLIGEN-style zero-initialized gate for stable training start.
+    """
+
+    def __init__(self, query_dim: int, layout_dim: int):
+        super().__init__()
+        self.layout_proj = nn.Sequential(
+            nn.Linear(layout_dim, query_dim),
+            nn.SiLU(),
+            zero_module(nn.Linear(query_dim, query_dim)),
+        )
+        # Zero-init gate (GLIGEN pattern)
+        self.gate = nn.Parameter(torch.zeros(1))
+
+    def forward(
+        self,
+        x: Tensor,            # (BT, C, H_level, W_level) — image features
+        layout_emb: Tensor,   # (BT, D_layout, H_base, W_base) — base-res layout
+    ) -> Tensor:
+        """
+        Downsample layout_emb to match level resolution, project, and inject.
+        Returns x with the same shape.
+        """
+        _, _, h_level, w_level = x.shape
+
+        # Downsample layout to match level spatial resolution
+        if layout_emb.shape[-2:] != (h_level, w_level):
+            lay = F.interpolate(
+                layout_emb, size=(h_level, w_level),
+                mode="bilinear", align_corners=False,
+            )
+        else:
+            lay = layout_emb
+
+        # Project: (BT, D_layout, H, W) → (BT, C_level, H, W)
+        # Apply linear per spatial position: rearrange for linear
+        lay = rearrange(lay, "bt d h w -> bt h w d")
+        lay = self.layout_proj(lay)                          # (BT, H, W, C_level)
+        lay = rearrange(lay, "bt h w c -> bt c h w")
+
+        return x + self.gate * lay

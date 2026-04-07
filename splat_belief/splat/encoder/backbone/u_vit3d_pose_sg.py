@@ -17,6 +17,8 @@ from .sg_modules import (
     SceneGraphEncoder,
     SGCrossAttention,
     SGFiLMProjection,
+    LayoutEmbedding,
+    DenseLayoutInjection,
 )
 
 
@@ -39,6 +41,10 @@ class BackboneUViT3DPoseSGCfg(BackboneUViT3DPoseCfg):
     include_walls: bool = False        # parse walls from seen_object_ids
     wall_height_default: float = 2.5   # fallback ceiling height if not in data
     wall_thickness: float = 0.15       # assumed wall thickness for AABB
+    # Dense layout conditioning (HouseCrafter-style)
+    use_dense_layout: bool = False     # enable dense per-pixel layout injection
+    layout_embed_dim: int = 128        # dimension of per-pixel layout embedding
+    use_sparse_sg: bool = True         # keep sparse SG (cross-attn/FiLM); disable for ablation
 
 
 class UViT3DPoseSG(UViT3DPose):
@@ -74,17 +80,33 @@ class UViT3DPoseSG(UViT3DPose):
         for i_level, (ch, btype) in enumerate(zip(channels, block_types)):
             if btype == "ResBlock":
                 # FiLM: global SG emb → added to noise embedding
-                self.sg_film_projections[str(i_level)] = SGFiLMProjection(
-                    cfg.sg_dim, cfg.emb_channels
-                )
+                if cfg.use_sparse_sg:
+                    self.sg_film_projections[str(i_level)] = SGFiLMProjection(
+                        cfg.sg_dim, cfg.emb_channels
+                    )
             else:
                 # Cross-attention: image patches attend to SG tokens
-                self.sg_cross_attentions[str(i_level)] = SGCrossAttention(
+                if cfg.use_sparse_sg:
+                    self.sg_cross_attentions[str(i_level)] = SGCrossAttention(
+                        query_dim=ch,
+                        context_dim=cfg.sg_dim,
+                        n_heads=cfg.sg_n_heads,
+                        d_head=cfg.sg_d_head,
+                        spatial_mode=cfg.sg_spatial_mode,
+                    )
+
+        # Dense layout conditioning modules
+        if cfg.use_dense_layout:
+            self.layout_embedding = LayoutEmbedding(
+                clip_dim=cfg.sg_clip_dim,
+                embed_dim=cfg.layout_embed_dim,
+                clip_embeddings_path=cfg.sg_type_embeddings_path,
+            )
+            self.layout_injections = nn.ModuleDict()
+            for i_level, ch in enumerate(channels):
+                self.layout_injections[str(i_level)] = DenseLayoutInjection(
                     query_dim=ch,
-                    context_dim=cfg.sg_dim,
-                    n_heads=cfg.sg_n_heads,
-                    d_head=cfg.sg_d_head,
-                    spatial_mode=cfg.sg_spatial_mode,
+                    layout_dim=cfg.layout_embed_dim,
                 )
 
     def _encode_scene_graph(self, model_input: dict) -> tuple[Tensor, Tensor]:
@@ -135,6 +157,7 @@ class UViT3DPoseSG(UViT3DPose):
         sg_wall_endpoints: Optional[Tensor] = None,
         sg_wall_heights: Optional[Tensor] = None,
         sg_node_is_wall: Optional[Tensor] = None,
+        layout_emb: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Run a UViT level with scene graph conditioning injected.
@@ -172,6 +195,10 @@ class UViT3DPoseSG(UViT3DPose):
                 sg_node_is_wall=sg_node_is_wall,
             )
             x = rearrange(x_seq, "(b t) (h w) c -> (b t) c h w", t=self.temporal_length, h=h, w=w)
+
+        # Dense layout injection (if enabled)
+        if layout_emb is not None and str(i_level) in getattr(self, 'layout_injections', {}):
+            x = self.layout_injections[str(i_level)](x, layout_emb)
 
         return x
 
@@ -215,6 +242,26 @@ class UViT3DPoseSG(UViT3DPose):
         sg_wall_endpoints = model_input.get("sg_wall_endpoints")   # (B, M, 2, 3)
         sg_wall_heights = model_input.get("sg_wall_heights")       # (B, M)
         sg_node_is_wall = model_input.get("sg_node_is_wall")       # (B, M) bool
+
+        # ---- Dense layout: rasterize SG + embed ----
+        layout_emb = None
+        if self.sg_cfg.use_dense_layout:
+            from splat_belief.utils.procthor_utils import rasterize_scene_graph
+            sg_node_types = model_input["sg_node_types"]           # (B, M) long
+            layout_cls, layout_depth = rasterize_scene_graph(
+                sg_node_types=sg_node_types,
+                sg_node_positions=sg_node_positions,
+                sg_node_sizes=sg_node_sizes,
+                sg_node_mask=sg_node_mask,
+                camera_c2w=camera_c2w,
+                intrinsics=intrinsics,
+                output_h=32,
+                output_w=32,
+                sg_wall_endpoints=sg_wall_endpoints,
+                sg_wall_heights=sg_wall_heights,
+                sg_node_is_wall=sg_node_is_wall,
+            )
+            layout_emb = self.layout_embedding(layout_cls, layout_depth)  # (BT, D, 32, 32)
 
         # ---- Standard UViT setup (from UViT3DPose.forward) ----
         h_in, w_in = x.shape[-2], x.shape[-1]
@@ -265,6 +312,7 @@ class UViT3DPoseSG(UViT3DPose):
                 sg_wall_endpoints=sg_wall_endpoints,
                 sg_wall_heights=sg_wall_heights,
                 sg_node_is_wall=sg_node_is_wall,
+                layout_emb=layout_emb,
             )
             hs_before.append(x)
             if return_latents:
@@ -283,6 +331,7 @@ class UViT3DPoseSG(UViT3DPose):
             sg_wall_endpoints=sg_wall_endpoints,
             sg_wall_heights=sg_wall_heights,
             sg_node_is_wall=sg_node_is_wall,
+            layout_emb=layout_emb,
         )
         if return_latents:
             latents_list.append(x)
@@ -303,6 +352,7 @@ class UViT3DPoseSG(UViT3DPose):
                 sg_wall_endpoints=sg_wall_endpoints,
                 sg_wall_heights=sg_wall_heights,
                 sg_node_is_wall=sg_node_is_wall,
+                layout_emb=layout_emb,
             )
             if return_latents:
                 latents_list.append(x)

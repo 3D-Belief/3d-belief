@@ -2094,8 +2094,15 @@ def _project_bboxes_to_image(
     has_walls = (node_is_wall is not None and wall_endpoints is not None
                  and wall_heights is not None)
 
+    # Floor type names to skip in bbox visualization (too large / uninformative)
+    _skip_names = {"Floor"}
+
     for i in range(M):
         if not node_mask[i]:
+            continue
+
+        # Skip floor nodes — they produce huge uninformative bboxes
+        if node_names is not None and node_names[i] in _skip_names:
             continue
 
         is_wall = has_walls and node_is_wall[i].item()
@@ -2118,11 +2125,12 @@ def _project_bboxes_to_image(
         # Transform to camera space
         corners_cam = (R @ corners.T).T + t_vec
         z_vals = corners_cam[:, 2]
-        visible = z_vals > 0.01
+        NEAR_Z = 0.01
+        visible = z_vals > NEAR_Z
         if not visible.any():
             continue
         # Project visible corners
-        z_safe = z_vals.clamp(min=0.01)
+        z_safe = z_vals.clamp(min=NEAR_Z)
         u_px = (fx * (corners_cam[:, 0] / z_safe) + cx) * W    # pixel coords
         v_px = (fy * (corners_cam[:, 1] / z_safe) + cy) * H
 
@@ -2132,6 +2140,30 @@ def _project_bboxes_to_image(
         u_max = u_vis.max().item()
         v_min = v_vis.min().item()
         v_max = v_vis.max().item()
+
+        # Near-plane clipping: extend bbox with edge-plane intersections
+        if (~visible).any():
+            n_c = corners_cam.shape[0]
+            _edges = (
+                [(0,1),(0,2),(0,4),(1,3),(1,5),(2,3),(2,6),(3,7),(4,5),(4,6),(5,7),(6,7)]
+                if n_c == 8 else [(0,1),(0,2),(1,3),(2,3)]
+            )
+            for ei0, ei1 in _edges:
+                z0, z1 = z_vals[ei0], z_vals[ei1]
+                if (z0 > NEAR_Z) == (z1 > NEAR_Z):
+                    continue  # both on same side — no crossing
+                dz = z1 - z0
+                if dz.abs().item() < 1e-8:
+                    continue
+                t = ((NEAR_Z - z0) / dz).clamp(0.0, 1.0)
+                cp = corners_cam[ei0] + t * (corners_cam[ei1] - corners_cam[ei0])
+                cz = max(cp[2].item(), NEAR_Z)
+                cu = (fx * (cp[0].item() / cz) + cx) * W
+                cv = (fy * (cp[1].item() / cz) + cy) * H
+                u_min = min(u_min, cu)
+                u_max = max(u_max, cu)
+                v_min = min(v_min, cv)
+                v_max = max(v_max, cv)
 
         # Skip if completely outside the image
         if u_max < 0 or u_min > W or v_max < 0 or v_min > H:
@@ -2222,6 +2254,32 @@ def _draw_bboxes_on_image(pil_img, boxes):
     combined.paste(pil_img, (0, 0))
     combined.paste(legend, (pil_img.size[0], 0))
     return combined
+
+
+def _layout_cls_to_colormap(layout_cls, img_h, img_w, id_to_type=None):
+    """Convert a per-pixel class map to a colour image (deterministic palette).
+
+    Args:
+        layout_cls: (H, W) int numpy array — per-pixel class IDs (0 = background).
+        img_h, img_w: target output image size (will resize from layout resolution).
+        id_to_type: optional list mapping id → type name.
+
+    Returns:
+        PIL.Image (img_h, img_w, RGB) with legend-style colour coding.
+    """
+    h, w = layout_cls.shape
+    # Generate a deterministic palette: class_id → RGB
+    rng = np.random.RandomState(42)
+    n_classes = int(layout_cls.max()) + 1
+    palette = rng.randint(60, 230, size=(n_classes, 3)).astype(np.uint8)
+    palette[0] = [0, 0, 0]  # background = black
+
+    # Map class IDs → RGB
+    color_map = palette[layout_cls]  # (h, w, 3)
+    pil = Image.fromarray(color_map, "RGB")
+    if (h, w) != (img_h, img_w):
+        pil = pil.resize((img_w, img_h), Image.NEAREST)
+    return pil
 
 
 def _save_gt_and_sg(data, frames_folder, results_folder, milestone, out=None):
@@ -2430,3 +2488,54 @@ def _save_gt_and_sg(data, frames_folder, results_folder, milestone, out=None):
                 f"comparison/milestone_{milestone}_bbox": wandb.Image(cmp_bbox_path,
                     caption="Left: GT target + projected bboxes | Right: Denoised target"),
             })
+
+    # --- Dense layout colormap visualization ---
+    if has_sg_geom and has_camera and "trgt_rgb" in data:
+        try:
+            from splat_belief.utils.procthor_utils import rasterize_scene_graph
+            trgt_c2w_gpu = data["trgt_abs_camera_poses"]   # (B, V_t, 4, 4)
+            intr_gpu = data["intrinsics"]                   # (B, 3, 3)
+            trgt_rgb_vis = data["trgt_rgb"]
+            if trgt_rgb_vis.dim() == 5:
+                trgt_rgb_vis = trgt_rgb_vis[:, 0]           # (B, C, H, W)
+            _, _, H_img, W_img = trgt_rgb_vis.shape
+
+            # Use only the first target view for rasterization
+            cam_c2w = trgt_c2w_gpu[:, :1] if trgt_c2w_gpu.dim() == 4 else trgt_c2w_gpu.unsqueeze(1)
+
+            with torch.no_grad():
+                layout_cls_map, layout_depth_map = rasterize_scene_graph(
+                    sg_node_types=data["sg_node_types"],
+                    sg_node_positions=data["sg_node_positions"],
+                    sg_node_sizes=data["sg_node_sizes"],
+                    sg_node_mask=data["sg_node_mask"],
+                    camera_c2w=cam_c2w,
+                    intrinsics=intr_gpu,
+                    output_h=32, output_w=32,
+                    sg_wall_endpoints=data.get("sg_wall_endpoints"),
+                    sg_wall_heights=data.get("sg_wall_heights"),
+                    sg_node_is_wall=data.get("sg_node_is_wall"),
+                )
+
+            # Visualize first batch element
+            cls_np = layout_cls_map[0].cpu().numpy()     # (32, 32)
+            colormap_img = _layout_cls_to_colormap(cls_np, H_img, W_img, id_to_type=id_to_type)
+            colormap_img.save(os.path.join(frames_folder, "layout_colormap_b0.png"))
+
+            # Alpha-blend overlay on GT target
+            gt_img_pil = Image.fromarray(_unnormalize(trgt_rgb_vis[0]))
+            overlay = Image.blend(gt_img_pil, colormap_img.resize(gt_img_pil.size), alpha=0.4)
+            overlay.save(os.path.join(frames_folder, "layout_overlay_b0.png"))
+
+            if wandb.run is not None:
+                wandb.log({
+                    f"layout/milestone_{milestone}_colormap": wandb.Image(
+                        os.path.join(frames_folder, "layout_colormap_b0.png"),
+                        caption="Dense layout class colormap (32x32 rasterized)"),
+                    f"layout/milestone_{milestone}_overlay": wandb.Image(
+                        os.path.join(frames_folder, "layout_overlay_b0.png"),
+                        caption="GT target + layout overlay (alpha=0.4)"),
+                })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()

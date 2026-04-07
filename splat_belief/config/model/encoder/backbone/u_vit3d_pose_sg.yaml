@@ -23,7 +23,7 @@ repa_size: 32
 use_vggt_alignment: false
 
 # Scene graph conditioning params
-n_object_types: 201
+n_object_types: 204
 n_edge_types: 3
 sg_use_gcn: true              # false = skip GCN, encode objects independently
 sg_dim: 256
@@ -39,3 +39,8 @@ sg_spatial_mode: center         # "center" | "bbox" | "bbox_surface" (bbox for o
 include_walls: false
 wall_height_default: 2.5       # fallback ceiling height if not in data
 wall_thickness: 0.15           # assumed wall thickness for AABB
+
+# Dense layout conditioning (HouseCrafter-style per-pixel layout maps)
+use_dense_layout: false        # enable dense per-pixel layout injection
+layout_embed_dim: 128          # dimension of per-pixel layout embedding
+use_sparse_sg: true            # keep sparse SG (cross-attn/FiLM); false for ablation

@@ -283,5 +283,8 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             max_edges=int(getattr(config.dataset, "max_edges", 512)),
             pose_source=str(getattr(config.dataset, "pose_source", "gt")),
             predicted_poses_filename=str(getattr(config.dataset, "predicted_poses_filename", "predicted_poses.npz")),
+            include_walls=bool(getattr(config.dataset, "include_walls", False)),
+            wall_height_default=float(getattr(config.dataset, "wall_height_default", 2.5)),
+            wall_thickness=float(getattr(config.dataset, "wall_thickness", 0.15)),
         )
     raise NotImplementedError(f'Dataset "{name}" not supported.')
