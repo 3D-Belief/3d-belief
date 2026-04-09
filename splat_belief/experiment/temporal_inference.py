@@ -34,10 +34,16 @@ from accelerate import Accelerator
 from config.inference import temporal_indices
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from splat_belief.utils.model_utils import build_2d_model
 from splat_belief.splat.pose_estimator import VGGTPoseEstimator
 from splat_belief.splat.alignment.vggt.models.vggt import VGGT
+from splat_belief.diffusion.diffusion import (
+    _project_bboxes_to_image,
+    _draw_bboxes_on_image,
+    _layout_cls_to_colormap,
+)
+from splat_belief.utils.procthor_utils import load_vocabulary, rasterize_scene_graph
 
 import json
 import lpips
@@ -193,6 +199,15 @@ def train(cfg: DictConfig):
 
     # Perceptual metric for evaluation
     lpips_metric = lpips.LPIPS(net='vgg').cuda().eval()
+
+    # Load vocabulary for node name lookup in bbox/layout visualization
+    id_to_type = None
+    try:
+        vocab_dir = getattr(cfg.dataset, "vocab_dir", None)
+        if vocab_dir:
+            _, id_to_type = load_vocabulary(vocab_dir)
+    except Exception:
+        pass
 
     pose_source = getattr(cfg, "pose_source", "gt")
     pose_estimator = None
@@ -368,11 +383,20 @@ def train(cfg: DictConfig):
                 inp["near"] = torch.tensor(near)
                 inp["far"] = torch.tensor(far)
                 inp["lang"] = lang
+                # Pass scene graph tensors if present (ProcTHOR SG models)
+                for sg_key in ["sg_node_types", "sg_node_positions", "sg_node_rotations",
+                               "sg_node_sizes", "sg_edge_index", "sg_edge_types",
+                               "sg_node_mask", "sg_edge_mask",
+                               "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall"]:
+                    if sg_key in video_dict:
+                        inp[sg_key] = video_dict[sg_key]
                 # import ipdb; ipdb.set_trace()
 
                 inp = to_gpu(inp, "cuda")
                 for k in inp.keys():
                     if not k=="num_frames_render":
+                        if isinstance(inp[k], (list, tuple)):
+                            continue
                         inp[k] = inp[k].unsqueeze(0)
                 
                 inp["num_frames_render"] = num_frames
@@ -404,11 +428,20 @@ def train(cfg: DictConfig):
                         imagine_input["near"] = torch.tensor(near)
                         imagine_input["far"] = torch.tensor(far)
                         imagine_input["lang"] = lang
+                        # Re-assign SG keys fresh from video_dict (avoid stale batch dims)
+                        for sg_key in ["sg_node_types", "sg_node_positions", "sg_node_rotations",
+                                       "sg_node_sizes", "sg_edge_index", "sg_edge_types",
+                                       "sg_node_mask", "sg_edge_mask",
+                                       "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall"]:
+                            if sg_key in video_dict:
+                                imagine_input[sg_key] = video_dict[sg_key]
                         if not imagine_t==len(key_frame_indices)-1:
                             imagine_input.pop("render_poses")
                         imagine_input = to_gpu(imagine_input, "cuda")
                         for k in imagine_input.keys():
                             if not k=="num_frames_render":
+                                if isinstance(imagine_input[k], (list, tuple)):
+                                    continue
                                 imagine_input[k] = imagine_input[k].unsqueeze(0)
                         inp["num_frames_render"] = num_frames
                         # import ipdb; ipdb.set_trace()
@@ -501,7 +534,7 @@ def train(cfg: DictConfig):
                             lpips_val = float(lpips_metric(pred_t, gt_t).item())
                         is_kf = fi in all_kf_indices
                         per_frame_metrics.append({
-                            "frame": fi, "psnr": psnr_val, "ssim": ssim_val,
+                            "frame": int(fi), "psnr": psnr_val, "ssim": ssim_val,
                             "lpips": lpips_val, "l1": l1_val, "is_keyframe": is_kf,
                         })
                     # Aggregate
@@ -512,13 +545,13 @@ def train(cfg: DictConfig):
                     nkf_metrics = [m for m in per_frame_metrics if not m["is_keyframe"]]
                     refiner_enabled = getattr(cfg, "refiner", {}).get("enabled", False) if isinstance(getattr(cfg, "refiner", {}), dict) else getattr(getattr(cfg, "refiner", None), "enabled", False)
                     metrics_summary = {
-                        "scene_idx": video_idx,
-                        "start_idx": start_idx,
-                        "end_idx": end_idx,
+                        "scene_idx": int(video_idx),
+                        "start_idx": int(start_idx),
+                        "end_idx": int(end_idx),
                         "num_frames": len(frames),
                         "num_keyframes": len(kf_metrics),
                         "refiner_enabled": bool(refiner_enabled),
-                        "seed": seed,
+                        "seed": int(seed),
                         "per_frame": per_frame_metrics,
                         "mean_psnr": _mean(per_frame_metrics, "psnr"),
                         "mean_ssim": _mean(per_frame_metrics, "ssim"),
@@ -549,7 +582,11 @@ def train(cfg: DictConfig):
                     previous_t=previous_t, 
                     update_t=update_t, 
                     save_folder_step=save_folder_step,
-                    state_t=state_t
+                    state_t=state_t,
+                    video_dict=video_dict,
+                    abs_camera_poses=abs_camera_poses,
+                    intrinsics=intrinsics,
+                    id_to_type=id_to_type,
                 )
                 
                 # create all-timesteps visualization showing model's beliefs up to this point
@@ -559,7 +596,11 @@ def train(cfg: DictConfig):
                     key_frame_indices=key_frame_indices,
                     observed_keyframes=observed_keyframes,  # pass the observed keyframes
                     save_folder_sample=save_folder_step,  # save in the step folder
-                    current_state_t=state_t  # pass the current state_t
+                    current_state_t=state_t,  # pass the current state_t
+                    video_dict=video_dict,
+                    abs_camera_poses=abs_camera_poses,
+                    intrinsics=intrinsics,
+                    id_to_type=id_to_type,
                 )
 
                 # update obs
@@ -569,6 +610,125 @@ def train(cfg: DictConfig):
                 inp["ctxt_abs_camera_poses"] = torch.cat(abs_camera_poses[previous_t:previous_t+1], dim=0)
             
             
+def _make_bbox_overlay(rgb_np, frame_idx, video_dict, abs_camera_poses, intrinsics, id_to_type):
+    """Draw projected 3D bounding boxes on an RGB frame.
+
+    Returns a PIL Image (with legend) or None if SG data is unavailable.
+    """
+    if video_dict is None:
+        return None
+    node_pos = video_dict.get("sg_node_positions")
+    node_sizes = video_dict.get("sg_node_sizes")
+    node_mask = video_dict.get("sg_node_mask")
+    node_types = video_dict.get("sg_node_types")
+    if node_pos is None or node_sizes is None or node_mask is None:
+        return None
+
+    # Get ABSOLUTE camera pose for this frame (SG is in world space)
+    c2w = abs_camera_poses[frame_idx]  # [1, 4, 4]
+    if c2w.dim() == 3:
+        c2w = c2w[0]
+    intr = intrinsics[0] if isinstance(intrinsics, list) else intrinsics
+    if intr.dim() == 3:
+        intr = intr[0]
+
+    H, W = rgb_np.shape[:2]
+
+    # Remove batch dim if present
+    _pos = node_pos.squeeze(0).cpu() if node_pos.dim() == 3 else node_pos.cpu()
+    _sizes = node_sizes.squeeze(0).cpu() if node_sizes.dim() == 3 else node_sizes.cpu()
+    _mask = node_mask.squeeze(0).cpu().bool() if node_mask.dim() == 2 else node_mask.cpu().bool()
+
+    # Build node names
+    if id_to_type is not None and node_types is not None:
+        _types = node_types.squeeze(0).cpu() if node_types.dim() == 2 else node_types.cpu()
+        names = [
+            id_to_type[int(t)] if int(t) < len(id_to_type) else f"obj_{int(t)}"
+            for t in _types.tolist()
+        ]
+    else:
+        names = None
+
+    # Optional wall data
+    w_is_wall = video_dict.get("sg_node_is_wall")
+    w_endpoints = video_dict.get("sg_wall_endpoints")
+    w_heights = video_dict.get("sg_wall_heights")
+
+    boxes = _project_bboxes_to_image(
+        _pos, _sizes, _mask,
+        c2w.cpu(), intr.cpu(), (H, W), node_names=names,
+        node_is_wall=w_is_wall.squeeze(0).cpu() if w_is_wall is not None else None,
+        wall_endpoints=w_endpoints.squeeze(0).cpu() if w_endpoints is not None else None,
+        wall_heights=w_heights.squeeze(0).cpu() if w_heights is not None else None,
+    )
+    if not boxes:
+        return None
+    overlay = Image.fromarray(rgb_np.copy())
+    overlay = _draw_bboxes_on_image(overlay, boxes)
+    return overlay
+
+
+def _make_layout_overlay(rgb_np, frame_idx, video_dict, abs_camera_poses, intrinsics, id_to_type):
+    """Rasterize dense layout colormap and alpha-blend on an RGB frame.
+
+    Returns a PIL Image or None if SG data is unavailable.
+    """
+    if video_dict is None:
+        return None
+    node_pos = video_dict.get("sg_node_positions")
+    node_sizes = video_dict.get("sg_node_sizes")
+    node_mask = video_dict.get("sg_node_mask")
+    node_types = video_dict.get("sg_node_types")
+    if node_pos is None or node_sizes is None or node_mask is None or node_types is None:
+        return None
+
+    H, W = rgb_np.shape[:2]
+
+    c2w = abs_camera_poses[frame_idx]  # [1, 4, 4]
+    if c2w.dim() == 3:
+        c2w = c2w.unsqueeze(0)  # -> [1, 1, 4, 4]
+    elif c2w.dim() == 2:
+        c2w = c2w.unsqueeze(0).unsqueeze(0)
+
+    intr = intrinsics[0] if isinstance(intrinsics, list) else intrinsics
+    if intr.dim() == 2:
+        intr = intr.unsqueeze(0)
+
+    # Ensure batch dim on SG tensors
+    def _ensure_batch(t):
+        if t is not None and t.dim() == 1:
+            return t.unsqueeze(0)
+        if t is not None and t.dim() == 2:
+            return t.unsqueeze(0)
+        if t is not None and t.dim() == 3:
+            return t.unsqueeze(0) if t.shape[0] != 1 else t
+        return t
+
+    try:
+        with torch.no_grad():
+            layout_cls, _ = rasterize_scene_graph(
+                sg_node_types=_ensure_batch(node_types),
+                sg_node_positions=_ensure_batch(node_pos),
+                sg_node_sizes=_ensure_batch(node_sizes),
+                sg_node_mask=_ensure_batch(node_mask),
+                camera_c2w=c2w,
+                intrinsics=intr,
+                output_h=32, output_w=32,
+                sg_wall_endpoints=_ensure_batch(video_dict.get("sg_wall_endpoints")),
+                sg_wall_heights=_ensure_batch(video_dict.get("sg_wall_heights")),
+                sg_node_is_wall=_ensure_batch(video_dict.get("sg_node_is_wall")),
+            )
+        cls_np = layout_cls[0].cpu().numpy()
+        colormap = _layout_cls_to_colormap(cls_np, H, W, id_to_type=id_to_type)
+        gt_pil = Image.fromarray(rgb_np)
+        blended = Image.blend(gt_pil, colormap.resize(gt_pil.size), alpha=0.4)
+        return blended
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def create_timestep_visualization(
     rgbs, 
     frames, 
@@ -576,23 +736,22 @@ def create_timestep_visualization(
     previous_t, 
     update_t, 
     save_folder_step,
-    state_t
+    state_t,
+    video_dict=None,
+    abs_camera_poses=None,
+    intrinsics=None,
+    id_to_type=None,
 ):
     """
-    Create a visualization showing observations, belief, and ground truth at each timestep.
-    
-    Args:
-        rgbs: List of ground truth frames (numpy arrays)
-        frames: List of predicted frames from the model (numpy arrays)
-        key_frame_indices: List of key frame indices
-        previous_t: Previous timestep
-        update_t: Current update timestep
-        save_folder_step: Folder to save the visualization
-        state_t: Current state timestep
+    Create a visualization showing observations, belief, ground truth,
+    bbox overlay, and layout overlay at each timestep.
     """
-    
-    # create figure with three rows (Obs, Belief @ Image view, GT obs @ Image view)
-    fig, axes = plt.subplots(3, 1, figsize=(12, 12))
+    has_sg = (video_dict is not None and abs_camera_poses is not None
+              and intrinsics is not None
+              and video_dict.get("sg_node_positions") is not None)
+
+    n_rows = 5 if has_sg else 3
+    fig, axes = plt.subplots(n_rows, 1, figsize=(12, 4 * n_rows))
     fig.suptitle(f"t={state_t}", fontsize=24, x=0.95, y=0.98)
     
     # row 1: Observation up to now (previous timestep)
@@ -615,16 +774,51 @@ def create_timestep_visualization(
     axes[2].set_ylabel("GT obs\n@ Imag. view", fontsize=24)
     axes[2].set_xticks([])
     axes[2].set_yticks([])
+
+    if has_sg:
+        # row 4: GT + Bbox overlay
+        bbox_img = _make_bbox_overlay(rgbs[update_t], update_t, video_dict,
+                                      abs_camera_poses, intrinsics, id_to_type)
+        if bbox_img is not None:
+            axes[3].imshow(bbox_img)
+        else:
+            axes[3].imshow(rgbs[update_t])
+        axes[3].set_title(f"Bbox Overlay (t={update_t})")
+        axes[3].set_ylabel("Bbox", fontsize=24)
+        axes[3].set_xticks([])
+        axes[3].set_yticks([])
+
+        # row 5: GT + Layout overlay
+        layout_img = _make_layout_overlay(rgbs[update_t], update_t, video_dict,
+                                          abs_camera_poses, intrinsics, id_to_type)
+        if layout_img is not None:
+            axes[4].imshow(layout_img)
+        else:
+            axes[4].imshow(rgbs[update_t])
+        axes[4].set_title(f"Layout Overlay (t={update_t})")
+        axes[4].set_ylabel("Layout", fontsize=24)
+        axes[4].set_xticks([])
+        axes[4].set_yticks([])
     
-    # adjust layout
     plt.tight_layout()
     
-    # Save figure
     visualization_path = os.path.join(save_folder_step, f"timestep_visualization.png")
     plt.savefig(visualization_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     
     print(f"Saved timestep visualization to {visualization_path}")
+
+    # Also save standalone bbox and layout images
+    if has_sg:
+        bbox_img = _make_bbox_overlay(rgbs[update_t], update_t, video_dict,
+                                      abs_camera_poses, intrinsics, id_to_type)
+        if bbox_img is not None:
+            bbox_img.save(os.path.join(save_folder_step, f"bbox_overlay_t{update_t}.png"))
+
+        layout_img = _make_layout_overlay(rgbs[update_t], update_t, video_dict,
+                                          abs_camera_poses, intrinsics, id_to_type)
+        if layout_img is not None:
+            layout_img.save(os.path.join(save_folder_step, f"layout_overlay_t{update_t}.png"))
 
 def create_all_timesteps_visualization(
     rgbs, 
@@ -632,7 +826,11 @@ def create_all_timesteps_visualization(
     key_frame_indices, 
     save_folder_sample,
     observed_keyframes=None,
-    current_state_t=None
+    current_state_t=None,
+    video_dict=None,
+    abs_camera_poses=None,
+    intrinsics=None,
+    id_to_type=None,
 ):
     """
     create a visualization showing all timesteps together.
@@ -662,18 +860,27 @@ def create_all_timesteps_visualization(
             observed_keyframes = [0] + key_frame_indices[:current_state_t+1]
         else:
             observed_keyframes = [0] + key_frame_indices
+
+    has_sg = (video_dict is not None and abs_camera_poses is not None
+              and intrinsics is not None
+              and video_dict.get("sg_node_positions") is not None)
+    n_rows = 5 if has_sg else 3
     
-    # create figure with three rows and num_timesteps columns
-    fig, axes = plt.subplots(3, num_timesteps, figsize=(4*num_timesteps, 12))
+    # create figure
+    fig, axes = plt.subplots(n_rows, num_timesteps, figsize=(4*num_timesteps, 4*n_rows))
     
     # if there's only one timestep, make axes 2D
     if num_timesteps == 1:
-        axes = axes.reshape(3, 1)
+        axes = axes.reshape(n_rows, 1)
     
     # add row labels
     row_labels = ["Obs", "Belief\n@ Imag. view", "GT obs\n@ Imag. view"]
+    if has_sg:
+        row_labels += ["Bbox", "Layout"]
+    n_label = len(row_labels)
     for i, label in enumerate(row_labels):
-        fig.text(0.01, 0.75 - i*0.25, label, fontsize=24, ha='left', va='center', rotation=90)
+        y_pos = 1.0 - (i + 0.5) / n_label
+        fig.text(0.01, y_pos, label, fontsize=24, ha='left', va='center', rotation=90)
     
     for col, keyframe_idx in enumerate(full_key_frame_indices):
         # add column header
@@ -703,17 +910,27 @@ def create_all_timesteps_visualization(
         axes[2, col].imshow(rgbs[keyframe_idx])
         axes[2, col].set_xticks([])
         axes[2, col].set_yticks([])
-    
-    # add horizontal separator lines
-    for i in range(1, 3):
-        fig.add_artist(plt.Line2D([0.05, 0.99], [0.67 - (i-1)*0.33, 0.67 - (i-1)*0.33], 
-                                 color='blue', alpha=0, linewidth=2, transform=fig.transFigure))
-    
-    # add a vertical line for each timestep
-    for i in range(1, num_timesteps):
-        x_pos = 0.03 + i * (0.97 / num_timesteps)
-        fig.add_artist(plt.Line2D([x_pos, x_pos], [0.05, 0.95], 
-                                 color='blue', alpha=0, linewidth=2, transform=fig.transFigure))
+
+        if has_sg:
+            # row 4: Bbox overlay
+            bbox_img = _make_bbox_overlay(rgbs[keyframe_idx], keyframe_idx,
+                                          video_dict, abs_camera_poses, intrinsics, id_to_type)
+            if bbox_img is not None:
+                axes[3, col].imshow(bbox_img)
+            else:
+                axes[3, col].imshow(rgbs[keyframe_idx])
+            axes[3, col].set_xticks([])
+            axes[3, col].set_yticks([])
+
+            # row 5: Layout overlay
+            layout_img = _make_layout_overlay(rgbs[keyframe_idx], keyframe_idx,
+                                              video_dict, abs_camera_poses, intrinsics, id_to_type)
+            if layout_img is not None:
+                axes[4, col].imshow(layout_img)
+            else:
+                axes[4, col].imshow(rgbs[keyframe_idx])
+            axes[4, col].set_xticks([])
+            axes[4, col].set_yticks([])
     
     # adjust layout
     plt.tight_layout(rect=[0.05, 0, 1, 1])  # make space for row labels

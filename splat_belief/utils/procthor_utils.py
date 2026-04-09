@@ -802,7 +802,7 @@ def rasterize_scene_graph(
     v_c = fy[:, None, None, None] * (p_cam[..., 1] / z_safe) \
           + cy[:, None, None, None]
 
-    INF = torch.tensor(float("inf"), device=device, dtype=dtype)
+    INF = torch.tensor(float("inf"), device=device, dtype=dtype)  # scalar; no allocation pressure
     u_for_min = torch.where(visible, u_c, INF)
     u_for_max = torch.where(visible, u_c, -INF)
     v_for_min = torch.where(visible, v_c, INF)

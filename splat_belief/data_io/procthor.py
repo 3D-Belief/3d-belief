@@ -3,7 +3,8 @@ ProcTHOR dataset for 3D-belief with scene graph conditioning.
 Loads RGB (from mp4), depth (npz), poses (npz), and scene graphs (JSON).
 """
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
+from functools import lru_cache
 
 import cv2
 import json
@@ -27,7 +28,24 @@ try:
 except ImportError:
     from typing_extensions import Literal
 
-Stage = Literal["train", "unit"]
+Stage = Literal["train", "test", "unit"]
+
+
+# ---------------------------------------------------------------------------
+# Module-level caches for expensive per-episode data (shared across workers)
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=64)
+def _load_scene_graph_json(sg_file: str):
+    """Load and cache the full scene graph JSON for an episode."""
+    with open(sg_file) as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=64)
+def _cached_room_bounds(sg_file: str):
+    """Compute and cache room bounds for an entire episode."""
+    sg_data = _load_scene_graph_json(sg_file)
+    return collect_room_bounds(sg_data)
 
 
 class Camera:
@@ -144,11 +162,107 @@ class ProcTHORDataset(Dataset):
                 self.num_frames_per_scene.append(num_frames)
                 self.scene_path_list.append(scene_path)
 
+        # Build all_rgb_files for compatibility with sample_video_idx_from_dataset
+        self.all_rgb_files = [[None] * n for n in self.num_frames_per_scene]
+
         print(f"[ProcTHOR] {len(self.scene_path_list)} scenes (pose_source={self.pose_source}), vocab size {len(self.id_to_type)}")
 
     # -------------------------------------------------------------------------
     # Frame reading (mirrors SPOC pattern)
     # -------------------------------------------------------------------------
+
+    def _read_pose(self, scene_path: Path, frame_id: int):
+        """Read only camera pose for a single frame (lightweight, no RGB/depth)."""
+        if self.pose_source == "predicted":
+            pred_file = scene_path / self.predicted_poses_filename
+            pred_data = np.load(pred_file, mmap_mode='r')
+            c2w_3dbelief = np.array(pred_data["poses"][frame_id])
+            w2c_3dbelief = np.linalg.inv(c2w_3dbelief)
+            cam_param = Camera(w2c_3dbelief.astype(np.float32))
+            if "intrinsics" in pred_data:
+                cam_param.intrinsics = np.array(pred_data["intrinsics"][frame_id]).astype(np.float32)
+        else:
+            pose_file = scene_path / "all_poses.npz"
+            poses_data = np.load(pose_file, mmap_mode='r')
+            extrinsics = np.array(poses_data["poses"][frame_id])  # c2w
+            extrinsics = np.linalg.inv(extrinsics)       # w2c
+            conversion = np.diag([1, -1, -1, 1])
+            extrinsics = conversion @ extrinsics
+            cam_param = Camera(extrinsics)
+        return cam_param
+
+    def read_frames_batch(self, scene_path: Path, frame_ids: List[int]):
+        """Read RGB, depth, depth_mask, and camera for multiple frames efficiently.
+
+        Opens VideoCapture and npz files once, reads all requested frames.
+        Returns a list of (rgb, depth, depth_mask, cam_param) tuples.
+        """
+        # --- RGB: open video once, read all frames ---
+        rgb_file = scene_path / "rgb_trajectory.mp4"
+        cap = cv2.VideoCapture(str(rgb_file))
+        rgb_list = []
+        # Sort frame IDs for sequential seeking, but track original order
+        sorted_pairs = sorted(enumerate(frame_ids), key=lambda x: x[1])
+        rgb_by_idx = [None] * len(frame_ids)
+        for orig_pos, fid in sorted_pairs:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fid)
+            ret, frame = cap.read()
+            if not ret:
+                cap.release()
+                raise RuntimeError(f"Failed to read frame {fid} from {rgb_file}")
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb = torch.tensor(frame.astype(np.float32)).permute(2, 0, 1) / 255.0
+            rgb = F.interpolate(
+                rgb.unsqueeze(0),
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                antialias=True,
+            )[0]
+            rgb_by_idx[orig_pos] = rgb
+        cap.release()
+
+        # --- Depth: open npz once ---
+        depth_file = scene_path / "all_depths.npz"
+        depths_data = np.load(depth_file, mmap_mode='r')
+        depths_arr = depths_data["depths"]
+
+        # --- Poses: open npz once ---
+        if self.pose_source == "predicted":
+            pred_file = scene_path / self.predicted_poses_filename
+            pose_npz = np.load(pred_file, mmap_mode='r')
+        else:
+            pose_file = scene_path / "all_poses.npz"
+            pose_npz = np.load(pose_file, mmap_mode='r')
+
+        results = []
+        for i, fid in enumerate(frame_ids):
+            rgb = rgb_by_idx[i]
+
+            depth_val = np.array(depths_arr[fid])
+            depth = torch.tensor(depth_val, dtype=torch.float32).unsqueeze(0)
+            depth = F.interpolate(
+                depth.unsqueeze(0),
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                antialias=True,
+            )[0]
+            depth_mask = (depth < self.z_filter)
+
+            if self.pose_source == "predicted":
+                c2w_3dbelief = np.array(pose_npz["poses"][fid])
+                w2c_3dbelief = np.linalg.inv(c2w_3dbelief)
+                cam_param = Camera(w2c_3dbelief.astype(np.float32))
+                if "intrinsics" in pose_npz:
+                    cam_param.intrinsics = np.array(pose_npz["intrinsics"][fid]).astype(np.float32)
+            else:
+                extrinsics = np.array(pose_npz["poses"][fid])  # c2w
+                extrinsics = np.linalg.inv(extrinsics)       # w2c
+                conversion = np.diag([1, -1, -1, 1])
+                extrinsics = conversion @ extrinsics
+                cam_param = Camera(extrinsics)
+
+            results.append((rgb, depth, depth_mask, cam_param))
+        return results
 
     def read_frame(self, scene_path: Path, frame_id: int):
         """Read RGB, depth, depth_mask, and camera for a single frame."""
@@ -169,10 +283,10 @@ class ProcTHORDataset(Dataset):
             antialias=True,
         )[0]
 
-        # Depth from npz
+        # Depth from npz (memory-mapped to avoid loading entire array)
         depth_file = scene_path / "all_depths.npz"
-        depths_data = np.load(depth_file)
-        depth_val = depths_data["depths"][frame_id]
+        depths_data = np.load(depth_file, mmap_mode='r')
+        depth_val = np.array(depths_data["depths"][frame_id])
         depth = torch.tensor(depth_val, dtype=torch.float32).unsqueeze(0)
         depth = F.interpolate(
             depth.unsqueeze(0),
@@ -185,17 +299,17 @@ class ProcTHORDataset(Dataset):
         # Pose from npz
         if self.pose_source == "predicted":
             pred_file = scene_path / self.predicted_poses_filename
-            pred_data = np.load(pred_file)
+            pred_data = np.load(pred_file, mmap_mode='r')
             # Predicted poses are already c2w in 3d-belief convention
-            c2w_3dbelief = pred_data["poses"][frame_id]
+            c2w_3dbelief = np.array(pred_data["poses"][frame_id])
             w2c_3dbelief = np.linalg.inv(c2w_3dbelief)
             cam_param = Camera(w2c_3dbelief.astype(np.float32))
             if "intrinsics" in pred_data:
-                cam_param.intrinsics = pred_data["intrinsics"][frame_id].astype(np.float32)
+                cam_param.intrinsics = np.array(pred_data["intrinsics"][frame_id]).astype(np.float32)
         else:
             pose_file = scene_path / "all_poses.npz"
-            poses_data = np.load(pose_file)
-            extrinsics = poses_data["poses"][frame_id]  # c2w
+            poses_data = np.load(pose_file, mmap_mode='r')
+            extrinsics = np.array(poses_data["poses"][frame_id])  # c2w
             extrinsics = np.linalg.inv(extrinsics)       # w2c
             conversion = np.diag([1, -1, -1, 1])
             extrinsics = conversion @ extrinsics
@@ -204,12 +318,11 @@ class ProcTHORDataset(Dataset):
 
     def read_scene_graph(self, scene_path: Path, frame_id: int) -> dict:
         """Read and parse scene graph for a single frame."""
-        sg_file = scene_path / "all_scene_graphs.json"
-        with open(sg_file) as f:
-            sg_data = json.load(f)
+        sg_file = str(scene_path / "all_scene_graphs.json")
+        sg_data = _load_scene_graph_json(sg_file)
         frame_data = sg_data[frame_id]
         # Pre-compute room bounds across the full episode for door inference
-        room_bounds = collect_room_bounds(sg_data) if self.include_walls else None
+        room_bounds = _cached_room_bounds(sg_file) if self.include_walls else None
         return parse_scene_graph(
             frame_data,
             self.type_to_id,
@@ -253,14 +366,14 @@ class ProcTHORDataset(Dataset):
             return fallback()
 
         # Find target frame with sufficient viewpoint change (same logic as SPOC)
-        _, _, _, cam_param = self.read_frame(scene_path, start_idx)
+        cam_param = self._read_pose(scene_path, start_idx)
         pose_ctxt = cam_param.c2w_mat
         z_start = pose_ctxt[:, 2][:3]
         t_start = pose_ctxt[:, 3][:3]
 
         end_idx = start_idx + 1
         for idx in range(start_idx + 1, num_frames):
-            _, _, _, cam_param = self.read_frame(scene_path, idx)
+            cam_param = self._read_pose(scene_path, idx)
             pose_idx = cam_param.c2w_mat
             z_idx = pose_idx[:, 2][:3]
             t_idx = pose_idx[:, 3][:3]
@@ -292,48 +405,47 @@ class ProcTHORDataset(Dataset):
         # Could also use a union — for now use the max(ctxt, trgt) frame since later frames see more
         sg_frame_id = max(ctxt_idx[0], trgt_idx[0])
 
-        # Load target views
-        trgt_rgbs, trgt_depths, trgt_depth_masks, trgt_c2w_list = [], [], [], []
-        trgt_intrinsics_list = []
-        for fid in trgt_idx:
-            rgb, depth, depth_mask, cam = self.read_frame(scene_path, fid)
-            trgt_rgbs.append(rgb)
-            trgt_depths.append(depth)
-            trgt_depth_masks.append(depth_mask)
-            trgt_intrinsics_list.append(cam.intrinsics)
-            trgt_c2w_list.append(cam.c2w_mat)
+        # Collect all frame IDs and batch-read them (one VideoCapture open)
+        all_frame_ids = list(trgt_idx) + list(ctxt_idx)
+        if self.intermediate and (intm_idx is not None):
+            all_frame_ids += list(intm_idx)
+        all_frames = self.read_frames_batch(scene_path, all_frame_ids)
+
+        # Unpack target views
+        n_trgt = len(trgt_idx)
+        trgt_frames = all_frames[:n_trgt]
+        trgt_rgbs = [f[0] for f in trgt_frames]
+        trgt_depths = [f[1] for f in trgt_frames]
+        trgt_depth_masks = [f[2] for f in trgt_frames]
+        trgt_intrinsics_list = [f[3].intrinsics for f in trgt_frames]
+        trgt_c2w_list = [f[3].c2w_mat for f in trgt_frames]
         trgt_c2w = torch.tensor(np.array(trgt_c2w_list)).float()
         trgt_rgb = torch.stack(trgt_rgbs, dim=0)
         trgt_depth = torch.stack(trgt_depths, dim=0)
         trgt_depth_mask = torch.stack(trgt_depth_masks, dim=0)
 
-        # Load context views
-        ctxt_rgbs, ctxt_depths, ctxt_depth_masks, ctxt_c2w_list = [], [], [], []
-        ctxt_intrinsics_list = []
-        for fid in ctxt_idx:
-            rgb, depth, depth_mask, cam = self.read_frame(scene_path, fid)
-            ctxt_rgbs.append(rgb)
-            ctxt_depths.append(depth)
-            ctxt_depth_masks.append(depth_mask)
-            ctxt_intrinsics_list.append(torch.tensor(cam.intrinsics).float())
-            ctxt_c2w_list.append(cam.c2w_mat)
+        # Unpack context views
+        n_ctxt = len(ctxt_idx)
+        ctxt_frames = all_frames[n_trgt:n_trgt + n_ctxt]
+        ctxt_rgbs = [f[0] for f in ctxt_frames]
+        ctxt_depths = [f[1] for f in ctxt_frames]
+        ctxt_depth_masks = [f[2] for f in ctxt_frames]
+        ctxt_intrinsics_list = [torch.tensor(f[3].intrinsics).float() for f in ctxt_frames]
+        ctxt_c2w_list = [f[3].c2w_mat for f in ctxt_frames]
         ctxt_c2w = torch.tensor(np.array(ctxt_c2w_list)).float()
         ctxt_rgb = torch.stack(ctxt_rgbs, dim=0)
         ctxt_depth = torch.stack(ctxt_depths, dim=0)
         ctxt_depth_mask = torch.stack(ctxt_depth_masks, dim=0)
         ctxt_intrinsics = torch.stack(ctxt_intrinsics_list, dim=0)
 
-        # Load intermediate views
+        # Unpack intermediate views
         if self.intermediate and (intm_idx is not None):
-            intm_rgbs, intm_depths, intm_depth_masks, intm_c2w_list = [], [], [], []
-            intm_intrinsics_list = []
-            for fid in intm_idx:
-                rgb, depth, depth_mask, cam = self.read_frame(scene_path, fid)
-                intm_rgbs.append(rgb)
-                intm_depths.append(depth)
-                intm_depth_masks.append(depth_mask)
-                intm_intrinsics_list.append(torch.tensor(cam.intrinsics).float())
-                intm_c2w_list.append(cam.c2w_mat)
+            intm_frames = all_frames[n_trgt + n_ctxt:]
+            intm_rgbs = [f[0] for f in intm_frames]
+            intm_depths = [f[1] for f in intm_frames]
+            intm_depth_masks = [f[2] for f in intm_frames]
+            intm_intrinsics_list = [torch.tensor(f[3].intrinsics).float() for f in intm_frames]
+            intm_c2w_list = [f[3].c2w_mat for f in intm_frames]
             intm_c2w = torch.tensor(np.array(intm_c2w_list)).float()
             intm_rgb = torch.stack(intm_rgbs, dim=0)
             intm_depth = torch.stack(intm_depths, dim=0)
@@ -387,3 +499,71 @@ class ProcTHORDataset(Dataset):
                 })
 
         return (ret_dict, trgt_rgb)
+
+    # -------------------------------------------------------------------------
+    # Temporal inference interface
+    # -------------------------------------------------------------------------
+
+    def data_for_temporal(self, video_idx: int, frames_render: Union[int, List] = 20):
+        """Return data for temporal_inference.py.
+
+        Args:
+            video_idx: Scene index.
+            frames_render: int (number of frames) or [start, end] range.
+
+        Returns:
+            (video_dict, rgb_frames, start_idx, end_idx)
+        """
+        from splat_belief.utils.vision_utils import select_random_sequence
+
+        scene_path = self.scene_path_list[video_idx]
+        num_frames = self.num_frames_per_scene[video_idx]
+
+        if isinstance(frames_render, (int, np.integer)):
+            ids = select_random_sequence(self.rng, num_frames, frames_render)
+            start_idx = ids[0]
+            end_idx = ids[-1]
+        else:
+            start_idx = frames_render[0]
+            end_idx = frames_render[1]
+            assert start_idx < num_frames and end_idx < num_frames
+            ids = np.arange(start_idx, end_idx + 1)
+
+        print(f"start_idx: {ids[0]}, end_idx: {ids[-1]}, num_frames_render: {len(ids)}")
+
+        all_frames = self.read_frames_batch(scene_path, list(ids))
+
+        rgbs = [f[0] for f in all_frames]
+        depths = [f[1] for f in all_frames]
+        cam_params = [f[3] for f in all_frames]
+
+        abs_camera_poses = [torch.tensor(np.array([cp.c2w_mat])).float() for cp in cam_params]
+        intrinsics = [torch.tensor(cp.intrinsics).float() for cp in cam_params]
+
+        # Render poses relative to first frame
+        inv_first = torch.inverse(abs_camera_poses[0][0]).unsqueeze(0)
+        render_poses = [torch.einsum("ijk, ikl -> ijl", inv_first, c2w) for c2w in abs_camera_poses]
+
+        # Scene graph from the last frame (most complete view)
+        sg_frame_id = int(ids[-1])
+        sg_tensors = self.read_scene_graph(scene_path, sg_frame_id)
+
+        ret = {
+            "render_poses": render_poses,
+            "rgbs": [self.normalize(torch.stack([rgb], dim=0)) for rgb in rgbs],
+            "depth": [torch.stack([depth], dim=0) for depth in depths],
+            "abs_camera_poses": abs_camera_poses,
+            "intrinsics": [intr for intr in intrinsics],
+            "near": self.z_near,
+            "far": self.z_far,
+            "image_shape": torch.tensor([self.image_size, self.image_size, 3]),
+            "lang": torch.zeros(1, 512),
+            **sg_tensors,
+        }
+
+        return (
+            ret,
+            [torch.stack([rgb], dim=0) for rgb in rgbs],
+            start_idx,
+            end_idx,
+        )

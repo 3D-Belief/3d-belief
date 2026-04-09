@@ -1621,177 +1621,159 @@ class Trainer(object):
                     if self.step == self.lock_enc_steps:
                         self.unlock_encoder()
                     
-                    total_loss = 0.0
-                    total_rgb_loss = 0.0
-                    total_depth_loss = 0.0
-                    total_depth_mask_loss = 0.0
-                    total_depth_smooth_loss = 0.0
-                    total_semantic_loss = 0.0
-                    total_semantic_reg_loss = 0.0
-                    total_lpips_loss = 0.0
-                    total_rgb_intermediate_loss = 0.0
-                    total_depth_intermediate_loss = 0.0
-                    total_depth_mask_intermediate_loss = 0.0
-                    total_semantic_intermediate_loss = 0.0
-                    total_semantic_intermediate_reg_loss = 0.0
-                    total_depth_smooth_intermediate_loss = 0.0
-
-                    total_rgb_loss_ctxt = 0.0
-                    total_depth_loss_ctxt = 0.0
-                    total_depth_mask_loss_ctxt = 0.0
-                    total_depth_smooth_loss_ctxt = 0.0
-                    total_semantic_loss_ctxt = 0.0
-                    total_semantic_loss_ctxt_reg = 0.0
-                    total_lpips_loss_ctxt = 0.0
-                    total_repa_loss = 0.0
-                    total_repa_loss_ctxt = 0.0
-                    total_alignment_loss = 0.0
+                    # Accumulate losses as detached GPU scalars; batch-convert
+                    # to CPU floats after the loop to avoid per-loss GPU-CPU syncs.
+                    _gpu = {}  # key -> detached 0-D GPU tensor
 
                     for _ in range(self.gradient_accumulate_every):
                         num_context = np.random.randint(1, self.num_context + 1,)
                         data_full = next(self.dl)
                         if isinstance(data_full, list):
-                            # gt = data[1]
                             data = data_full[0]
                             for k, v in data.items():
                                 if k in ["ctxt_rgb", "ctxt_c2w", "ctxt_abs_camera_poses"]:
                                     data[k] = v[:, :num_context]
                             data = to_gpu(data, device)
-                            # print(f"datashape: {data['ctxt_rgb'].shape}")
                         # calculate losses
                         with self.accelerator.autocast():
                             losses, misc = self.model(data, global_step=self.step)
 
-                            # print("losses computed")
+                            def _accum(key, val):
+                                """Add a detached scalar to the GPU accumulator dict."""
+                                if val is None:
+                                    return
+                                v = val.detach() / self.gradient_accumulate_every
+                                _gpu[key] = _gpu.get(key, 0.0) + v if key in _gpu else v
+
                             rgb_loss = losses["rgb_loss"]
+                            _accum("rgb_loss", rgb_loss)
                             rgb_loss = rgb_loss / self.gradient_accumulate_every
-                            total_rgb_loss += rgb_loss.item()
 
                             depth_loss = losses["depth_loss"]
+                            _accum("depth_loss", depth_loss)
                             if depth_loss is not None:
                                 depth_loss = depth_loss / self.gradient_accumulate_every
-                                total_depth_loss += depth_loss.item()
                             
                             depth_mask_loss = losses.get("depth_mask_loss")
+                            _accum("depth_mask_loss", depth_mask_loss)
                             if depth_mask_loss is not None:
                                 depth_mask_loss = depth_mask_loss / self.gradient_accumulate_every
-                                total_depth_mask_loss += depth_mask_loss.item()
 
                             semantic_loss = losses.get("semantic_loss", None)
+                            _accum("semantic_loss", semantic_loss)
                             if semantic_loss is not None:
                                 semantic_loss = semantic_loss / self.gradient_accumulate_every
-                                total_semantic_loss += semantic_loss.item()
 
                             semantic_loss_reg = losses.get("semantic_loss_reg", None)
+                            _accum("semantic_reg_loss", semantic_loss_reg)
                             if semantic_loss_reg is not None:
                                 semantic_loss_reg = semantic_loss_reg / self.gradient_accumulate_every
-                                total_semantic_reg_loss += semantic_loss_reg.item()
 
                             depth_smooth_loss = losses.get("depth_smooth_loss", None)
+                            _accum("depth_smooth_loss", depth_smooth_loss)
                             if depth_smooth_loss is not None:
                                 depth_smooth_loss = (
                                     depth_smooth_loss / self.gradient_accumulate_every
                                 )
-                                total_depth_smooth_loss += depth_smooth_loss.item()
 
                             rgb_intermediate_loss = losses.get("rgb_intermediate_loss", None)
+                            _accum("rgb_intermediate_loss", rgb_intermediate_loss)
                             if rgb_intermediate_loss is not None:
                                 rgb_intermediate_loss = (
                                     rgb_intermediate_loss / self.gradient_accumulate_every
                                 )
-                                total_rgb_intermediate_loss += rgb_intermediate_loss.item()
 
                             depth_intermediate_loss = losses.get("depth_intermediate_loss", None)
+                            _accum("depth_intermediate_loss", depth_intermediate_loss)
                             if depth_intermediate_loss is not None:
                                 depth_intermediate_loss = (
                                     depth_intermediate_loss / self.gradient_accumulate_every
                                 )
-                                total_depth_intermediate_loss += depth_intermediate_loss.item()
 
                             depth_mask_intermediate_loss = losses.get("depth_mask_intermediate_loss", None)
+                            _accum("depth_mask_intermediate_loss", depth_mask_intermediate_loss)
                             if depth_mask_intermediate_loss is not None:
                                 depth_mask_intermediate_loss = (
                                     depth_mask_intermediate_loss / self.gradient_accumulate_every
                                 )
-                                total_depth_mask_intermediate_loss += depth_mask_intermediate_loss.item()
 
                             semantic_intermediate_loss = losses.get("semantic_intermediate_loss")
+                            _accum("semantic_intermediate_loss", semantic_intermediate_loss)
                             if semantic_intermediate_loss is not None:
                                 semantic_intermediate_loss = (
                                     semantic_intermediate_loss / self.gradient_accumulate_every
                                 )
-                                total_semantic_intermediate_loss += semantic_intermediate_loss.item()
                             
                             semantic_intermediate_reg_loss = losses.get("semantic_intermediate_loss_reg")
+                            _accum("semantic_intermediate_reg_loss", semantic_intermediate_reg_loss)
                             if semantic_intermediate_reg_loss is not None:
                                 semantic_intermediate_reg_loss = (
                                     semantic_intermediate_reg_loss / self.gradient_accumulate_every
                                 )
-                                total_semantic_intermediate_reg_loss += semantic_intermediate_reg_loss.item()
                             
                             depth_smooth_intermediate_loss = losses.get("depth_smooth_intermediate_loss", None)
+                            _accum("depth_smooth_intermediate_loss", depth_smooth_intermediate_loss)
                             if depth_smooth_intermediate_loss is not None:
                                 depth_smooth_intermediate_loss = (
                                     depth_smooth_intermediate_loss / self.gradient_accumulate_every
                                 )
-                                total_depth_smooth_intermediate_loss += depth_smooth_intermediate_loss.item()
 
                             lpips_loss = losses["lpips_loss"]
+                            _accum("lpips_loss", lpips_loss)
                             lpips_loss = lpips_loss / self.gradient_accumulate_every
-                            total_lpips_loss += lpips_loss.item()
 
                             repa_loss = losses["repa_loss"]
+                            _accum("repa_loss", repa_loss)
                             if repa_loss is not None:
                                 repa_loss = repa_loss / self.gradient_accumulate_every
-                                total_repa_loss += repa_loss.item()
                             
                             alignment_loss = losses.get("alignment_loss", None)
+                            _accum("alignment_loss", alignment_loss)
                             if alignment_loss is not None:
                                 alignment_loss = alignment_loss / self.gradient_accumulate_every
-                                total_alignment_loss += alignment_loss.item()
 
                             # identity losses
                             if self.use_identity:
                                 rgb_loss_ctxt = losses["rgb_loss_ctxt"]
+                                _accum("rgb_loss_ctxt", rgb_loss_ctxt)
                                 rgb_loss_ctxt = rgb_loss_ctxt / self.gradient_accumulate_every
-                                total_rgb_loss_ctxt += rgb_loss_ctxt.item()
 
                                 depth_loss_ctxt = losses["depth_loss_ctxt"]
+                                _accum("depth_loss_ctxt", depth_loss_ctxt)
                                 if depth_loss_ctxt is not None:
                                     depth_loss_ctxt = depth_loss_ctxt / self.gradient_accumulate_every
-                                    total_depth_loss_ctxt += depth_loss_ctxt.item()
                                 
                                 depth_mask_loss_ctxt = losses.get("depth_mask_loss_ctxt")
+                                _accum("depth_mask_loss_ctxt", depth_mask_loss_ctxt)
                                 if depth_mask_loss_ctxt is not None:
                                     depth_mask_loss_ctxt = depth_mask_loss_ctxt / self.gradient_accumulate_every
-                                    total_depth_mask_loss_ctxt += depth_mask_loss_ctxt.item()
 
                                 semantic_loss_ctxt = losses["semantic_loss_ctxt"]
+                                _accum("semantic_loss_ctxt", semantic_loss_ctxt)
                                 if semantic_loss_ctxt is not None:
                                     semantic_loss_ctxt = semantic_loss_ctxt / self.gradient_accumulate_every
-                                    total_semantic_loss_ctxt += semantic_loss_ctxt.item()
 
                                 semantic_loss_ctxt_reg = losses.get("semantic_loss_ctxt_reg", None)
+                                _accum("semantic_loss_ctxt_reg", semantic_loss_ctxt_reg)
                                 if semantic_loss_ctxt_reg is not None:
                                     semantic_loss_ctxt_reg = (
                                         semantic_loss_ctxt_reg / self.gradient_accumulate_every
                                     )
-                                    total_semantic_loss_ctxt_reg += semantic_loss_ctxt_reg.item()
 
                                 depth_smooth_loss_ctxt = losses["depth_smooth_loss_ctxt"]
+                                _accum("depth_smooth_loss_ctxt", depth_smooth_loss_ctxt)
                                 depth_smooth_loss_ctxt = (
                                     depth_smooth_loss_ctxt / self.gradient_accumulate_every
                                 )
-                                total_depth_smooth_loss_ctxt += depth_smooth_loss_ctxt.item()
 
                                 lpips_loss_ctxt = losses["lpips_loss_ctxt"]
+                                _accum("lpips_loss_ctxt", lpips_loss_ctxt)
                                 lpips_loss_ctxt = lpips_loss_ctxt / self.gradient_accumulate_every
-                                total_lpips_loss_ctxt += lpips_loss_ctxt.item()
 
                                 repa_loss_ctxt = losses["repa_loss_ctxt"]
+                                _accum("repa_loss_ctxt", repa_loss_ctxt)
                                 if repa_loss_ctxt is not None:
                                     repa_loss_ctxt = repa_loss_ctxt / self.gradient_accumulate_every
-                                    total_repa_loss_ctxt += repa_loss_ctxt.item()
 
                             loss = rgb_loss
 
@@ -1863,10 +1845,38 @@ class Trainer(object):
                             if self.use_depth_smoothness and depth_smooth_intermediate_loss is not None:
                                 loss += self.intermediate_weight * self.depth_smooth_loss_weight * depth_smooth_intermediate_loss
 
-                            total_loss += loss.item()
+                            _accum("total_loss", loss)
 
                         self.accelerator.backward(loss)
                     
+                    # Batch-extract all accumulated loss scalars from GPU → CPU
+                    # (single sync point instead of 20+ per step)
+                    total_loss = _gpu.get("total_loss", torch.tensor(0.0)).item()
+                    total_rgb_loss = _gpu.get("rgb_loss", torch.tensor(0.0)).item()
+                    total_depth_loss = _gpu.get("depth_loss", torch.tensor(0.0)).item()
+                    total_depth_mask_loss = _gpu.get("depth_mask_loss", torch.tensor(0.0)).item()
+                    total_semantic_loss = _gpu.get("semantic_loss", torch.tensor(0.0)).item()
+                    total_semantic_reg_loss = _gpu.get("semantic_reg_loss", torch.tensor(0.0)).item()
+                    total_depth_smooth_loss = _gpu.get("depth_smooth_loss", torch.tensor(0.0)).item()
+                    total_rgb_intermediate_loss = _gpu.get("rgb_intermediate_loss", torch.tensor(0.0)).item()
+                    total_depth_intermediate_loss = _gpu.get("depth_intermediate_loss", torch.tensor(0.0)).item()
+                    total_depth_mask_intermediate_loss = _gpu.get("depth_mask_intermediate_loss", torch.tensor(0.0)).item()
+                    total_semantic_intermediate_loss = _gpu.get("semantic_intermediate_loss", torch.tensor(0.0)).item()
+                    total_semantic_intermediate_reg_loss = _gpu.get("semantic_intermediate_reg_loss", torch.tensor(0.0)).item()
+                    total_depth_smooth_intermediate_loss = _gpu.get("depth_smooth_intermediate_loss", torch.tensor(0.0)).item()
+                    total_lpips_loss = _gpu.get("lpips_loss", torch.tensor(0.0)).item()
+                    total_repa_loss = _gpu.get("repa_loss", torch.tensor(0.0)).item()
+                    total_repa_loss_ctxt = _gpu.get("repa_loss_ctxt", torch.tensor(0.0)).item()
+                    total_alignment_loss = _gpu.get("alignment_loss", torch.tensor(0.0)).item()
+                    total_rgb_loss_ctxt = _gpu.get("rgb_loss_ctxt", torch.tensor(0.0)).item()
+                    total_depth_loss_ctxt = _gpu.get("depth_loss_ctxt", torch.tensor(0.0)).item()
+                    total_depth_mask_loss_ctxt = _gpu.get("depth_mask_loss_ctxt", torch.tensor(0.0)).item()
+                    total_depth_smooth_loss_ctxt = _gpu.get("depth_smooth_loss_ctxt", torch.tensor(0.0)).item()
+                    total_semantic_loss_ctxt = _gpu.get("semantic_loss_ctxt", torch.tensor(0.0)).item()
+                    total_semantic_loss_ctxt_reg = _gpu.get("semantic_loss_ctxt_reg", torch.tensor(0.0)).item()
+                    total_lpips_loss_ctxt = _gpu.get("lpips_loss_ctxt", torch.tensor(0.0)).item()
+                    del _gpu
+
                     # log the step
                     elapsed_time_sec = time.time() - start_time
                     if accelerator.is_main_process:

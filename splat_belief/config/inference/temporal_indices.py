@@ -1,3 +1,5 @@
 interesting_indices = [
-    (27, 0, 15),   # scene 27: 16 frames, 3 keyframes at [5, 10, 15] → 2 imaginations
+    # ProcTHOR test split, scene 1 (obj_nav_room_house_000405_episode_0, 231 frames)
+    # 20 frames starting from frame 0
+    (1, 0, 19),
 ]

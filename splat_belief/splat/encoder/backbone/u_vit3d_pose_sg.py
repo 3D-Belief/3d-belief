@@ -20,6 +20,7 @@ from .sg_modules import (
     LayoutEmbedding,
     DenseLayoutInjection,
 )
+from splat_belief.utils.procthor_utils import rasterize_scene_graph
 
 
 @dataclass
@@ -246,7 +247,6 @@ class UViT3DPoseSG(UViT3DPose):
         # ---- Dense layout: rasterize SG + embed ----
         layout_emb = None
         if self.sg_cfg.use_dense_layout:
-            from splat_belief.utils.procthor_utils import rasterize_scene_graph
             sg_node_types = model_input["sg_node_types"]           # (B, M) long
             layout_cls, layout_depth = rasterize_scene_graph(
                 sg_node_types=sg_node_types,
