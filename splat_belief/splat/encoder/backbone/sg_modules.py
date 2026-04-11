@@ -787,20 +787,33 @@ class LayoutEmbedding(nn.Module):
 class DenseLayoutInjection(nn.Module):
     """
     Injects dense layout embeddings into image features at a specific
-    backbone level via a gated additive projection.
+    backbone level.
 
-    Uses GLIGEN-style zero-initialized gate for stable training start.
+    Supports two modes:
+    - "additive": gated additive projection (GLIGEN-style)
+    - "film": FiLM conditioning — layout predicts scale (gamma) and shift (beta)
+              applied as x = (1 + gamma) * x + beta
     """
 
-    def __init__(self, query_dim: int, layout_dim: int):
+    def __init__(self, query_dim: int, layout_dim: int, gate_init: float = 0.1,
+                 mode: str = "additive"):
         super().__init__()
-        self.layout_proj = nn.Sequential(
-            nn.Linear(layout_dim, query_dim),
-            nn.SiLU(),
-            zero_module(nn.Linear(query_dim, query_dim)),
-        )
-        # Zero-init gate (GLIGEN pattern)
-        self.gate = nn.Parameter(torch.zeros(1))
+        self.mode = mode
+        if mode == "film":
+            # Output 2*query_dim: first half = gamma, second half = beta
+            self.layout_proj = nn.Sequential(
+                nn.Linear(layout_dim, query_dim),
+                nn.SiLU(),
+                nn.Linear(query_dim, 2 * query_dim),
+            )
+        else:
+            self.layout_proj = nn.Sequential(
+                nn.Linear(layout_dim, query_dim),
+                nn.SiLU(),
+                nn.Linear(query_dim, query_dim),
+            )
+        # Warm-start gate so layout signal flows from the beginning
+        self.gate = nn.Parameter(torch.full((1,), gate_init))
 
     def forward(
         self,
@@ -822,10 +835,70 @@ class DenseLayoutInjection(nn.Module):
         else:
             lay = layout_emb
 
-        # Project: (BT, D_layout, H, W) → (BT, C_level, H, W)
-        # Apply linear per spatial position: rearrange for linear
+        # Project: (BT, D_layout, H, W) → per spatial position
         lay = rearrange(lay, "bt d h w -> bt h w d")
-        lay = self.layout_proj(lay)                          # (BT, H, W, C_level)
-        lay = rearrange(lay, "bt h w c -> bt c h w")
+        lay = self.layout_proj(lay)
 
-        return x + self.gate * lay
+        if self.mode == "film":
+            # Split into gamma and beta, each (BT, H, W, C)
+            gamma, beta = lay.chunk(2, dim=-1)
+            gamma = rearrange(gamma, "bt h w c -> bt c h w")
+            beta = rearrange(beta, "bt h w c -> bt c h w")
+            # FiLM: (1 + gate*gamma) * x + gate*beta
+            return (1.0 + self.gate * gamma) * x + self.gate * beta
+        else:
+            lay = rearrange(lay, "bt h w c -> bt c h w")
+            return x + self.gate * lay
+
+
+# ---------------------------------------------------------------------------
+# Layout Reconstruction Head: auxiliary loss for explicit layout supervision
+# ---------------------------------------------------------------------------
+class LayoutReconstructionHead(nn.Module):
+    """
+    Lightweight decoder head that predicts layout class and depth maps
+    from backbone features, providing direct gradient signal for layout
+    conditioning modules.
+
+    Attached at a chosen backbone level (typically lowest-resolution for
+    efficiency). Predicts:
+      - layout_cls logits  (BT, n_classes, H, W)  → cross-entropy loss
+      - layout_depth       (BT, 1, H, W)          → L1 loss
+    """
+
+    def __init__(self, in_channels: int, n_classes: int, mid_channels: int = 128):
+        super().__init__()
+        self.cls_head = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(mid_channels, n_classes, 1),
+        )
+        self.depth_head = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(mid_channels, 1, 1),
+        )
+
+    def forward(
+        self,
+        features: Tensor,      # (BT, C, H_feat, W_feat)
+        target_size: tuple,     # (H_target, W_target) — resolution of GT layout maps
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Returns:
+            cls_logits:  (BT, n_classes, H_target, W_target)
+            depth_pred:  (BT, 1, H_target, W_target)
+        """
+        cls_logits = self.cls_head(features)
+        depth_pred = self.depth_head(features)
+
+        # Match target resolution
+        if cls_logits.shape[-2:] != target_size:
+            cls_logits = F.interpolate(
+                cls_logits, size=target_size, mode="bilinear", align_corners=False
+            )
+            depth_pred = F.interpolate(
+                depth_pred, size=target_size, mode="bilinear", align_corners=False
+            )
+
+        return cls_logits, depth_pred

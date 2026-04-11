@@ -43,7 +43,7 @@ from splat_belief.diffusion.diffusion import (
     _draw_bboxes_on_image,
     _layout_cls_to_colormap,
 )
-from splat_belief.utils.procthor_utils import load_vocabulary, rasterize_scene_graph
+from splat_belief.utils.procthor_utils import load_vocabulary, rasterize_scene_graph, _clean_display_name
 
 import json
 import lpips
@@ -387,7 +387,8 @@ def train(cfg: DictConfig):
                 for sg_key in ["sg_node_types", "sg_node_positions", "sg_node_rotations",
                                "sg_node_sizes", "sg_edge_index", "sg_edge_types",
                                "sg_node_mask", "sg_edge_mask",
-                               "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall"]:
+                               "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall",
+                               "sg_node_is_door"]:
                     if sg_key in video_dict:
                         inp[sg_key] = video_dict[sg_key]
                 # import ipdb; ipdb.set_trace()
@@ -432,7 +433,8 @@ def train(cfg: DictConfig):
                         for sg_key in ["sg_node_types", "sg_node_positions", "sg_node_rotations",
                                        "sg_node_sizes", "sg_edge_index", "sg_edge_types",
                                        "sg_node_mask", "sg_edge_mask",
-                                       "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall"]:
+                                       "sg_wall_endpoints", "sg_wall_heights", "sg_node_is_wall",
+                                       "sg_node_is_door"]:
                             if sg_key in video_dict:
                                 imagine_input[sg_key] = video_dict[sg_key]
                         if not imagine_t==len(key_frame_indices)-1:
@@ -643,7 +645,7 @@ def _make_bbox_overlay(rgb_np, frame_idx, video_dict, abs_camera_poses, intrinsi
     if id_to_type is not None and node_types is not None:
         _types = node_types.squeeze(0).cpu() if node_types.dim() == 2 else node_types.cpu()
         names = [
-            id_to_type[int(t)] if int(t) < len(id_to_type) else f"obj_{int(t)}"
+            _clean_display_name(id_to_type[int(t)]) if int(t) < len(id_to_type) else f"obj_{int(t)}"
             for t in _types.tolist()
         ]
     else:
@@ -717,6 +719,7 @@ def _make_layout_overlay(rgb_np, frame_idx, video_dict, abs_camera_poses, intrin
                 sg_wall_endpoints=_ensure_batch(video_dict.get("sg_wall_endpoints")),
                 sg_wall_heights=_ensure_batch(video_dict.get("sg_wall_heights")),
                 sg_node_is_wall=_ensure_batch(video_dict.get("sg_node_is_wall")),
+                sg_node_is_door=_ensure_batch(video_dict.get("sg_node_is_door")),
             )
         cls_np = layout_cls[0].cpu().numpy()
         colormap = _layout_cls_to_colormap(cls_np, H, W, id_to_type=id_to_type)

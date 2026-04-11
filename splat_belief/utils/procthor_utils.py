@@ -136,11 +136,22 @@ def precompute_clip_embeddings(
 
 def _camel_to_words(name: str) -> str:
     """Convert camelCase/PascalCase to space-separated words.
-    E.g. 'FloorLamp' -> 'floor lamp', 'ObjaCarton' -> 'obja carton'
+    Strips the 'Obja' provenance prefix from Objaverse asset names.
+    E.g. 'FloorLamp' -> 'floor lamp', 'ObjaCarton' -> 'carton'
     """
     import re
+    if name.startswith("Obja"):
+        name = name[4:]
     words = re.sub(r"([A-Z])", r" \1", name).strip().lower()
     return words
+
+
+def _clean_display_name(name: str) -> str:
+    """Return a human-readable display name for a scene-graph type."""
+    if name.startswith("Obja"):
+        name = name[4:]
+    import re
+    return re.sub(r"([A-Z])", r" \1", name).strip()
 
 
 def save_vocabulary(
@@ -200,6 +211,7 @@ def parse_scene_graph(
     nodes = []  # list of (type_id, pos, rot, size)
     room_assignments = []  # room index for each node
     is_wall_flags = []  # bool per node
+    is_door_flags = []  # bool per node
     wall_endpoint_list = []  # (2, 3) per node; zeros for objects
     wall_height_list = []  # float per node; 0 for objects
 
@@ -219,12 +231,14 @@ def parse_scene_graph(
         for child in room.get("children", []):
             _add_node(child, type_to_id, nodes, room_assignments, room_idx)
             is_wall_flags.append(False)
+            is_door_flags.append(False)
             wall_endpoint_list.append(np.zeros((2, 3), dtype=np.float32))
             wall_height_list.append(0.0)
             # Also add nested children (objects on top of furniture)
             for sub in child.get("children", []):
                 _add_node(sub, type_to_id, nodes, room_assignments, room_idx)
                 is_wall_flags.append(False)
+                is_door_flags.append(False)
                 wall_endpoint_list.append(np.zeros((2, 3), dtype=np.float32))
                 wall_height_list.append(0.0)
 
@@ -234,10 +248,32 @@ def parse_scene_graph(
             frame_data, type_to_id, wall_height_default, wall_thickness,
             room_id_to_idx,
         )
+
+        # Parse doors (needs pre-computed room_bounds from the full episode)
+        door_nodes = []
+        if DOOR_TYPE_NAME in type_to_id and room_bounds is not None:
+            door_nodes = _parse_doors(
+                frame_data, type_to_id, room_bounds, room_id_to_idx,
+                wall_height_default,
+            )
+
+        # ---- Split walls at door openings ----
+        if door_nodes:
+            wall_door_map = _match_doors_to_walls(wall_nodes, door_nodes)
+            split_wall_nodes = []
+            for wi, wn in enumerate(wall_nodes):
+                if wi in wall_door_map:
+                    sub_walls = _split_wall_at_doors(wn, wall_door_map[wi])
+                    split_wall_nodes.extend(sub_walls)
+                else:
+                    split_wall_nodes.append(wn)
+            wall_nodes = split_wall_nodes
+
         for wn in wall_nodes:
             nodes.append((wn["type_id"], wn["pos"], wn["rot"], wn["size"]))
             room_assignments.append(wn["room_idx"])
             is_wall_flags.append(True)
+            is_door_flags.append(False)
             wall_endpoint_list.append(wn["endpoints"])
             wall_height_list.append(wn["height"])
 
@@ -248,19 +284,25 @@ def parse_scene_graph(
             nodes.append((fn["type_id"], fn["pos"], fn["rot"], fn["size"]))
             room_assignments.append(fn["room_idx"])
             is_wall_flags.append(False)
+            is_door_flags.append(False)
             wall_endpoint_list.append(fn["endpoints"])
             wall_height_list.append(fn["height"])
 
-    # Parse doors (needs pre-computed room_bounds from the full episode)
+    # Add door nodes to the scene graph (for GCN/semantic features)
+    # but they will be excluded from z-buffer rasterization
     if include_walls and DOOR_TYPE_NAME in type_to_id and room_bounds is not None:
-        door_nodes = _parse_doors(
-            frame_data, type_to_id, room_bounds, room_id_to_idx,
-            wall_height_default,
-        )
+        # door_nodes already parsed above inside the wall block;
+        # if walls were not parsed, parse doors here as fallback
+        if not (WALL_TYPE_NAME in type_to_id):
+            door_nodes = _parse_doors(
+                frame_data, type_to_id, room_bounds, room_id_to_idx,
+                wall_height_default,
+            )
         for dn in door_nodes:
             nodes.append((dn["type_id"], dn["pos"], dn["rot"], dn["size"]))
             room_assignments.append(dn["room_idx"])
             is_wall_flags.append(False)
+            is_door_flags.append(True)
             wall_endpoint_list.append(dn["endpoints"])
             wall_height_list.append(dn["height"])
 
@@ -293,6 +335,7 @@ def parse_scene_graph(
     node_sizes = torch.zeros(max_nodes, 3, dtype=torch.float32)
     node_mask = torch.zeros(max_nodes, dtype=torch.bool)
     node_is_wall = torch.zeros(max_nodes, dtype=torch.bool)
+    node_is_door = torch.zeros(max_nodes, dtype=torch.bool)
     wall_endpoints = torch.zeros(max_nodes, 2, 3, dtype=torch.float32)
     wall_heights = torch.zeros(max_nodes, dtype=torch.float32)
 
@@ -304,6 +347,7 @@ def parse_scene_graph(
         node_sizes[i] = torch.tensor(size, dtype=torch.float32)
         node_mask[i] = True
         node_is_wall[i] = is_wall_flags[i] if i < len(is_wall_flags) else False
+        node_is_door[i] = is_door_flags[i] if i < len(is_door_flags) else False
         if i < len(wall_endpoint_list):
             wall_endpoints[i] = torch.from_numpy(wall_endpoint_list[i])
         if i < len(wall_height_list):
@@ -335,6 +379,7 @@ def parse_scene_graph(
         result["sg_wall_endpoints"] = wall_endpoints
         result["sg_wall_heights"] = wall_heights
         result["sg_node_is_wall"] = node_is_wall
+        result["sg_node_is_door"] = node_is_door
 
     return result
 
@@ -730,6 +775,211 @@ def _parse_doors(
     return door_nodes
 
 
+def _match_doors_to_walls(
+    wall_nodes: List[dict],
+    door_nodes: List[dict],
+    tolerance: float = 0.5,
+) -> Dict[int, List[dict]]:
+    """
+    Match each door to the wall segment it sits on.
+
+    For each door, project its center onto every wall line-segment (in the XZ
+    plane).  If the perpendicular distance is within *tolerance* and the
+    projection falls within the segment, the door is assigned to that wall.
+
+    Args:
+        wall_nodes: list from ``_parse_walls()``.
+        door_nodes: list from ``_parse_doors()``.
+        tolerance: maximum perpendicular distance (meters) for a match.
+
+    Returns:
+        dict ``{wall_index: [door_info, ...]}`` where each *door_info* has:
+        ``t`` (parametric position 0→1 along wall), ``half_width``, ``height``
+    """
+    wall_door_map: Dict[int, List[dict]] = {}
+
+    for door in door_nodes:
+        door_pos = np.array(door["pos"], dtype=np.float32)  # already z-negated
+        door_xz = np.array([door_pos[0], door_pos[2]], dtype=np.float32)
+
+        # Door AABB width along the opening direction
+        # Orientation: rot_y == 0 → opening along X, rot_y == 90 → along Z
+        rot_y = door["rot"][1]
+        if abs(rot_y - 90.0) < 1.0:
+            door_half_w = door["size"][2] / 2.0  # Z extent
+        else:
+            door_half_w = door["size"][0] / 2.0  # X extent
+        door_height = door["size"][1]
+
+        best_wall_idx = -1
+        best_dist = float("inf")
+        best_t = 0.5
+
+        for wi, wall in enumerate(wall_nodes):
+            # Wall endpoints: (2, 3) in world coords (already z-negated)
+            wp1 = wall["endpoints"][0]  # (3,)
+            wp2 = wall["endpoints"][1]
+            a = np.array([wp1[0], wp1[2]], dtype=np.float32)
+            b = np.array([wp2[0], wp2[2]], dtype=np.float32)
+
+            ab = b - a
+            seg_len_sq = float(np.dot(ab, ab))
+            if seg_len_sq < 1e-8:
+                continue
+
+            # Parametric projection of door center onto wall segment
+            ap = door_xz - a
+            t_param = float(np.dot(ap, ab)) / seg_len_sq
+            t_clamped = max(0.0, min(1.0, t_param))
+
+            # Closest point on wall segment
+            proj = a + t_clamped * ab
+            dist = float(np.linalg.norm(door_xz - proj))
+
+            if dist < best_dist:
+                best_dist = dist
+                best_wall_idx = wi
+                best_t = t_clamped
+
+        if best_wall_idx >= 0 and best_dist < tolerance:
+            wall_door_map.setdefault(best_wall_idx, []).append({
+                "t": best_t,
+                "half_width": door_half_w,
+                "height": door_height,
+            })
+
+    return wall_door_map
+
+
+def _split_wall_at_doors(wall_node: dict, door_infos: List[dict]) -> List[dict]:
+    """
+    Split a wall segment into sub-walls that leave openings for doors.
+
+    Produces:
+      - **Side pieces**: wall sections between consecutive door edges and
+        wall endpoints (full ceiling height).
+      - **Lintel pieces**: for each door, a horizontal strip above the door
+        opening (from door top to ceiling).
+
+    Args:
+        wall_node: one wall node dict from ``_parse_walls()``.
+        door_infos: list of ``{t, half_width, height}`` from
+            ``_match_doors_to_walls()`` for this wall.
+
+    Returns:
+        list of sub-wall node dicts (same schema as ``_parse_walls()`` output).
+    """
+    p1 = wall_node["endpoints"][0].copy()  # (3,) float32
+    p2 = wall_node["endpoints"][1].copy()
+
+    seg_vec = p2 - p1
+    seg_len = float(np.linalg.norm(seg_vec))
+    if seg_len < 1e-6:
+        return [wall_node]
+
+    ceil_h = wall_node["height"]
+    wall_type_id = wall_node["type_id"]
+    wall_room_idx = wall_node["room_idx"]
+    wall_thickness = wall_node["size"][2]  # thickness dimension unchanged
+
+    seg_dir = seg_vec / seg_len  # unit direction along the wall
+
+    # Convert door parametric positions to absolute distance along segment
+    # and sort by position
+    doors = []
+    for di in door_infos:
+        center_dist = di["t"] * seg_len
+        half_w = di["half_width"]
+        left = max(0.0, center_dist - half_w)
+        right = min(seg_len, center_dist + half_w)
+        door_top = di["height"]  # height of door top (e.g. 2.1m)
+        if left < right:
+            doors.append((left, right, door_top))
+
+    doors.sort(key=lambda d: d[0])
+
+    # Merge overlapping door intervals
+    merged = []
+    for left, right, dtop in doors:
+        if merged and left <= merged[-1][1]:
+            # Overlap → merge; take the max right and max door height
+            prev_l, prev_r, prev_top = merged[-1]
+            merged[-1] = (prev_l, max(prev_r, right), max(prev_top, dtop))
+        else:
+            merged.append((left, right, dtop))
+
+    def _make_sub_wall(sp1: np.ndarray, sp2: np.ndarray, bottom_y: float,
+                       top_y: float) -> Optional[dict]:
+        """Create a sub-wall dict from two endpoints and height range."""
+        sub_len = float(np.linalg.norm(sp2 - sp1))
+        if sub_len < MIN_AABB_HALF_EXTENT:
+            return None
+        sub_h = top_y - bottom_y
+        if sub_h < MIN_AABB_HALF_EXTENT:
+            return None
+        mid = (sp1 + sp2) / 2.0
+        center_y = (bottom_y + top_y) / 2.0
+        pos = [float(mid[0]), center_y, float(mid[2])]
+
+        dx = sp2[0] - sp1[0]
+        dz = sp2[2] - sp1[2]
+        angle_y = math.degrees(math.atan2(dx, dz))
+        rot = [0.0, angle_y, 0.0]
+
+        size = [sub_len, sub_h, wall_thickness]
+
+        # Endpoints for wall-quad projection (bottom corners)
+        ep1 = sp1.copy()
+        ep1[1] = bottom_y
+        ep2 = sp2.copy()
+        ep2[1] = bottom_y
+        endpoints = np.stack([ep1, ep2], axis=0)
+
+        return {
+            "type_id": wall_type_id,
+            "pos": pos,
+            "rot": rot,
+            "size": size,
+            "room_idx": wall_room_idx,
+            "endpoints": endpoints,
+            "height": sub_h,
+        }
+
+    sub_walls = []
+    cursor = 0.0  # current position along segment
+
+    for d_left, d_right, d_top in merged:
+        # --- Side piece: from cursor to door left edge (full height) ---
+        if d_left > cursor + MIN_AABB_HALF_EXTENT:
+            sp1 = p1 + cursor * seg_dir
+            sp2 = p1 + d_left * seg_dir
+            sw = _make_sub_wall(sp1, sp2, 0.0, ceil_h)
+            if sw is not None:
+                sub_walls.append(sw)
+
+        # --- Lintel piece: above door opening (door_top → ceiling) ---
+        if d_top < ceil_h - MIN_AABB_HALF_EXTENT:
+            lp1 = p1 + d_left * seg_dir
+            lp2 = p1 + d_right * seg_dir
+            sw = _make_sub_wall(lp1, lp2, d_top, ceil_h)
+            if sw is not None:
+                sub_walls.append(sw)
+
+        cursor = d_right
+
+    # --- Final side piece: from last door right edge to wall end ---
+    if cursor < seg_len - MIN_AABB_HALF_EXTENT:
+        sp1 = p1 + cursor * seg_dir
+        sp2 = p2.copy()
+        sw = _make_sub_wall(sp1, sp2, 0.0, ceil_h)
+        if sw is not None:
+            sub_walls.append(sw)
+
+    # If splitting produced nothing (e.g. door covers entire wall), return empty
+    # so the original wall is effectively removed.
+    return sub_walls
+
+
 # ---------------------------------------------------------------------------
 # Dense Layout Rasterization: Scene Graph → Per-Pixel Class + Depth Maps
 # ---------------------------------------------------------------------------
@@ -746,6 +996,7 @@ def rasterize_scene_graph(
     sg_wall_endpoints: Optional[torch.Tensor] = None,  # (B, M, 2, 3)
     sg_wall_heights: Optional[torch.Tensor] = None,    # (B, M)
     sg_node_is_wall: Optional[torch.Tensor] = None,    # (B, M) bool
+    sg_node_is_door: Optional[torch.Tensor] = None,    # (B, M) bool
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Rasterize the scene graph into per-pixel semantic class + depth maps.
@@ -1006,6 +1257,11 @@ def rasterize_scene_graph(
 
     # Invalidate behind-camera / padded nodes
     inside = inside & ~fully_behind_flat.unsqueeze(-1).unsqueeze(-1)
+
+    # Exclude door nodes from z-buffer so objects behind the opening are visible
+    if sg_node_is_door is not None:
+        is_door_flat = sg_node_is_door.unsqueeze(1).expand(-1, T, -1).reshape(BT, M)
+        inside = inside & ~is_door_flat.unsqueeze(-1).unsqueeze(-1)
 
     # Per-pixel depth for each node via linear depth gradient in image space.
     # z(u,v) ≈ z_mean + dz/du·(u − u_mean) + dz/dv·(v − v_mean)

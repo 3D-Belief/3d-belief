@@ -150,6 +150,7 @@ def train(cfg: DictConfig):
         use_object_binary_mask=use_object_binary_mask,
         background_weight=background_weight,
         use_vggt_alignment=use_vggt_alignment,
+        clip_semantic_loss_weight=cfg.dataset.get("clip_semantic_loss_weight", 0.0),
         cfg=cfg,
     ).cuda()
 
@@ -185,6 +186,8 @@ def train(cfg: DictConfig):
         repa_loss_weight=cfg.dataset.repa_loss_weight,
         intermediate_weight=cfg.dataset.intermediate_weight,
         vggt_alignment_loss_weight=cfg.dataset.vggt_alignment_loss_weight,
+        layout_recon_loss_weight=cfg.dataset.layout_recon_loss_weight,
+        clip_semantic_loss_weight=cfg.dataset.get("clip_semantic_loss_weight", 0.0),
         ctxt_losses_factor=cfg.ctxt_losses_factor,
         # rgb_loss_weight=cfg.dataset.rgb_loss_weight,
         cfg=cfg,

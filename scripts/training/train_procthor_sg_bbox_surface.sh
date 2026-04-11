@@ -1,7 +1,5 @@
 #!/bin/bash
-# Training script for dense layout (HouseCrafter-style) conditioned 3D-Belief on ProcTHOR dataset
-# Uses dense per-pixel layout rasterization + CLIP embedding injection at all backbone levels.
-# Sparse SG conditioning (cross-attn/FiLM) is DISABLED by default for clean ablation.
+# Training script for scene-graph conditioned 3D-Belief on ProcTHOR dataset
 set -e
 
 # ---- paths ----
@@ -52,7 +50,7 @@ fi
 #     dataset.wall_thickness=0.15 \
 #     setting_name=debug \
 #     stage=train \
-#     results_folder=outputs/training/procthor_dense_layout_pretrained \
+#     results_folder=outputs/training/procthor_sg_bbox_surface \
 #     semantic_config=configurations/semantic/onehot.yaml \
 #     checkpoint_path=checkpoints/DFoT_RE10K.ckpt \
 #     ngpus=1 \
@@ -79,16 +77,13 @@ fi
 #     model.encoder.backbone.input_size='[128, 128]' \
 #     model.encoder.backbone.sg_use_gcn=true \
 #     model.encoder.backbone.sg_spatial_mode=bbox_surface \
-#     model.encoder.backbone.n_object_types=204 \
+#     model.encoder.backbone.n_object_types=57 \
 #     model.encoder.backbone.include_walls=true \
-#     model.encoder.backbone.use_dense_layout=true \
-#     model.encoder.backbone.layout_embed_dim=128 \
-#     model.encoder.backbone.use_sparse_sg=false \
 #     alignment.latents_info=-1 \
 #     ctxt_losses_factor=0.9 \
 #     repa_encoder_resolution=512 \
 #     model_type=uvit_pose \
-#     name=procthor_dense_layout_pretrained \
+#     name=procthor_sg_bbox_surface \
 #     wandb=local \
 #     clean_target=false \
 #     use_identity=true \
@@ -112,9 +107,9 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     dataset.include_walls=true \
     dataset.wall_height_default=2.5 \
     dataset.wall_thickness=0.15 \
-    setting_name=debug \
+    setting_name=pixelsplat_h100 \
     stage=train \
-    results_folder=outputs/training/procthor_dense_layout_pretrained \
+    results_folder=outputs/training/procthor_sg_bbox_surface_pretrained \
     semantic_config=configurations/semantic/onehot.yaml \
     checkpoint_path=/home/ubuntu/tianmin-neurips/yyin34/codebase/structured_3d_belief/3d-belief/outputs/training/procthor_base_weights/model-53.pt \
     ngpus=1 \
@@ -140,16 +135,13 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.backbone.input_size='[128, 128]' \
     model.encoder.backbone.sg_use_gcn=true \
     model.encoder.backbone.sg_spatial_mode=bbox_surface \
-    model.encoder.backbone.n_object_types=204 \
+    model.encoder.backbone.n_object_types=57 \
     model.encoder.backbone.include_walls=true \
-    model.encoder.backbone.use_dense_layout=true \
-    model.encoder.backbone.layout_embed_dim=128 \
-    model.encoder.backbone.use_sparse_sg=false \
     alignment.latents_info=-1 \
-    ctxt_losses_factor=0.7 \
+    ctxt_losses_factor=0.9 \
     repa_encoder_resolution=512 \
     model_type=uvit_pose \
-    name=procthor_dense_layout_pretrained \
+    name=procthor_sg_bbox_surface_pretrained \
     wandb=local \
     clean_target=false \
     use_identity=true \

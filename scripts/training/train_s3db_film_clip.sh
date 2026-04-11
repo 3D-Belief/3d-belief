@@ -1,11 +1,19 @@
 #!/bin/bash
-# Training script for scene-graph conditioned 3D-Belief on ProcTHOR dataset
+# Training: s3db_dataset, Dense Layout + SG + Recon + FiLM + CLIP Loss
+#
+# Architecture improvements over poc_dataset variant:
+#   - FiLM conditioning (layout_injection_mode=film) instead of additive
+#   - layout_embed_dim=256 (up from 128)
+#   - CLIP region-matching semantic loss (clip_semantic_loss_weight=0.5)
+#   - Layout reconstruction aux loss (layout_recon_loss_weight=1.0)
+#   - 750 object types (up from 204)
+#   - ~3.7K episodes (~300 unique houses)
 set -e
 
 # ---- paths ----
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DATASET_ROOT="${REPO_ROOT}/../datasets/poc_dataset"
-VOCAB_DIR="${REPO_ROOT}/outputs/vocab/procthor"
+DATASET_ROOT="${REPO_ROOT}/../datasets/s3db_dataset"
+VOCAB_DIR="${REPO_ROOT}/outputs/vocab/s3db"
 EMBEDDINGS_PATH="${VOCAB_DIR}/sg_type_embeddings.pt"
 
 # ---- environment ----
@@ -20,39 +28,32 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES=2
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
-export MASTER_PORT=$((12000 + RANDOM % 1000))
+export MASTER_PORT=$((29500 + RANDOM % 1000))
 
 nvidia-smi
 
-# ---- Step 1: Build vocabulary + CLIP embeddings (skip if already done) ----
-if [ ! -f "${EMBEDDINGS_PATH}" ]; then
-    echo "=== Building vocabulary and CLIP embeddings ==="
-    python -m splat_belief.utils.procthor_utils \
-        --dataset_root "${DATASET_ROOT}" \
-        --output_dir "${VOCAB_DIR}" \
-        --device cuda
-    echo "=== Vocabulary and embeddings ready ==="
-else
-    echo "=== Vocabulary and embeddings already exist at ${VOCAB_DIR} ==="
-fi
+# Number of object types (from s3db vocab)
+N_TYPES=750
 
-# ---- Step 2: Train ----
+# ---- Train ----
 CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
     splat_belief/experiment/train.py \
-    dataset=procthor \
+    dataset=s3db \
     dataset.root_dir="${DATASET_ROOT}" \
     dataset.vocab_dir="${VOCAB_DIR}" \
     dataset.vggt_alignment_loss_weight=2.0 \
     dataset.intermediate_weight=5.0 \
     dataset.depth_smooth_loss_weight=0.1 \
+    dataset.layout_recon_loss_weight=1.0 \
+    dataset.clip_semantic_loss_weight=0.5 \
     dataset.include_walls=true \
     dataset.wall_height_default=2.5 \
     dataset.wall_thickness=0.15 \
-    setting_name=debug \
+    setting_name=pixelsplat_h100 \
     stage=train \
-    results_folder=outputs/training/procthor_sg_wall \
+    results_folder=outputs/training/s3db_film_clip \
     semantic_config=configurations/semantic/onehot.yaml \
-    checkpoint_path=checkpoints/DFoT_RE10K.ckpt \
+    checkpoint_path=${REPO_ROOT}/outputs/training/procthor_base_weights/model-53.pt \
     ngpus=1 \
     image_size=128 \
     ctxt_min=5 \
@@ -68,7 +69,6 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.gaussians_per_pixel=1 \
     model.encoder.evolve_ctxt=false \
     model.encoder.use_depth_mask=true \
-    model.encoder.encoder_ckpt=checkpoints/re10k.ckpt \
     model.encoder.freeze_depth_predictor=false \
     model/encoder/backbone=u_vit3d_pose_sg \
     model.encoder.backbone.sg_type_embeddings_path="${EMBEDDINGS_PATH}" \
@@ -77,20 +77,25 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.backbone.input_size='[128, 128]' \
     model.encoder.backbone.sg_use_gcn=true \
     model.encoder.backbone.sg_spatial_mode=bbox_surface \
-    model.encoder.backbone.n_object_types=57 \
+    model.encoder.backbone.n_object_types=${N_TYPES} \
     model.encoder.backbone.include_walls=true \
+    model.encoder.backbone.use_dense_layout=true \
+    model.encoder.backbone.layout_embed_dim=256 \
+    model.encoder.backbone.layout_injection_mode=film \
+    model.encoder.backbone.use_sparse_sg=true \
+    model.encoder.backbone.use_layout_recon_loss=true \
     alignment.latents_info=-1 \
-    ctxt_losses_factor=0.9 \
+    ctxt_losses_factor=0.7 \
     repa_encoder_resolution=512 \
     model_type=uvit_pose \
-    name=procthor_sg_wall \
+    name=s3db_film_clip \
     wandb=local \
     clean_target=false \
     use_identity=true \
     intermediate=true \
     load_optimizer=false \
-    load_enc=true \
-    lock_enc_steps=5 \
+    load_enc=false \
+    lock_enc_steps=5000 \
     use_depth_smoothness=true \
     adjacent_angle=0.785 \
     adjacent_distance=1.0 \

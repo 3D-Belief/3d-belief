@@ -19,6 +19,7 @@ from .sg_modules import (
     SGFiLMProjection,
     LayoutEmbedding,
     DenseLayoutInjection,
+    LayoutReconstructionHead,
 )
 from splat_belief.utils.procthor_utils import rasterize_scene_graph
 
@@ -45,7 +46,9 @@ class BackboneUViT3DPoseSGCfg(BackboneUViT3DPoseCfg):
     # Dense layout conditioning (HouseCrafter-style)
     use_dense_layout: bool = False     # enable dense per-pixel layout injection
     layout_embed_dim: int = 128        # dimension of per-pixel layout embedding
+    layout_injection_mode: str = "additive"  # "additive" or "film"
     use_sparse_sg: bool = True         # keep sparse SG (cross-attn/FiLM); disable for ablation
+    use_layout_recon_loss: bool = False # enable layout reconstruction auxiliary loss
 
 
 class UViT3DPoseSG(UViT3DPose):
@@ -108,7 +111,16 @@ class UViT3DPoseSG(UViT3DPose):
                 self.layout_injections[str(i_level)] = DenseLayoutInjection(
                     query_dim=ch,
                     layout_dim=cfg.layout_embed_dim,
+                    mode=cfg.layout_injection_mode,
                 )
+
+        # Layout reconstruction auxiliary loss head
+        if cfg.use_layout_recon_loss and cfg.use_dense_layout:
+            # Use the lowest-resolution level (last channel) for efficiency
+            self.layout_recon_head = LayoutReconstructionHead(
+                in_channels=channels[-1],
+                n_classes=cfg.n_object_types,
+            )
 
     def _encode_scene_graph(self, model_input: dict) -> tuple[Tensor, Tensor]:
         """
@@ -243,9 +255,12 @@ class UViT3DPoseSG(UViT3DPose):
         sg_wall_endpoints = model_input.get("sg_wall_endpoints")   # (B, M, 2, 3)
         sg_wall_heights = model_input.get("sg_wall_heights")       # (B, M)
         sg_node_is_wall = model_input.get("sg_node_is_wall")       # (B, M) bool
+        sg_node_is_door = model_input.get("sg_node_is_door")       # (B, M) bool
 
         # ---- Dense layout: rasterize SG + embed ----
         layout_emb = None
+        layout_cls = None
+        layout_depth = None
         if self.sg_cfg.use_dense_layout:
             sg_node_types = model_input["sg_node_types"]           # (B, M) long
             layout_cls, layout_depth = rasterize_scene_graph(
@@ -260,6 +275,7 @@ class UViT3DPoseSG(UViT3DPose):
                 sg_wall_endpoints=sg_wall_endpoints,
                 sg_wall_heights=sg_wall_heights,
                 sg_node_is_wall=sg_node_is_wall,
+                sg_node_is_door=sg_node_is_door,
             )
             layout_emb = self.layout_embedding(layout_cls, layout_depth)  # (BT, D, 32, 32)
 
@@ -333,6 +349,20 @@ class UViT3DPoseSG(UViT3DPose):
             sg_node_is_wall=sg_node_is_wall,
             layout_emb=layout_emb,
         )
+
+        # ---- Layout reconstruction auxiliary loss (at bottleneck) ----
+        layout_recon_cls_logits = None
+        layout_recon_depth_pred = None
+        if (
+            hasattr(self, 'layout_recon_head')
+            and self.sg_cfg.use_layout_recon_loss
+            and layout_cls is not None
+        ):
+            target_size = (layout_cls.shape[-2], layout_cls.shape[-1])  # (32, 32)
+            layout_recon_cls_logits, layout_recon_depth_pred = self.layout_recon_head(
+                x, target_size
+            )
+
         if return_latents:
             latents_list.append(x)
 
@@ -361,6 +391,18 @@ class UViT3DPoseSG(UViT3DPose):
         x = self.project_output(x)
         out = rearrange(x, "(b t) c h w -> b t c h w", t=self.temporal_length)
         output_dict = {"features": out}
+
+        # Layout reconstruction predictions for auxiliary loss
+        if layout_recon_cls_logits is not None:
+            output_dict["layout_recon_cls_logits"] = layout_recon_cls_logits  # (BT, n_cls, H, W)
+            output_dict["layout_recon_depth_pred"] = layout_recon_depth_pred  # (BT, 1, H, W)
+
+        # Always pass layout GT + CLIP embeddings when dense layout is active
+        # (needed by both layout_recon_loss and clip_semantic_loss)
+        if layout_cls is not None:
+            output_dict["layout_cls_gt"] = layout_cls        # (BT, H, W) long
+            output_dict["layout_depth_gt"] = layout_depth    # (BT, H, W) float
+            output_dict["clip_type_embeddings"] = self.layout_embedding.clip_type_embeddings
 
         if return_latents:
             latents_list = [

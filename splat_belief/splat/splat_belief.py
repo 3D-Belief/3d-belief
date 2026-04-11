@@ -173,6 +173,12 @@ class SplatBelief(nn.Module):
             "latents": latents,
         }
 
+        # Propagate layout reconstruction outputs for auxiliary loss
+        for _key in ("layout_recon_cls_logits", "layout_recon_depth_pred",
+                     "layout_cls_gt", "layout_depth_gt", "clip_type_embeddings"):
+            if _key in model_input:
+                misc[_key] = model_input[_key]
+
         if self.use_depth_mask:
             misc.update({
                 "rendered_ctxt_depth_mask": context_rendered_depth_mask,

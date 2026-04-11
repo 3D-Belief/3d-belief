@@ -80,6 +80,12 @@ class EncoderUViTMVSplatSG(EncoderUViTMVSplat):
         if latents is not None:
             model_input["latents"] = latents
 
+        # Propagate layout reconstruction outputs for auxiliary loss
+        for _key in ("layout_recon_cls_logits", "layout_recon_depth_pred",
+                     "layout_cls_gt", "layout_depth_gt", "clip_type_embeddings"):
+            if _key in output:
+                model_input[_key] = output[_key]
+
         features = rearrange(features, "b v c h w -> b v h w c")
         features = self.backbone_projection(features)
         features = rearrange(features, "b v h w c -> b v c h w")

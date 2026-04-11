@@ -1,5 +1,13 @@
 #!/bin/bash
-# Training script for scene-graph conditioned 3D-Belief on ProcTHOR dataset
+# Training script for improved dense layout conditioning (v2)
+#
+# Key changes from v1:
+#   1. Gate warm-start (0.1) + removed zero_module on 2nd linear — fixes dead layout pathway
+#   2. Layout reconstruction auxiliary loss (layout_recon_loss_weight=1.0)
+#   3. load_enc=true  — load encoder from base checkpoint, preserving reconstruction quality
+#   4. lock_enc_steps=5000 — freeze backbone for 5K steps so layout modules learn first
+#   5. ctxt_losses_factor=0.9 (up from 0.7)
+#   6. use_layout_recon_loss=true — enables the new auxiliary loss head
 set -e
 
 # ---- paths ----
@@ -20,7 +28,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES=5
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
-export MASTER_PORT=$((12000 + RANDOM % 1000))
+export MASTER_PORT=$((29500 + RANDOM % 1000))
 
 nvidia-smi
 
@@ -37,61 +45,6 @@ else
 fi
 
 # ---- Step 2: Train ----
-# CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
-#     splat_belief/experiment/train.py \
-#     dataset=procthor \
-#     dataset.root_dir="${DATASET_ROOT}" \
-#     dataset.vocab_dir="${VOCAB_DIR}" \
-#     dataset.vggt_alignment_loss_weight=2.0 \
-#     dataset.intermediate_weight=5.0 \
-#     dataset.depth_smooth_loss_weight=0.1 \
-#     setting_name=debug \
-#     stage=train \
-#     results_folder=outputs/training/procthor_sg_weights_no_gcn \
-#     semantic_config=configurations/semantic/onehot.yaml \
-#     checkpoint_path=checkpoints/DFoT_RE10K.ckpt \
-#     ngpus=1 \
-#     image_size=128 \
-#     ctxt_min=5 \
-#     ctxt_max=15 \
-#     model/encoder=uvitmvsplat_sg \
-#     model.encoder.use_image_condition=true \
-#     model.encoder.depth_predictor_time_embed=true \
-#     model.encoder.use_camera_pose=true \
-#     model.encoder.use_semantic=false \
-#     model.encoder.use_reg_model=false \
-#     model.encoder.d_semantic=512 \
-#     model.encoder.d_semantic_reg=384 \
-#     model.encoder.gaussians_per_pixel=1 \
-#     model.encoder.evolve_ctxt=false \
-#     model.encoder.use_depth_mask=true \
-#     model.encoder.encoder_ckpt=checkpoints/re10k.ckpt \
-#     model.encoder.freeze_depth_predictor=false \
-#     model/encoder/backbone=u_vit3d_pose_sg \
-#     model.encoder.backbone.sg_type_embeddings_path="${EMBEDDINGS_PATH}" \
-#     model.encoder.backbone.use_vggt_alignment=true \
-#     model.encoder.backbone.use_repa=true \
-#     model.encoder.backbone.input_size='[128, 128]' \
-#     model.encoder.backbone.sg_use_gcn=false \
-#     model.encoder.backbone.sg_spatial_mode=bbox \
-#     alignment.latents_info=-1 \
-#     ctxt_losses_factor=0.9 \
-#     repa_encoder_resolution=512 \
-#     model_type=uvit_pose \
-#     name=procthor_sg_weights_no_gcn \
-#     wandb=local \
-#     clean_target=false \
-#     use_identity=true \
-#     intermediate=true \
-#     load_optimizer=false \
-#     load_enc=true \
-#     lock_enc_steps=5 \
-#     use_depth_smoothness=true \
-#     adjacent_angle=0.785 \
-#     adjacent_distance=1.0 \
-#     num_intermediate=15
-
-
 CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
     splat_belief/experiment/train.py \
     dataset=procthor \
@@ -100,9 +53,13 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     dataset.vggt_alignment_loss_weight=2.0 \
     dataset.intermediate_weight=5.0 \
     dataset.depth_smooth_loss_weight=0.1 \
+    dataset.layout_recon_loss_weight=1.0 \
+    dataset.include_walls=true \
+    dataset.wall_height_default=2.5 \
+    dataset.wall_thickness=0.15 \
     setting_name=pixelsplat_h100 \
     stage=train \
-    results_folder=outputs/training/procthor_sg_weights_bbox_pretrained \
+    results_folder=outputs/training/procthor_dense_layout_recon_no_lock \
     semantic_config=configurations/semantic/onehot.yaml \
     checkpoint_path=/home/ubuntu/tianmin-neurips/yyin34/codebase/structured_3d_belief/3d-belief/outputs/training/procthor_base_weights/model-53.pt \
     ngpus=1 \
@@ -127,12 +84,18 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.backbone.use_repa=true \
     model.encoder.backbone.input_size='[128, 128]' \
     model.encoder.backbone.sg_use_gcn=true \
-    model.encoder.backbone.sg_spatial_mode=bbox \
+    model.encoder.backbone.sg_spatial_mode=bbox_surface \
+    model.encoder.backbone.n_object_types=204 \
+    model.encoder.backbone.include_walls=true \
+    model.encoder.backbone.use_dense_layout=true \
+    model.encoder.backbone.layout_embed_dim=128 \
+    model.encoder.backbone.use_sparse_sg=false \
+    model.encoder.backbone.use_layout_recon_loss=true \
     alignment.latents_info=-1 \
-    ctxt_losses_factor=0.9 \
+    ctxt_losses_factor=0.7 \
     repa_encoder_resolution=512 \
     model_type=uvit_pose \
-    name=procthor_sg_weights_bbox_pretrained \
+    name=procthor_dense_layout_recon_no_lock \
     wandb=local \
     clean_target=false \
     use_identity=true \
