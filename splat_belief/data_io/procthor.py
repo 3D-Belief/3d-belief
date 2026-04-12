@@ -409,7 +409,11 @@ class ProcTHORDataset(Dataset):
         all_frame_ids = list(trgt_idx) + list(ctxt_idx)
         if self.intermediate and (intm_idx is not None):
             all_frame_ids += list(intm_idx)
-        all_frames = self.read_frames_batch(scene_path, all_frame_ids)
+        try:
+            all_frames = self.read_frames_batch(scene_path, all_frame_ids)
+        except Exception as e:
+            print(f"[WARN] Corrupt data in {scene_path}, skipping: {e}")
+            return fallback()
 
         # Unpack target views
         n_trgt = len(trgt_idx)
