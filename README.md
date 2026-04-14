@@ -64,6 +64,7 @@ Then download and set up the assets under data/ directory.
 
 ```bash
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/**"
+# Unzipping may take several minutes
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
