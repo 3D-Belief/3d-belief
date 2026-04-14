@@ -12,16 +12,19 @@ cd 3d-belief
 git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 -y 
 conda activate 3d-belief
+conda config --add channels conda-forge
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
-conda install -c nvidia cuda=12.1 # Use the one matches your cuda version
+# Install the one matches your cuda version
+conda install -c nvidia cuda=12.1
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
+# Install the one matches your cuda version
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
-conda config --add channels conda-forge; conda install vulkan-tools
+conda install vulkan-tools
 pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
@@ -62,6 +65,7 @@ Then download and set up the assets under data/ directory.
 ```bash
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/**"
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
+unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
 
 ### Benchmark Path Planning
