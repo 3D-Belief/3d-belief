@@ -19,13 +19,13 @@ SCRIPT_DIR="${REPO_ROOT}/wm_baselines/workspace/nav"
 # Base output directory for saving trajectories
 OUTPUT_DIR="${REPO_ROOT}/outputs"
 # Episode root directory (SPOC test trajectories)
-EPISODE_ROOT=/scratch/tshu2/zwen19/3dbelief/3d-belief/data/spoc_trajectories_val
+EPISODE_ROOT="data/spoc_trajectories_val"
 # Conda environment name
 CONDA_ENV="3d-belief"
 # Environment variables
 export XFORMERS_DISABLED=1
-export OBJAVERSE_DATA_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/2023_07_28"
-export OBJAVERSE_HOUSES_DIR="/scratch/tshu2/zwen19/3dbelief/3d-belief/spoc_data/houses_2023_07_28"
+export OBJAVERSE_DATA_DIR="data/2023_07_28"
+export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 
 # ── Available Agents ──────────────────────────────────────────────────────────
 #

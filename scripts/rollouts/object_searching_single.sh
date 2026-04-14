@@ -2,15 +2,14 @@ set -euo pipefail
 
 # ================ Set up config parameters ====================
 CONDA_ENV="3d-belief"
+export CUDA_VISIBLE_DEVICES=0
 export XFORMERS_DISABLED=1
 export OBJAVERSE_DATA_DIR="data/2023_07_28"
 export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 # Base output directory (each baseline will create a subfolder here)
-SAVE_ROOT="wm_baselines/output"
+SAVE_ROOT="wm_baselines/output_test_seed_4242_new"
 # SPOC trajectories root
 EPISODE_ROOT=data/spoc_trajectories_val
-# Codebase root (used to build absolute paths below)
-CODEBASE="/home/ubuntu/tianmin-neurips/zwen19/3d-belief"
 # If you want to just print commands (no execution), set DRY_RUN=1
 DRY_RUN="${DRY_RUN:-0}"
 # Remember to export your OPENAI_API_KEY and GOOGLE_API_KEY in the environment for VLM-based agents
@@ -40,7 +39,7 @@ fi
 HYDRA_ENV=(HYDRA_FULL_ERROR=1 OC_CAUSE=1)
 
 COMMON_OVERRIDES=(
-  "+seed=42"
+  "+seed=4242"
   "embodied_task.episode_root=${EPISODE_ROOT}"
   "embodied_task.subset_type=length"
   "embodied_task.subset=short"
@@ -90,12 +89,12 @@ run_exp () {
   env "${HYDRA_ENV[@]}" "${cmd[@]}" 2>&1 | tee "$log_path"
 }
 
-NAV_WS="${CODEBASE}/wm_baselines/workspace/nav"
+NAV_WS="wm_baselines/workspace/nav"
 
 
 # # 3D Belief
-# run_exp "spoc_obj_searching_3d_belief_semantic_goal_selector_previous_weight" \
-#   "${NAV_WS}/spoc_obj_searching_3d_belief_semantic_goal_selector_workspace.py"
+run_exp "spoc_obj_searching_3d_belief_semantic_goal_selector_previous_weight" \
+  "${NAV_WS}/spoc_obj_searching_3d_belief_semantic_goal_selector_workspace.py"
 
 # # GPT VLM Agent
 # run_exp "spoc_obj_searching_vlm_agent" \
@@ -118,24 +117,24 @@ NAV_WS="${CODEBASE}/wm_baselines/workspace/nav"
 #   "${NAV_WS}/spoc_obj_searching_vggt_gpt_vlm_goal_selector_workspace.py"
 
 # VGGT Gemini VLM Goal Selector Agent
-run_exp "spoc_obj_searching_vggt_gemini_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_vggt_gemini_vlm_goal_selector_workspace.py"
+# run_exp "spoc_obj_searching_vggt_gemini_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_vggt_gemini_vlm_goal_selector_workspace.py"
 
 # # DFoT-VGGT GPT VLM Goal Selector Agent
 # run_exp "spoc_obj_searching_dfot_vggt_vlm_goal_selector" \
 #   "${NAV_WS}/spoc_obj_searching_dfot_vggt_gpt_vlm_goal_selector_workspace.py"
 
 # DFoT-VGGT Gemini VLM Goal Selector Agent
-run_exp "spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector_workspace.py"
+# run_exp "spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_dfot_vggt_gemini_vlm_goal_selector_workspace.py"
 
 # # NWM-VGGT GPT VLM Goal Selector Agent
 # run_exp "spoc_obj_searching_nwm_vggt_vlm_goal_selector" \
 #   "${NAV_WS}/spoc_obj_searching_nwm_vggt_gpt_vlm_goal_selector_workspace.py"
 
-# NWM-VGGT Gemini VLM Goal Selector Agent
-run_exp "spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector" \
-  "${NAV_WS}/spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector_workspace.py"
+# # NWM-VGGT Gemini VLM Goal Selector Agent
+# run_exp "spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector" \
+#   "${NAV_WS}/spoc_obj_searching_nwm_gemini_vggt_vlm_goal_selector_workspace.py"
 
 echo ""
 echo "[DONE] All short-subset baselines finished."

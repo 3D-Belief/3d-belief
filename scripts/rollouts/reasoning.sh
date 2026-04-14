@@ -16,7 +16,7 @@ set -euo pipefail
 
 # Root of this repository (two levels up from scripts/rollouts)
 # REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-REPO_ROOT="/scratch/tshu2/zwen19/3dbelief/3d-belief"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="${REPO_ROOT}/wm_baselines/workspace"
 OUTPUT_DIR="${REPO_ROOT}/outputs"
 CONDA_ENV="3d-belief"
@@ -24,8 +24,8 @@ CONDA_ENV="3d-belief"
 # Environment variables (kept from original script)
 export XFORMERS_DISABLED=1
 export CUDA_VISIBLE_DEVICES=0
-export OBJAVERSE_DATA_DIR="${REPO_ROOT}/spoc_data"
-export OBJAVERSE_HOUSES_DIR="${REPO_ROOT}/spoc_data/houses_2023_07_28"
+export OBJAVERSE_DATA_DIR="data/2023_07_28"
+export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 
 get_agent_config() {
     local agent="$1"
@@ -34,38 +34,32 @@ get_agent_config() {
         obj_comp_3d_belief)
             SCRIPT_FILE="obj_comp/spoc_obj_completion_3d_belief_workspace.py"
             SAVE_NAME="spoc_obj_completion_3d_belief"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_object_visibility_filtered"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_object_visibility_full"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/object_completion"
             ;;
         room_comp_3d_belief)
             SCRIPT_FILE="room_comp/spoc_room_completion_3d_belief_workspace.py"
             SAVE_NAME="spoc_room_completion_3d_belief"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_door_passing"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_door_passing_full"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/room_completion"
             ;;
         obj_perm_3d_belief)
             SCRIPT_FILE="obj_perm/spoc_obj_permanence_3d_belief_workspace.py"
             SAVE_NAME="spoc_obj_permanence_3d_belief"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_full_rotation_unit"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_full_rotation_main"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/object_permanence"
             ;;
         obj_comp_dfot_vggt)
             SCRIPT_FILE="obj_comp/spoc_obj_completion_dfot_vggt_workspace.py"
             SAVE_NAME="spoc_obj_completion_dfot_vggt"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_object_visibility_filtered"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_object_visibility_full"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/object_completion"
             ;;
         room_comp_dfot_vggt)
             SCRIPT_FILE="room_comp/spoc_room_completion_dfot_vggt_workspace.py"
             SAVE_NAME="spoc_room_completion_dfot_vggt"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_door_passing"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_door_passing_full"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/room_completion"
             ;;
         obj_perm_dfot_vggt)
             SCRIPT_FILE="obj_perm/spoc_obj_permanence_dfot_vggt_workspace.py"
             SAVE_NAME="spoc_obj_permanence_dfot_vggt"
-            # EPISODE_OVERRIDE="${REPO_ROOT}/spoc_data/spoc_full_rotation_unit"
-            EPISODE_OVERRIDE="/home/zwen19/scratchtshu2/lambda_backup/evaluation/3d_core/spoc_full_rotation_main"
+            EPISODE_OVERRIDE="${REPO_ROOT}/data/3d-core/object_permanence"
             ;;
         *)
             echo "ERROR: Unknown agent '${agent}'."

@@ -73,7 +73,8 @@ export OPENAI_API_KEY=...
 export GOOGLE_API_KEY=...
 ```
 
-Run one model (`run_obj_searching_single`):
+Now, make sure that you are running the code from the project root directory, and
+run one model (`run_obj_searching_single`):
 ```bash
 bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
 ```
