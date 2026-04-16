@@ -138,7 +138,8 @@ class Diffusion(nn.Module):
         use_semantic=False,
         use_reg_model=False,
         use_vggt_alignment=False,
-        clip_semantic_loss_weight=0.0,
+        dense_clip_layout_loss_weight=0.0,
+        dino_splat_loss_weight=0.0,
         cfg=None,
     ):
         super().__init__()
@@ -148,7 +149,8 @@ class Diffusion(nn.Module):
         self.model = model
         self.channels = self.model.channels
         self.temperature = temperature
-        self.clip_semantic_loss_weight = clip_semantic_loss_weight
+        self.dense_clip_layout_loss_weight = dense_clip_layout_loss_weight
+        self.dino_splat_loss_weight = dino_splat_loss_weight
 
         self.image_size = image_size
         self.use_guidance = use_guidance
@@ -274,6 +276,8 @@ class Diffusion(nn.Module):
         self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else identity
         self.perceptual_loss = lpips.LPIPS(net="vgg")
         lpips.normalize_tensor = safe_normalize_tensor
+
+
 
     def build_alignment_module(self, cfg):
         # load a naive vggt model 
@@ -754,6 +758,44 @@ class Diffusion(nn.Module):
         proj_loss = proj_loss / bs
         return proj_loss
 
+    def _compute_dino_splat_loss(
+        self,
+        dino_splat_feat: torch.Tensor,  # (B, V, d_dino, H, W)
+        repa_gt: torch.Tensor,          # (B, num_patches, d_dino)
+        repa_size: int = 32,
+    ) -> torch.Tensor | None:
+        """Compare splatted DINOv2 features against repa_encoder GT features.
+
+        Pools the predicted feature map to match the repa patch grid, then
+        computes patch-level cosine similarity.
+        """
+        if dino_splat_feat is None or repa_gt is None:
+            return None
+        # Take first view
+        pred = dino_splat_feat[:, 0]  # (B, d_dino, H, W)
+        B, C, H, W = pred.shape
+
+        # Average-pool to repa_size × repa_size
+        pred_pooled = F.adaptive_avg_pool2d(pred, (repa_size, repa_size))  # (B, C, repa_size, repa_size)
+        # Reshape to (B, num_patches, C)
+        pred_tokens = pred_pooled.flatten(2).permute(0, 2, 1)  # (B, repa_size*repa_size, C)
+
+        # Ensure gt has matching spatial size
+        gt_tokens = repa_gt  # (B, num_patches, C)
+        if gt_tokens.shape[1] != pred_tokens.shape[1]:
+            # Reshape GT to spatial, resize, and flatten back
+            gt_side = int(gt_tokens.shape[1] ** 0.5)
+            gt_spatial = gt_tokens.permute(0, 2, 1).view(B, C, gt_side, gt_side)
+            gt_spatial = F.adaptive_avg_pool2d(gt_spatial, (repa_size, repa_size))
+            gt_tokens = gt_spatial.flatten(2).permute(0, 2, 1)
+
+        # Cosine similarity loss
+        pred_norm = F.normalize(pred_tokens, dim=-1)
+        gt_norm = F.normalize(gt_tokens.detach(), dim=-1)
+        cos_sim = (pred_norm * gt_norm).sum(dim=-1)  # (B, num_patches)
+        loss = (1.0 - cos_sim).mean()
+        return loss
+
     def mean_flat(self, x):
         return torch.mean(x, dim=list(range(1, len(x.size()))))
 
@@ -801,120 +843,60 @@ class Diffusion(nn.Module):
 
     # ------------------------------------------------------------------
     # CLIP Region-Matching Loss: rendered crops must match layout type
-    # ------------------------------------------------------------------
-    @torch.no_grad()
-    def _init_clip_image_encoder(self):
-        """Lazily load frozen CLIP image encoder on first use."""
-        if hasattr(self, "_clip_image_model"):
-            return
-        from transformers import CLIPModel, CLIPProcessor
-        model_name = "openai/clip-vit-base-patch32"
-        self._clip_processor = CLIPProcessor.from_pretrained(model_name)
-        self._clip_image_model = CLIPModel.from_pretrained(model_name).eval()
-        # Move to same device as diffusion model
-        device = next(self.model.parameters()).device
-        self._clip_image_model = self._clip_image_model.to(device)
-        for p in self._clip_image_model.parameters():
-            p.requires_grad_(False)
+    _STRUCTURAL_TYPE_IDS = {747, 748, 749}  # Wall, Floor, Door
 
-    def _compute_clip_semantic_loss(
+    def _compute_dense_clip_layout_loss(
         self,
-        rendered_img: torch.Tensor,     # (B, C, H, W) in [-1, 1]
-        layout_cls: torch.Tensor,       # (BT, H_layout, W_layout) long
+        rendered_semantic: torch.Tensor,     # (B, V, D, H, W) — splatted semantic features
+        layout_cls: torch.Tensor,            # (B, H_layout, W_layout) long — single view
         clip_text_embeddings: torch.Tensor,  # (N_types, D_clip)
-        min_pixels: int = 16,
-        max_regions: int = 8,
     ) -> torch.Tensor | None:
-        """Compute CLIP region-matching loss between rendered crops and layout types.
+        """Dense per-pixel cosine loss between splatted semantic features and
+        CLIP text embeddings looked up from the layout class map.
 
-        For each unique non-background class in the layout, crops the
-        corresponding region from the rendered image, computes a CLIP image
-        embedding, and compares it to the CLIP text embedding for that type.
-
-        Returns scalar loss (1 - mean cosine similarity), or None if no
-        valid regions are found.
+        Bypasses the CLIP vision encoder entirely — supervision comes from
+        pre-computed CLIP text embeddings indexed by per-pixel layout type IDs.
         """
-        self._init_clip_image_encoder()
-        device = rendered_img.device
-
-        # Handle 5D input (B, T, C, H, W) — squeeze the T dimension
-        if rendered_img.ndim == 5:
-            rendered_img = rendered_img[:, 0]  # (B, C, H, W)
-        B, C, H, W = rendered_img.shape
-
-        # Upsample layout_cls to rendered resolution
-        # layout_cls: (BT, H_layout, W_layout) → (B, H, W)
-        layout_up = F.interpolate(
-            layout_cls[:B].unsqueeze(1).float(),
-            size=(H, W), mode="nearest",
-        ).squeeze(1).long()  # (B, H, W)
-
-        # Unnormalize rendered image from [-1,1] to [0,1]
-        img_01 = (rendered_img.clamp(-1, 1) + 1.0) * 0.5  # (B, C, H, W)
-
-        cos_sims = []
-        for b_idx in range(B):
-            cls_map = layout_up[b_idx]  # (H, W)
-            unique_cls = cls_map.unique()
-            unique_cls = unique_cls[unique_cls > 0]  # skip background
-
-            if len(unique_cls) == 0:
-                continue
-
-            # Limit to max_regions to control compute
-            if len(unique_cls) > max_regions:
-                # Pick the largest regions
-                areas = [(cls_map == c).sum().item() for c in unique_cls]
-                top_idx = sorted(range(len(areas)), key=lambda i: areas[i], reverse=True)[:max_regions]
-                unique_cls = unique_cls[top_idx]
-
-            for cls_id in unique_cls:
-                cls_id_int = cls_id.item()
-                if cls_id_int >= clip_text_embeddings.shape[0]:
-                    continue
-
-                mask = (cls_map == cls_id)  # (H, W)
-                area = mask.sum().item()
-                if area < min_pixels:
-                    continue
-
-                # Get bounding box of mask
-                ys, xs = torch.where(mask)
-                y_min, y_max = ys.min().item(), ys.max().item()
-                x_min, x_max = xs.min().item(), xs.max().item()
-
-                # Ensure minimum crop size (at least 8x8)
-                if (y_max - y_min) < 8 or (x_max - x_min) < 8:
-                    continue
-
-                # Crop and resize to CLIP input size
-                crop = img_01[b_idx, :, y_min:y_max+1, x_min:x_max+1]  # (C, h, w)
-                crop_resized = F.interpolate(
-                    crop.unsqueeze(0), size=(224, 224),
-                    mode="bilinear", align_corners=False,
-                )  # (1, C, 224, 224)
-
-                # Normalize for CLIP (mean/std from CLIP processor)
-                mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=device).view(1, 3, 1, 1)
-                std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=device).view(1, 3, 1, 1)
-                crop_norm = (crop_resized - mean) / std
-
-                # Get CLIP image embedding
-                image_features = self._clip_image_model.get_image_features(pixel_values=crop_norm)
-                image_features = F.normalize(image_features, dim=-1)  # (1, D_clip)
-
-                # Get text embedding for this type
-                text_features = F.normalize(clip_text_embeddings[cls_id_int].unsqueeze(0), dim=-1)
-
-                # Cosine similarity
-                cos_sim = (image_features * text_features.to(device)).sum(dim=-1)
-                cos_sims.append(cos_sim)
-
-        if len(cos_sims) == 0:
+        if rendered_semantic is None:
             return None
 
-        cos_sims = torch.cat(cos_sims)
-        loss = 1.0 - cos_sims.mean()
+        # Take first view
+        sem = rendered_semantic[:, 0]          # (B, D, H, W)
+        B, D, H, W = sem.shape
+
+        # Upsample layout_cls to match semantic feature map resolution
+        layout_up = F.interpolate(
+            layout_cls.unsqueeze(1).float(),
+            size=(H, W), mode="nearest",
+        ).squeeze(1).long()                    # (B, H, W)
+
+        # Non-background mask
+        valid_mask = layout_up > 0             # (B, H, W)
+
+        if valid_mask.sum() == 0:
+            return None
+
+        # Downweight structural types (Wall=747, Floor=748, Door=749)
+        weight_map = torch.ones_like(layout_up, dtype=sem.dtype)
+        for sid in self._STRUCTURAL_TYPE_IDS:
+            weight_map[layout_up == sid] = 0.25
+        weight_map[~valid_mask] = 0.0
+
+        # Build per-pixel GT: look up CLIP text embedding for each pixel's type ID
+        cls_ids = layout_up.clamp(0, clip_text_embeddings.shape[0] - 1)
+        gt_emb = clip_text_embeddings[cls_ids]             # (B, H, W, D_clip)
+        gt_emb = gt_emb.permute(0, 3, 1, 2)               # (B, D_clip, H, W)
+
+        # Normalize both to unit vectors for cosine similarity
+        pred_norm = F.normalize(sem, dim=1)                # (B, D, H, W)
+        gt_norm = F.normalize(gt_emb, dim=1)               # (B, D_clip, H, W)
+
+        # Cosine similarity per pixel
+        cos_sim = (pred_norm * gt_norm).sum(dim=1)         # (B, H, W)
+        per_pixel_loss = (1.0 - cos_sim) * weight_map      # (B, H, W)
+
+        # Mean over valid pixels
+        loss = per_pixel_loss.sum() / weight_map.sum().clamp(min=1.0)
         return loss
 
     def p_losses(self, inp, t, noise=None, global_step=100000):
@@ -1005,36 +987,92 @@ class Diffusion(nn.Module):
 
         # ---- Layout reconstruction auxiliary loss ----
         layout_recon_loss = None
+        layout_recon_cls_emb = misc.get("layout_recon_cls_emb")
         layout_recon_cls_logits = misc.get("layout_recon_cls_logits")
-        if layout_recon_cls_logits is not None:
+        if layout_recon_cls_emb is not None or layout_recon_cls_logits is not None:
             layout_cls_gt = misc["layout_cls_gt"]              # (BT, H, W) long
             layout_depth_gt = misc["layout_depth_gt"]          # (BT, H, W) float
             layout_depth_pred = misc["layout_recon_depth_pred"]  # (BT, 1, H, W)
-            # Classification loss (cross-entropy, with background=0 downweighted)
-            layout_cls_loss = F.cross_entropy(
-                layout_recon_cls_logits, layout_cls_gt, reduction="mean"
-            )
+
+            # Mask: ignore background (class 0)
+            valid_mask = (layout_cls_gt > 0).float()           # (BT, H, W)
+            # Downweight structural types (Wall=747, Floor=748, Door=749)
+            weight_map = valid_mask.clone()
+            for sid in self._STRUCTURAL_TYPE_IDS:
+                weight_map[layout_cls_gt == sid] *= 0.25
+
+            if layout_recon_cls_emb is not None:
+                # Open-vocab: cosine similarity loss against text embeddings
+                clip_type_embs = misc["clip_type_embeddings"]  # (N_types, clip_dim)
+                gt_emb = clip_type_embs[layout_cls_gt]         # (BT, H, W, clip_dim)
+                gt_emb = gt_emb.permute(0, 3, 1, 2)           # (BT, clip_dim, H, W)
+                pred_norm = F.normalize(layout_recon_cls_emb, dim=1)
+                gt_norm = F.normalize(gt_emb, dim=1)
+                cos_sim = (pred_norm * gt_norm).sum(dim=1)     # (BT, H, W)
+                per_pixel_loss = (1.0 - cos_sim) * weight_map
+                if weight_map.sum() > 0:
+                    layout_cls_loss = per_pixel_loss.sum() / weight_map.sum()
+                else:
+                    layout_cls_loss = per_pixel_loss.mean()
+            else:
+                # Closed-vocab: cross-entropy classification loss
+                # Build per-class weight: 0 for background, 0.25 for structural, 1 otherwise
+                n_classes = layout_recon_cls_logits.shape[1]
+                ce_weight = layout_recon_cls_logits.new_ones(n_classes)
+                ce_weight[0] = 0.0  # ignore background
+                for sid in self._STRUCTURAL_TYPE_IDS:
+                    if sid < n_classes:
+                        ce_weight[sid] = 0.25
+                layout_cls_loss = F.cross_entropy(
+                    layout_recon_cls_logits, layout_cls_gt,
+                    weight=ce_weight, ignore_index=0,
+                )
+
             # Depth regression loss (L1, only on non-background pixels)
-            valid_depth_mask = (layout_cls_gt > 0).float()    # background has depth=0
             layout_depth_loss = (
                 F.l1_loss(layout_depth_pred.squeeze(1), layout_depth_gt, reduction="none")
-                * valid_depth_mask
+                * valid_mask
             )
-            if valid_depth_mask.sum() > 0:
-                layout_depth_loss = layout_depth_loss.sum() / valid_depth_mask.sum()
+            if valid_mask.sum() > 0:
+                layout_depth_loss = layout_depth_loss.sum() / valid_mask.sum()
             else:
                 layout_depth_loss = layout_depth_loss.mean()
             layout_recon_loss = layout_cls_loss + layout_depth_loss
 
-        # ---- CLIP region-matching semantic loss ----
-        clip_semantic_loss = None
-        if self.clip_semantic_loss_weight > 0 and rendered_trgt_img is not None:
-            layout_cls_for_clip = misc.get("layout_cls_gt")
-            clip_text_embs = misc.get("clip_type_embeddings")
-            if layout_cls_for_clip is not None and clip_text_embs is not None:
-                clip_semantic_loss = self._compute_clip_semantic_loss(
-                    rendered_trgt_img, layout_cls_for_clip, clip_text_embs,
+        # ---- Dense CLIP layout loss (per-pixel cosine on splatted semantic features) ----
+        dense_clip_layout_loss = None
+        dense_clip_layout_loss_ctxt = None
+        if self.dense_clip_layout_loss_weight > 0:
+            layout_cls_for_dense = misc.get("layout_cls_gt")
+            clip_text_embs_dense = misc.get("clip_type_embeddings")
+            rendered_trgt_semantic = misc.get("rendered_trgt_semantic")
+            rendered_ctxt_semantic = misc.get("rendered_ctxt_semantic")
+            if layout_cls_for_dense is not None and clip_text_embs_dense is not None and rendered_trgt_semantic is not None:
+                B_dense = rendered_trgt_semantic.shape[0]
+                T_dense = layout_cls_for_dense.shape[0] // B_dense
+                layout_all_dense = layout_cls_for_dense.view(B_dense, T_dense, *layout_cls_for_dense.shape[1:])
+                layout_trgt_dense = layout_all_dense[:, num_context]
+                layout_ctxt_dense = layout_all_dense[:, 0]
+
+                dense_clip_layout_loss = self._compute_dense_clip_layout_loss(
+                    rendered_trgt_semantic, layout_trgt_dense, clip_text_embs_dense,
                 )
+                if rendered_ctxt_semantic is not None:
+                    dense_clip_layout_loss_ctxt = self._compute_dense_clip_layout_loss(
+                        rendered_ctxt_semantic, layout_ctxt_dense, clip_text_embs_dense,
+                    )
+
+        # ---- Splatted DINOv2 feature loss ----
+        dino_splat_loss = None
+        dino_splat_loss_ctxt = None
+        _clip_start = getattr(self, '_clip_loss_start_step', 0)
+        if self.dino_splat_loss_weight > 0 and global_step >= _clip_start:
+            dino_splat_trgt = misc.get("dino_splat_trgt")
+            dino_splat_ctxt = misc.get("dino_splat_ctxt")
+            repa_gt = misc.get("repa_gt")
+            repa_gt_ctxt = misc.get("repa_gt_ctxt")
+            dino_splat_loss = self._compute_dino_splat_loss(dino_splat_trgt, repa_gt)
+            dino_splat_loss_ctxt = self._compute_dino_splat_loss(dino_splat_ctxt, repa_gt_ctxt)
 
         rgb_ctxt = self.normalize(rendered_ctxt_img)
         depth_ctxt = rendered_ctxt_depth
@@ -1107,7 +1145,7 @@ class Diffusion(nn.Module):
 
         semantic_loss = None
         semantic_loss_reg = None
-        if self.use_semantic:
+        if self.use_semantic and trgt_semantic is not None:
             semantic_gt = trgt_semantic["clip_embeddings"]
             rendered_trgt_semantic = trgt_semantic["center_features"]
             semantic_gt = semantic_gt.to(rendered_trgt_semantic.dtype)
@@ -1388,7 +1426,7 @@ class Diffusion(nn.Module):
 
             semantic_loss_ctxt = None
             semantic_loss_ctxt_reg = None
-            if self.use_semantic:
+            if self.use_semantic and ctxt_semantic is not None:
                 semantic_gt_ctxt = ctxt_semantic["clip_embeddings"]
                 rendered_ctxt_semantic = ctxt_semantic["center_features"]
                 semantic_gt_ctxt = semantic_gt_ctxt.to(rendered_ctxt_semantic.dtype)
@@ -1456,7 +1494,10 @@ class Diffusion(nn.Module):
             "repa_loss_ctxt": repa_loss_ctxt.mean() if repa_loss_ctxt is not None else None,
             "alignment_loss": alignment_loss.mean() if alignment_loss is not None else None,
             "layout_recon_loss": layout_recon_loss if layout_recon_loss is not None else None,
-            "clip_semantic_loss": clip_semantic_loss if clip_semantic_loss is not None else None,
+            "dense_clip_layout_loss": dense_clip_layout_loss if dense_clip_layout_loss is not None else None,
+            "dense_clip_layout_loss_ctxt": dense_clip_layout_loss_ctxt if dense_clip_layout_loss_ctxt is not None else None,
+            "dino_splat_loss": dino_splat_loss if dino_splat_loss is not None else None,
+            "dino_splat_loss_ctxt": dino_splat_loss_ctxt if dino_splat_loss_ctxt is not None else None,
         }
 
         rendered_ctxt_img = (
@@ -1531,7 +1572,8 @@ class Trainer(object):
         repa_loss_weight=0.0,
         vggt_alignment_loss_weight=0.0,
         layout_recon_loss_weight=0.0,
-        clip_semantic_loss_weight=0.0,
+        dense_clip_layout_loss_weight=0.0,
+        dino_splat_loss_weight=0.0,
         ctxt_losses_factor=1.0,
         cfg=None,
         num_context=1,
@@ -1573,7 +1615,8 @@ class Trainer(object):
         self.intermediate_weight = intermediate_weight
         self.vggt_alignment_loss_weight = vggt_alignment_loss_weight
         self.layout_recon_loss_weight = layout_recon_loss_weight
-        self.clip_semantic_loss_weight = clip_semantic_loss_weight
+        self.dense_clip_layout_loss_weight = dense_clip_layout_loss_weight
+        self.dino_splat_loss_weight = dino_splat_loss_weight
         self.ctxt_losses_factor = ctxt_losses_factor
         assert self.sample_every % self.wandb_every == 0
 
@@ -1606,6 +1649,9 @@ class Trainer(object):
 
         self.load_enc = load_enc
         self.lock_enc_steps = lock_enc_steps
+
+        # Tell Diffusion model when to start computing CLIP loss
+        diffusion_model._clip_loss_start_step = lock_enc_steps
 
         self.use_identity = use_identity
 
@@ -1899,10 +1945,25 @@ class Trainer(object):
                             if layout_recon_loss is not None:
                                 layout_recon_loss = layout_recon_loss / self.gradient_accumulate_every
 
-                            clip_semantic_loss = losses.get("clip_semantic_loss", None)
-                            _accum("clip_semantic_loss", clip_semantic_loss)
-                            if clip_semantic_loss is not None:
-                                clip_semantic_loss = clip_semantic_loss / self.gradient_accumulate_every
+                            dense_clip_layout_loss = losses.get("dense_clip_layout_loss", None)
+                            _accum("dense_clip_layout_loss", dense_clip_layout_loss)
+                            if dense_clip_layout_loss is not None:
+                                dense_clip_layout_loss = dense_clip_layout_loss / self.gradient_accumulate_every
+
+                            dense_clip_layout_loss_ctxt = losses.get("dense_clip_layout_loss_ctxt", None)
+                            _accum("dense_clip_layout_loss_ctxt", dense_clip_layout_loss_ctxt)
+                            if dense_clip_layout_loss_ctxt is not None:
+                                dense_clip_layout_loss_ctxt = dense_clip_layout_loss_ctxt / self.gradient_accumulate_every
+
+                            dino_splat_loss = losses.get("dino_splat_loss", None)
+                            _accum("dino_splat_loss", dino_splat_loss)
+                            if dino_splat_loss is not None:
+                                dino_splat_loss = dino_splat_loss / self.gradient_accumulate_every
+
+                            dino_splat_loss_ctxt = losses.get("dino_splat_loss_ctxt", None)
+                            _accum("dino_splat_loss_ctxt", dino_splat_loss_ctxt)
+                            if dino_splat_loss_ctxt is not None:
+                                dino_splat_loss_ctxt = dino_splat_loss_ctxt / self.gradient_accumulate_every
 
                             # identity losses
                             if self.use_identity:
@@ -1976,8 +2037,11 @@ class Trainer(object):
                             if layout_recon_loss is not None:
                                 loss += self.layout_recon_loss_weight * layout_recon_loss
 
-                            if clip_semantic_loss is not None:
-                                loss += self.clip_semantic_loss_weight * clip_semantic_loss
+                            if dense_clip_layout_loss is not None:
+                                loss += self.dense_clip_layout_loss_weight * dense_clip_layout_loss
+
+                            if dino_splat_loss is not None:
+                                loss += self.dino_splat_loss_weight * dino_splat_loss
 
                             if self.use_identity:
                                 loss = (
@@ -2004,6 +2068,12 @@ class Trainer(object):
                                 
                                 if repa_loss_ctxt is not None:
                                     loss += self.repa_loss_weight * repa_loss_ctxt * self.ctxt_losses_factor
+
+                                if dense_clip_layout_loss_ctxt is not None:
+                                    loss += self.dense_clip_layout_loss_weight * dense_clip_layout_loss_ctxt * self.ctxt_losses_factor
+
+                                if dino_splat_loss_ctxt is not None:
+                                    loss += self.dino_splat_loss_weight * dino_splat_loss_ctxt * self.ctxt_losses_factor
 
                             if rgb_intermediate_loss is not None:
                                 loss += self.intermediate_weight * rgb_intermediate_loss
@@ -2047,7 +2117,10 @@ class Trainer(object):
                     total_repa_loss_ctxt = _gpu.get("repa_loss_ctxt", torch.tensor(0.0)).item()
                     total_alignment_loss = _gpu.get("alignment_loss", torch.tensor(0.0)).item()
                     total_layout_recon_loss = _gpu.get("layout_recon_loss", torch.tensor(0.0)).item()
-                    total_clip_semantic_loss = _gpu.get("clip_semantic_loss", torch.tensor(0.0)).item()
+                    total_dense_clip_layout_loss = _gpu.get("dense_clip_layout_loss", torch.tensor(0.0)).item()
+                    total_dense_clip_layout_loss_ctxt = _gpu.get("dense_clip_layout_loss_ctxt", torch.tensor(0.0)).item()
+                    total_dino_splat_loss = _gpu.get("dino_splat_loss", torch.tensor(0.0)).item()
+                    total_dino_splat_loss_ctxt = _gpu.get("dino_splat_loss_ctxt", torch.tensor(0.0)).item()
                     total_rgb_loss_ctxt = _gpu.get("rgb_loss_ctxt", torch.tensor(0.0)).item()
                     total_depth_loss_ctxt = _gpu.get("depth_loss_ctxt", torch.tensor(0.0)).item()
                     total_depth_mask_loss_ctxt = _gpu.get("depth_mask_loss_ctxt", torch.tensor(0.0)).item()
@@ -2069,7 +2142,8 @@ class Trainer(object):
                                 "repa_loss": total_repa_loss,
                                 "alignment_loss": total_alignment_loss,
                                 "layout_recon_loss": total_layout_recon_loss,
-                                "clip_semantic_loss": total_clip_semantic_loss,
+                                "dense_clip_layout_loss": total_dense_clip_layout_loss,
+                                "dino_splat_loss": total_dino_splat_loss,
                                 "semantic_loss": total_semantic_loss * self.semantic_loss_weight,
                                 "semantic_loss_reg": total_semantic_reg_loss * self.semantic_reg_loss_weight,
                                 "rgb_intermediate_loss": total_rgb_intermediate_loss,
@@ -2098,6 +2172,8 @@ class Trainer(object):
                                 "repa_loss_ctxt": total_repa_loss_ctxt,
                                 "semantic_loss_ctxt": total_semantic_loss_ctxt * self.semantic_loss_weight,
                                 "semantic_loss_ctxt_reg": total_semantic_loss_ctxt_reg * self.semantic_reg_loss_weight,
+                                "dense_clip_layout_loss_ctxt": total_dense_clip_layout_loss_ctxt,
+                                "dino_splat_loss_ctxt": total_dino_splat_loss_ctxt,
                             })
                             if self.use_lpips_loss:
                                 step_log.update({
@@ -2149,7 +2225,8 @@ class Trainer(object):
                         denoised_f_depth = os.path.join(self.results_folder, f"milestone_{milestone}_rendered_depth.mp4")
                         imageio.mimwrite(denoised_f_depth, depth_frames, fps=10, quality=10)
                         denoised_f_semantic = os.path.join(self.results_folder, f"milestone_{milestone}_rendered_semantic.mp4")
-                        imageio.mimwrite(denoised_f_semantic, semantics, fps=10, quality=10)
+                        if semantics:
+                            imageio.mimwrite(denoised_f_semantic, semantics, fps=10, quality=10)
 
                         # save all frames
                         for p, frame in enumerate(frames):
@@ -2169,7 +2246,7 @@ class Trainer(object):
                                 f"video/milestone_{milestone}_rendered_rgb": wandb.Video(denoised_f, fps=10, format="mp4"),
                                 f"video/milestone_{milestone}_rendered_depth": wandb.Video(denoised_f_depth, fps=10, format="mp4"),
                             }, step=self.step)
-                            if self.use_semantic:
+                            if self.use_semantic and os.path.isfile(denoised_f_semantic):
                                 wandb.log({
                                     f"video/milestone_{milestone}_rendered_semantic": wandb.Video(denoised_f_semantic, fps=10, format="mp4")
                                 }, step=self.step)
@@ -2317,7 +2394,7 @@ def _project_bboxes_to_image(
         # Transform to camera space
         corners_cam = (R @ corners.T).T + t_vec
         z_vals = corners_cam[:, 2]
-        NEAR_Z = 0.01
+        NEAR_Z = 0.05
         visible = z_vals > NEAR_Z
         if not visible.any():
             continue
@@ -2352,6 +2429,9 @@ def _project_bboxes_to_image(
                 cz = max(cp[2].item(), NEAR_Z)
                 cu = (fx * (cp[0].item() / cz) + cx) * W
                 cv = (fy * (cp[1].item() / cz) + cy) * H
+                # Clamp to image bounds to prevent bbox explosion
+                cu = max(0.0, min(float(W), cu))
+                cv = max(0.0, min(float(H), cv))
                 u_min = min(u_min, cu)
                 u_max = max(u_max, cu)
                 v_min = min(v_min, cv)

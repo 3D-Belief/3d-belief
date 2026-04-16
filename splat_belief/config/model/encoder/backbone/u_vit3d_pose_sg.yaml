@@ -28,6 +28,7 @@ n_edge_types: 3
 sg_use_gcn: true              # false = skip GCN, encode objects independently
 sg_dim: 256
 sg_clip_dim: 512
+sg_text_encoder: clip             # "clip" or "minilm"
 sg_type_embeddings_path: ""   # set to path of pre-computed sg_type_embeddings.pt
 sg_gcn_layers: 3
 sg_n_heads: 8
@@ -46,3 +47,4 @@ layout_embed_dim: 128          # dimension of per-pixel layout embedding
 layout_injection_mode: additive  # "additive" (default) or "film" (FiLM modulation)
 use_sparse_sg: true            # keep sparse SG (cross-attn/FiLM); false for ablation
 use_layout_recon_loss: false   # enable layout reconstruction auxiliary loss head
+layout_recon_mode: open_vocab  # "open_vocab" (cosine sim) or "closed_vocab" (cross-entropy)

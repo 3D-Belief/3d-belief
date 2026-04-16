@@ -4,7 +4,6 @@
 # Architecture improvements over poc_dataset variant:
 #   - FiLM conditioning (layout_injection_mode=film) instead of additive
 #   - layout_embed_dim=256 (up from 128)
-#   - CLIP region-matching semantic loss (clip_semantic_loss_weight=0.5)
 #   - Layout reconstruction aux loss (layout_recon_loss_weight=1.0)
 #   - 750 object types (up from 204)
 #   - ~3.7K episodes (~300 unique houses)
@@ -26,7 +25,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 # Ensure local repo is found before any pip-installed copy
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=6
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
 export MASTER_PORT=$((29500 + RANDOM % 1000))
 
@@ -36,7 +35,7 @@ nvidia-smi
 N_TYPES=750
 
 # ---- Train ----
-CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
+torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
     splat_belief/experiment/train.py \
     dataset=s3db \
     dataset.root_dir="${DATASET_ROOT}" \
@@ -45,7 +44,6 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     dataset.intermediate_weight=5.0 \
     dataset.depth_smooth_loss_weight=0.1 \
     dataset.layout_recon_loss_weight=1.0 \
-    dataset.clip_semantic_loss_weight=0.5 \
     dataset.include_walls=true \
     dataset.wall_height_default=2.5 \
     dataset.wall_thickness=0.15 \
@@ -53,7 +51,7 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     stage=train \
     results_folder=outputs/training/s3db_film_clip \
     semantic_config=configurations/semantic/onehot.yaml \
-    checkpoint_path=${REPO_ROOT}/outputs/training/procthor_base_weights/model-53.pt \
+    checkpoint_path=${REPO_ROOT}/outputs/training/s3db_base/model-22.pt \
     ngpus=1 \
     image_size=128 \
     ctxt_min=5 \
@@ -75,14 +73,14 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.backbone.use_vggt_alignment=true \
     model.encoder.backbone.use_repa=true \
     model.encoder.backbone.input_size='[128, 128]' \
-    model.encoder.backbone.sg_use_gcn=true \
+    model.encoder.backbone.sg_use_gcn=false \
     model.encoder.backbone.sg_spatial_mode=bbox_surface \
     model.encoder.backbone.n_object_types=${N_TYPES} \
     model.encoder.backbone.include_walls=true \
     model.encoder.backbone.use_dense_layout=true \
     model.encoder.backbone.layout_embed_dim=256 \
     model.encoder.backbone.layout_injection_mode=film \
-    model.encoder.backbone.use_sparse_sg=true \
+    model.encoder.backbone.use_sparse_sg=false \
     model.encoder.backbone.use_layout_recon_loss=true \
     alignment.latents_info=-1 \
     ctxt_losses_factor=0.7 \
@@ -95,7 +93,7 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     intermediate=true \
     load_optimizer=false \
     load_enc=false \
-    lock_enc_steps=5000 \
+    lock_enc_steps=4000 \
     use_depth_smoothness=true \
     adjacent_angle=0.785 \
     adjacent_distance=1.0 \

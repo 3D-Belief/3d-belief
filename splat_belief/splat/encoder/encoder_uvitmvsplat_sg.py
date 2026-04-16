@@ -81,7 +81,8 @@ class EncoderUViTMVSplatSG(EncoderUViTMVSplat):
             model_input["latents"] = latents
 
         # Propagate layout reconstruction outputs for auxiliary loss
-        for _key in ("layout_recon_cls_logits", "layout_recon_depth_pred",
+        for _key in ("layout_recon_cls_emb", "layout_recon_cls_logits",
+                     "layout_recon_depth_pred",
                      "layout_cls_gt", "layout_depth_gt", "clip_type_embeddings"):
             if _key in output:
                 model_input[_key] = output[_key]

@@ -81,7 +81,8 @@ def train(cfg: DictConfig):
         )
 
     clip_model = None
-    if use_semantic:
+    _semantic_loss_weight = cfg.dataset.get("semantic_loss_weight", 0.0)
+    if use_semantic and _semantic_loss_weight > 0:
         # clip_model, _ = clip.load("ViT-B/16", device="cuda")
         clip_model, _, _ = open_clip.create_model_and_transforms(
             "ViT-B-16",
@@ -98,13 +99,13 @@ def train(cfg: DictConfig):
 
     text_encoder = None
     text_tokenizer = None
-    if use_semantic and semantic_mode == "embed":
+    if use_semantic and semantic_mode == "embed" and clip_model is not None:
         text_encoder = clip_model.encode_text
         # text_tokenizer = clip.tokenize
         text_tokenizer = open_clip.get_tokenizer("ViT-B-16")
 
     semantic_mapper = None
-    if use_semantic:
+    if use_semantic and (semantic_mode != "embed" or text_encoder is not None):
         semantic_mapper = SemanticMapper(
             config_path=semantic_config, 
             mode=semantic_mode, 
@@ -150,7 +151,8 @@ def train(cfg: DictConfig):
         use_object_binary_mask=use_object_binary_mask,
         background_weight=background_weight,
         use_vggt_alignment=use_vggt_alignment,
-        clip_semantic_loss_weight=cfg.dataset.get("clip_semantic_loss_weight", 0.0),
+        dense_clip_layout_loss_weight=cfg.dataset.get("dense_clip_layout_loss_weight", 0.0),
+        dino_splat_loss_weight=cfg.dataset.get("dino_splat_loss_weight", 0.0),
         cfg=cfg,
     ).cuda()
 
@@ -187,7 +189,8 @@ def train(cfg: DictConfig):
         intermediate_weight=cfg.dataset.intermediate_weight,
         vggt_alignment_loss_weight=cfg.dataset.vggt_alignment_loss_weight,
         layout_recon_loss_weight=cfg.dataset.layout_recon_loss_weight,
-        clip_semantic_loss_weight=cfg.dataset.get("clip_semantic_loss_weight", 0.0),
+        dense_clip_layout_loss_weight=cfg.dataset.get("dense_clip_layout_loss_weight", 0.0),
+        dino_splat_loss_weight=cfg.dataset.get("dino_splat_loss_weight", 0.0),
         ctxt_losses_factor=cfg.ctxt_losses_factor,
         # rgb_loss_weight=cfg.dataset.rgb_loss_weight,
         cfg=cfg,

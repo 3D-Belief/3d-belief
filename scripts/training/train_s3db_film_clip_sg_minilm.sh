@@ -1,20 +1,19 @@
 #!/bin/bash
-# Training script for improved dense layout conditioning (v2)
+# Training: s3db_dataset, Dense Layout + SG + Recon + FiLM + CLIP Loss
 #
-# Key changes from v1:
-#   1. Gate warm-start (0.1) + removed zero_module on 2nd linear — fixes dead layout pathway
-#   2. Layout reconstruction auxiliary loss (layout_recon_loss_weight=1.0)
-#   3. load_enc=true  — load encoder from base checkpoint, preserving reconstruction quality
-#   4. lock_enc_steps=5000 — freeze backbone for 5K steps so layout modules learn first
-#   5. ctxt_losses_factor=0.9 (up from 0.7)
-#   6. use_layout_recon_loss=true — enables the new auxiliary loss head
+# Architecture improvements over poc_dataset variant:
+#   - FiLM conditioning (layout_injection_mode=film) instead of additive
+#   - layout_embed_dim=256 (up from 128)
+#   - Layout reconstruction aux loss (layout_recon_loss_weight=1.0)
+#   - 750 object types (up from 204)
+#   - ~3.7K episodes (~300 unique houses)
 set -e
 
 # ---- paths ----
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DATASET_ROOT="${REPO_ROOT}/../datasets/poc_dataset"
-VOCAB_DIR="${REPO_ROOT}/outputs/vocab/procthor"
-EMBEDDINGS_PATH="${VOCAB_DIR}/sg_type_embeddings.pt"
+DATASET_ROOT="${REPO_ROOT}/../datasets/s3db_dataset"
+VOCAB_DIR="${REPO_ROOT}/outputs/vocab/s3db"
+EMBEDDINGS_PATH="${VOCAB_DIR}/sg_type_embeddings_minilm.pt"
 
 # ---- environment ----
 eval "$(conda shell.bash hook)"
@@ -32,22 +31,13 @@ export MASTER_PORT=$((29500 + RANDOM % 1000))
 
 nvidia-smi
 
-# ---- Step 1: Build vocabulary + CLIP embeddings (skip if already done) ----
-if [ ! -f "${EMBEDDINGS_PATH}" ]; then
-    echo "=== Building vocabulary and CLIP embeddings ==="
-    python -m splat_belief.utils.procthor_utils \
-        --dataset_root "${DATASET_ROOT}" \
-        --output_dir "${VOCAB_DIR}" \
-        --device cuda
-    echo "=== Vocabulary and embeddings ready ==="
-else
-    echo "=== Vocabulary and embeddings already exist at ${VOCAB_DIR} ==="
-fi
+# Number of object types (from s3db vocab)
+N_TYPES=750
 
-# ---- Step 2: Train ----
-CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
+# ---- Train ----
+torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT \
     splat_belief/experiment/train.py \
-    dataset=procthor \
+    dataset=s3db \
     dataset.root_dir="${DATASET_ROOT}" \
     dataset.vocab_dir="${VOCAB_DIR}" \
     dataset.vggt_alignment_loss_weight=2.0 \
@@ -59,9 +49,9 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     dataset.wall_thickness=0.15 \
     setting_name=pixelsplat_h100 \
     stage=train \
-    results_folder=outputs/training/procthor_dense_layout_recon_no_lock \
+    results_folder=outputs/training/s3db_film_clip_sg_minilm_closed \
     semantic_config=configurations/semantic/onehot.yaml \
-    checkpoint_path=/home/ubuntu/tianmin-neurips/yyin34/codebase/structured_3d_belief/3d-belief/outputs/training/procthor_base_weights/model-53.pt \
+    checkpoint_path=${REPO_ROOT}/outputs/training/s3db_base/model-22.pt \
     ngpus=1 \
     image_size=128 \
     ctxt_min=5 \
@@ -80,29 +70,33 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     model.encoder.freeze_depth_predictor=false \
     model/encoder/backbone=u_vit3d_pose_sg \
     model.encoder.backbone.sg_type_embeddings_path="${EMBEDDINGS_PATH}" \
+    model.encoder.backbone.sg_clip_dim=384 \
+    model.encoder.backbone.sg_text_encoder=minilm \
     model.encoder.backbone.use_vggt_alignment=true \
     model.encoder.backbone.use_repa=true \
     model.encoder.backbone.input_size='[128, 128]' \
     model.encoder.backbone.sg_use_gcn=true \
     model.encoder.backbone.sg_spatial_mode=bbox_surface \
-    model.encoder.backbone.n_object_types=204 \
+    model.encoder.backbone.n_object_types=${N_TYPES} \
     model.encoder.backbone.include_walls=true \
     model.encoder.backbone.use_dense_layout=true \
-    model.encoder.backbone.layout_embed_dim=128 \
-    model.encoder.backbone.use_sparse_sg=false \
+    model.encoder.backbone.layout_embed_dim=256 \
+    model.encoder.backbone.layout_injection_mode=film \
+    model.encoder.backbone.layout_recon_mode=closed_vocab \
+    model.encoder.backbone.use_sparse_sg=true \
     model.encoder.backbone.use_layout_recon_loss=true \
     alignment.latents_info=-1 \
     ctxt_losses_factor=0.7 \
     repa_encoder_resolution=512 \
     model_type=uvit_pose \
-    name=procthor_dense_layout_recon_no_lock \
+    name=s3db_film_clip_sg_minilm_closed \
     wandb=local \
     clean_target=false \
     use_identity=true \
     intermediate=true \
     load_optimizer=false \
     load_enc=false \
-    lock_enc_steps=0 \
+    lock_enc_steps=4000 \
     use_depth_smoothness=true \
     adjacent_angle=0.785 \
     adjacent_distance=1.0 \

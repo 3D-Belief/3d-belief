@@ -13,7 +13,7 @@ rgb_loss_weight: 1.
 intermediate_weight: 2.0
 vggt_alignment_loss_weight: 0.1
 layout_recon_loss_weight: 0.0
-clip_semantic_loss_weight: 0.0
+dense_clip_layout_loss_weight: 0.0
 root_dir: ""
 vocab_dir: ""
 near_threshold: 2.0

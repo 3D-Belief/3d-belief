@@ -79,7 +79,7 @@ def precompute_clip_embeddings(
     id_to_type: List[str],
     output_path: str,
     model_name: str = "openai/clip-vit-base-patch32",
-    prompt_template: str = "a {obj_type} in a room",
+    prompt_template: str = "{obj_type}",
     device: str = "cuda",
 ) -> torch.Tensor:
     """
@@ -89,46 +89,91 @@ def precompute_clip_embeddings(
         id_to_type: list of object type strings (index 0 = "<pad>")
         output_path: where to save the embeddings tensor
         model_name: HuggingFace model identifier
-        prompt_template: template with {obj_type} placeholder
+        prompt_template: template with {obj_type} placeholder (default: bare name)
         device: device to run inference on
 
     Returns:
         embeddings: (n_types, D_clip) float32 tensor
     """
-    from transformers import AutoTokenizer, AutoModel
+    from transformers import CLIPTokenizer, CLIPTextModel
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).to(device)
-    model.eval()
+    tokenizer = CLIPTokenizer.from_pretrained(model_name)
+    text_model = CLIPTextModel.from_pretrained(model_name).to(device)
+    text_model.eval()
 
-    # Build text prompts
+    # Build text prompts — bare names give best separability
     prompts = []
     for type_name in id_to_type:
         if type_name == "<pad>":
             prompts.append("")
         else:
-            # Convert camelCase to readable: "FloorLamp" -> "Floor Lamp"
+            # Convert camelCase to readable: "FloorLamp" -> "floor lamp"
             readable = _camel_to_words(type_name)
             prompts.append(prompt_template.format(obj_type=readable))
 
-    # Encode all prompts
+    # Encode in batches using pooler_output (before text projection)
+    # — gives ~2× better separability than get_text_features()
+    batch_size = 128
+    all_embs = []
     with torch.no_grad():
         inputs = tokenizer(
             prompts, padding=True, truncation=True, return_tensors="pt"
         ).to(device)
+        for start in range(0, len(prompts), batch_size):
+            end = min(start + batch_size, len(prompts))
+            batch = {k: v[start:end] for k, v in inputs.items()}
+            outputs = text_model(**batch)
+            all_embs.append(outputs.pooler_output.cpu())
 
-        if hasattr(model, "get_text_features"):
-            # CLIP-style model
-            embeddings = model.get_text_features(**inputs)
-        else:
-            # Fallback: use last hidden state pooled
-            outputs = model(**inputs)
-            embeddings = outputs.last_hidden_state[:, 0, :]
+    embeddings = torch.cat(all_embs, dim=0)
 
     # Zero out the padding embedding
     embeddings[0] = 0.0
 
     embeddings = embeddings.cpu().float()
+    torch.save(embeddings, output_path)
+    print(f"Saved {embeddings.shape} embeddings to {output_path}")
+    return embeddings
+
+
+def precompute_language_embeddings(
+    id_to_type: List[str],
+    output_path: str,
+    model_name: str = "all-MiniLM-L6-v2",
+    device: str = "cuda",
+) -> torch.Tensor:
+    """
+    Pre-compute text embeddings using a sentence-transformer model (e.g. MiniLM).
+
+    Args:
+        id_to_type: list of object type strings (index 0 = "<pad>")
+        output_path: where to save the embeddings tensor
+        model_name: sentence-transformers model identifier
+        device: device to run inference on
+
+    Returns:
+        embeddings: (n_types, D_model) float32 tensor
+    """
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer(model_name, device=device)
+
+    # Build text prompts — bare names (same as CLIP path)
+    prompts = []
+    for type_name in id_to_type:
+        if type_name == "<pad>":
+            prompts.append("")
+        else:
+            readable = _camel_to_words(type_name)
+            prompts.append(readable)
+
+    with torch.no_grad():
+        emb_np = model.encode(prompts, batch_size=128, show_progress_bar=False)
+    embeddings = torch.from_numpy(emb_np).float()
+
+    # Zero out the padding embedding
+    embeddings[0] = 0.0
+
     torch.save(embeddings, output_path)
     print(f"Saved {embeddings.shape} embeddings to {output_path}")
     return embeddings
@@ -254,7 +299,7 @@ def parse_scene_graph(
         if DOOR_TYPE_NAME in type_to_id and room_bounds is not None:
             door_nodes = _parse_doors(
                 frame_data, type_to_id, room_bounds, room_id_to_idx,
-                wall_height_default,
+                wall_height_default, wall_nodes=wall_nodes,
             )
 
         # ---- Split walls at door openings ----
@@ -296,7 +341,7 @@ def parse_scene_graph(
         if not (WALL_TYPE_NAME in type_to_id):
             door_nodes = _parse_doors(
                 frame_data, type_to_id, room_bounds, room_id_to_idx,
-                wall_height_default,
+                wall_height_default, wall_nodes=None,
             )
         for dn in door_nodes:
             nodes.append((dn["type_id"], dn["pos"], dn["rot"], dn["size"]))
@@ -638,14 +683,20 @@ def _parse_doors(
     room_bounds: Dict[int, dict],
     room_id_to_idx: Dict[int, int],
     wall_height_default: float = 2.5,
+    wall_nodes: Optional[List[dict]] = None,
 ) -> List[dict]:
     """
     Infer door positions from ``seen_object_ids`` entries of the form
-    ``door|<room1_id>|<room2_id>`` by finding the shared boundary between
-    the two rooms' floor rectangles.
+    ``door|<room1_id>|<room2_id>``.
 
-    The door is placed at the midpoint of the shared edge with default
-    door dimensions.
+    **Strategy (preferred):** If *wall_nodes* are provided, find the wall
+    segment that separates rooms *r1* and *r2* by checking which wall from
+    one room lies on the boundary of the other.  The door is placed at the
+    midpoint of that wall segment — much more precise than room-AABB
+    heuristics.
+
+    **Fallback:** If no matching wall is found (or *wall_nodes* is ``None``),
+    fall back to the room-AABB shared-boundary heuristic.
 
     Args:
         frame_data: single frame dict from ``all_scene_graphs.json``.
@@ -653,6 +704,7 @@ def _parse_doors(
         room_bounds: pre-computed room bounds from :func:`collect_room_bounds`.
         room_id_to_idx: room int id → room index in current frame's scene_graph.
         wall_height_default: ceiling height fallback (for door height cap).
+        wall_nodes: already-parsed wall node dicts from :func:`_parse_walls`.
 
     Returns:
         List of door node dicts with keys:
@@ -682,81 +734,149 @@ def _parse_doors(
         if b1 is None or b2 is None:
             continue
 
-        # ---------- Find shared boundary between two rooms ----------
-        # ProcTHOR rooms can be non-rectangular (L-shaped, sub-regions).
-        # We check each of the 4 edges of each room: if an edge falls
-        # WITHIN the other room's AABB range on the perpendicular axis
-        # and has positive overlap on the parallel axis, it is a
-        # candidate boundary.  We pick the candidate with the shortest
-        # extent (most likely to be door-width).
-        tol = 0.3  # tolerance for "edge inside other room"
-        candidates = []  # list of (cx, cz, rot_y, extent)
+        door_cx = None
+        door_cz = None
+        rot_y = 0.0
 
-        def _add_x_edge(bx_val, ba, bb):
-            """Check if vertical edge x=bx_val of room A is inside room B."""
-            if bb["x_min"] - tol < bx_val < bb["x_max"] + tol:
-                z_lo = max(ba["z_min"], bb["z_min"])
-                z_hi = min(ba["z_max"], bb["z_max"])
-                if z_hi > z_lo:
-                    candidates.append((bx_val, (z_lo + z_hi) / 2.0, 90.0, z_hi - z_lo))
+        # ---------- Primary: locate door via wall geometry ----------
+        # Find walls belonging to room r1 or r2 that lie on the boundary
+        # of the *other* room.  A wall is "on the boundary" if its
+        # midpoint's perpendicular coordinate is within tolerance of the
+        # other room's AABB edge AND it overlaps in the parallel axis.
+        if wall_nodes:
+            r1_idx = room_id_to_idx.get(r1)
+            r2_idx = room_id_to_idx.get(r2)
+            tol_wall = 0.3
+            best_wall = None
+            best_wall_len = float("inf")
 
-        def _add_z_edge(bz_val, ba, bb):
-            """Check if horizontal edge z=bz_val of room A is inside room B."""
-            if bb["z_min"] - tol < bz_val < bb["z_max"] + tol:
-                x_lo = max(ba["x_min"], bb["x_min"])
-                x_hi = min(ba["x_max"], bb["x_max"])
-                if x_hi > x_lo:
-                    candidates.append(((x_lo + x_hi) / 2.0, bz_val, 0.0, x_hi - x_lo))
-
-        # Edges of b1 that might be inside b2
-        _add_x_edge(b1["x_min"], b1, b2)
-        _add_x_edge(b1["x_max"], b1, b2)
-        _add_z_edge(b1["z_min"], b1, b2)
-        _add_z_edge(b1["z_max"], b1, b2)
-        # Edges of b2 that might be inside b1
-        _add_x_edge(b2["x_min"], b2, b1)
-        _add_x_edge(b2["x_max"], b2, b1)
-        _add_z_edge(b2["z_min"], b2, b1)
-        _add_z_edge(b2["z_max"], b2, b1)
-
-        if not candidates:
-            continue
-
-        # De-duplicate: edges that coincide with BOTH rooms' outer walls
-        # (same x_min == x_min or same x_max == x_max) are exterior walls,
-        # not door boundaries.  Remove them.
-        filtered = []
-        for cx, cz, ry, ext in candidates:
-            if ry == 90.0:  # vertical edge at x = cx
-                both_min = abs(cx - b1["x_min"]) < tol and abs(cx - b2["x_min"]) < tol
-                both_max = abs(cx - b1["x_max"]) < tol and abs(cx - b2["x_max"]) < tol
-                if both_min or both_max:
+            for wn in wall_nodes:
+                w_room = wn["room_idx"]
+                if r1_idx is not None and w_room == r1_idx:
+                    other_bounds = b2
+                elif r2_idx is not None and w_room == r2_idx:
+                    other_bounds = b1
+                else:
                     continue
-            else:  # horizontal edge at z = cz
-                both_min = abs(cz - b1["z_min"]) < tol and abs(cz - b2["z_min"]) < tol
-                both_max = abs(cz - b1["z_max"]) < tol and abs(cz - b2["z_max"]) < tol
-                if both_min or both_max:
-                    continue
-            filtered.append((cx, cz, ry, ext))
 
-        if not filtered:
-            # Fall back to unfiltered if everything was on outer walls
-            filtered = candidates
+                # Wall endpoints in original Unity coords (before z-negate):
+                # endpoints are already z-negated, so reverse to compare
+                # with room_bounds (which are in Unity coords).
+                ep = wn["endpoints"]  # (2, 3) — already z-negated
+                wx1, wz1 = ep[0][0], -ep[0][2]  # undo z-negate
+                wx2, wz2 = ep[1][0], -ep[1][2]
 
-        # Prefer the shortest extent edge (doorway rather than full wall)
-        best = min(filtered, key=lambda c: c[3])
-        door_cx, door_cz, rot_y = best[0], best[1], best[2]
+                # Check if wall is approximately on a boundary of the
+                # other room (perpendicular coord within tolerance of an
+                # AABB face, parallel extent overlaps other room).
+                dx = abs(wx2 - wx1)
+                dz = abs(wz2 - wz1)
+
+                on_boundary = False
+                if dz > dx:
+                    # Wall runs along Z; check if x-coord matches boundary
+                    wall_x = (wx1 + wx2) / 2.0
+                    for bx in [other_bounds["x_min"], other_bounds["x_max"]]:
+                        if abs(wall_x - bx) < tol_wall:
+                            # Check Z overlap with other room
+                            wz_lo, wz_hi = min(wz1, wz2), max(wz1, wz2)
+                            oz_lo, oz_hi = other_bounds["z_min"], other_bounds["z_max"]
+                            if wz_hi > oz_lo and wz_lo < oz_hi:
+                                on_boundary = True
+                                break
+                else:
+                    # Wall runs along X; check if z-coord matches boundary
+                    wall_z = (wz1 + wz2) / 2.0
+                    for bz in [other_bounds["z_min"], other_bounds["z_max"]]:
+                        if abs(wall_z - bz) < tol_wall:
+                            # Check X overlap with other room
+                            wx_lo, wx_hi = min(wx1, wx2), max(wx1, wx2)
+                            ox_lo, ox_hi = other_bounds["x_min"], other_bounds["x_max"]
+                            if wx_hi > ox_lo and wx_lo < ox_hi:
+                                on_boundary = True
+                                break
+
+                if on_boundary:
+                    seg_len = math.sqrt((wx2 - wx1)**2 + (wz2 - wz1)**2)
+                    if seg_len < best_wall_len:
+                        best_wall_len = seg_len
+                        best_wall = wn
+
+            if best_wall is not None:
+                # Place door at the midpoint of the wall segment
+                ep = best_wall["endpoints"]  # (2, 3), z-negated
+                mid = (ep[0] + ep[1]) / 2.0
+                door_cx = float(mid[0])
+                door_cz = float(-mid[2])  # undo z-negate for Unity coords
+
+                # Rotation from wall direction
+                seg_dx = ep[1][0] - ep[0][0]
+                seg_dz = ep[1][2] - ep[0][2]
+                rot_y = math.degrees(math.atan2(seg_dx, seg_dz))
+
+        # ---------- Fallback: room-AABB shared-boundary heuristic ----------
+        if door_cx is None:
+            tol = 0.3
+            candidates = []  # (cx, cz, rot_y, extent)
+
+            def _add_x_edge(bx_val, ba, bb):
+                if bb["x_min"] - tol < bx_val < bb["x_max"] + tol:
+                    z_lo = max(ba["z_min"], bb["z_min"])
+                    z_hi = min(ba["z_max"], bb["z_max"])
+                    if z_hi > z_lo:
+                        candidates.append((bx_val, (z_lo + z_hi) / 2.0, 90.0, z_hi - z_lo))
+
+            def _add_z_edge(bz_val, ba, bb):
+                if bb["z_min"] - tol < bz_val < bb["z_max"] + tol:
+                    x_lo = max(ba["x_min"], bb["x_min"])
+                    x_hi = min(ba["x_max"], bb["x_max"])
+                    if x_hi > x_lo:
+                        candidates.append(((x_lo + x_hi) / 2.0, bz_val, 0.0, x_hi - x_lo))
+
+            _add_x_edge(b1["x_min"], b1, b2)
+            _add_x_edge(b1["x_max"], b1, b2)
+            _add_z_edge(b1["z_min"], b1, b2)
+            _add_z_edge(b1["z_max"], b1, b2)
+            _add_x_edge(b2["x_min"], b2, b1)
+            _add_x_edge(b2["x_max"], b2, b1)
+            _add_z_edge(b2["z_min"], b2, b1)
+            _add_z_edge(b2["z_max"], b2, b1)
+
+            if not candidates:
+                continue
+
+            filtered = []
+            for cx, cz, ry, ext in candidates:
+                if ry == 90.0:
+                    both_min = abs(cx - b1["x_min"]) < tol and abs(cx - b2["x_min"]) < tol
+                    both_max = abs(cx - b1["x_max"]) < tol and abs(cx - b2["x_max"]) < tol
+                    if both_min or both_max:
+                        continue
+                else:
+                    both_min = abs(cz - b1["z_min"]) < tol and abs(cz - b2["z_min"]) < tol
+                    both_max = abs(cz - b1["z_max"]) < tol and abs(cz - b2["z_max"]) < tol
+                    if both_min or both_max:
+                        continue
+                filtered.append((cx, cz, ry, ext))
+
+            if not filtered:
+                filtered = candidates
+
+            best = min(filtered, key=lambda c: c[3])
+            door_cx, door_cz, rot_y = best[0], best[1], best[2]
 
         door_h = min(DEFAULT_DOOR_HEIGHT, wall_height_default)
         # Z-negate for right-handed coords
         pos = [door_cx, door_h / 2.0, -door_cz]
         rot = [0.0, rot_y, 0.0]
         # Orient AABB: width goes along the opening direction
-        if rot_y == 90.0:
-            # Door opening along Z → width in Z, thickness in X
+        # For wall-based positioning, use the wall direction to orient the door
+        abs_rot = abs(rot_y)
+        if 45.0 < abs_rot < 135.0:
+            # Door opening roughly along Z → width in Z, thickness in X
             size = [DEFAULT_DOOR_THICKNESS, door_h, DEFAULT_DOOR_WIDTH]
         else:
-            # Door opening along X → width in X, thickness in Z
+            # Door opening roughly along X → width in X, thickness in Z
             size = [DEFAULT_DOOR_WIDTH, door_h, DEFAULT_DOOR_THICKNESS]
 
         # Assign to whichever room is in the current frame; fallback to 0
@@ -1068,7 +1188,7 @@ def rasterize_scene_graph(
     # If an edge connects a visible corner (z>0) to a behind-camera corner
     # (z<=0), interpolate to z=NEAR_Z and project the intersection point.
     # This prevents partial-visibility nodes from having a shrunk bbox.
-    NEAR_Z = 1e-3
+    NEAR_Z = 0.05
     aabb_edge_idx = torch.tensor(
         [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]],
         device=device, dtype=torch.long,
@@ -1087,6 +1207,9 @@ def rasterize_scene_graph(
                  + cx[:, None, None, None]
         clip_v = fy[:, None, None, None] * (clip_pt[..., 1] / clip_z) \
                  + cy[:, None, None, None]
+        # Clamp clip projections to [0, 1] to prevent bbox explosion
+        clip_u = clip_u.clamp(0.0, 1.0)
+        clip_v = clip_v.clamp(0.0, 1.0)
         u_min = torch.min(u_min, torch.where(crosses, clip_u, INF).min(dim=-1).values)
         u_max = torch.max(u_max, torch.where(crosses, clip_u, -INF).max(dim=-1).values)
         v_min = torch.min(v_min, torch.where(crosses, clip_v, INF).min(dim=-1).values)
@@ -1168,6 +1291,9 @@ def rasterize_scene_graph(
                        + cx[:, None, None, None]
             w_clip_v = fy[:, None, None, None] * (w_clip_pt[..., 1] / w_clip_z) \
                        + cy[:, None, None, None]
+            # Clamp clip projections to [0, 1] to prevent bbox explosion
+            w_clip_u = w_clip_u.clamp(0.0, 1.0)
+            w_clip_v = w_clip_v.clamp(0.0, 1.0)
             wu_min = torch.min(wu_min, torch.where(w_crosses, w_clip_u, INF).min(dim=-1).values)
             wu_max = torch.max(wu_max, torch.where(w_crosses, w_clip_u, -INF).max(dim=-1).values)
             wv_min = torch.min(wv_min, torch.where(w_crosses, w_clip_v, INF).min(dim=-1).values)

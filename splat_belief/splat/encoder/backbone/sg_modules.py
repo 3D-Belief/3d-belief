@@ -860,18 +860,29 @@ class LayoutReconstructionHead(nn.Module):
     from backbone features, providing direct gradient signal for layout
     conditioning modules.
 
-    Attached at a chosen backbone level (typically lowest-resolution for
-    efficiency). Predicts:
-      - layout_cls logits  (BT, n_classes, H, W)  → cross-entropy loss
-      - layout_depth       (BT, 1, H, W)          → L1 loss
+    Supports two modes controlled by ``mode``:
+      - "open_vocab":   cls head outputs (BT, clip_dim, H, W) embeddings
+      - "closed_vocab": cls head outputs (BT, n_classes, H, W) logits
+    Depth head is shared across both modes.
     """
 
-    def __init__(self, in_channels: int, n_classes: int, mid_channels: int = 128):
+    def __init__(
+        self,
+        in_channels: int,
+        clip_dim: int = 512,
+        n_classes: int = 750,
+        mid_channels: int = 128,
+        mode: str = "open_vocab",
+    ):
         super().__init__()
+        assert mode in ("open_vocab", "closed_vocab"), f"Unknown mode: {mode}"
+        self.mode = mode
+
+        cls_out_dim = clip_dim if mode == "open_vocab" else n_classes
         self.cls_head = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, 3, padding=1),
             nn.SiLU(),
-            nn.Conv2d(mid_channels, n_classes, 1),
+            nn.Conv2d(mid_channels, cls_out_dim, 1),
         )
         self.depth_head = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, 3, padding=1),
@@ -886,19 +897,19 @@ class LayoutReconstructionHead(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """
         Returns:
-            cls_logits:  (BT, n_classes, H_target, W_target)
-            depth_pred:  (BT, 1, H_target, W_target)
+            cls_out:     (BT, clip_dim|n_classes, H, W)
+            depth_pred:  (BT, 1, H, W)
         """
-        cls_logits = self.cls_head(features)
+        cls_out = self.cls_head(features)
         depth_pred = self.depth_head(features)
 
         # Match target resolution
-        if cls_logits.shape[-2:] != target_size:
-            cls_logits = F.interpolate(
-                cls_logits, size=target_size, mode="bilinear", align_corners=False
+        if cls_out.shape[-2:] != target_size:
+            cls_out = F.interpolate(
+                cls_out, size=target_size, mode="bilinear", align_corners=False
             )
             depth_pred = F.interpolate(
                 depth_pred, size=target_size, mode="bilinear", align_corners=False
             )
 
-        return cls_logits, depth_pred
+        return cls_out, depth_pred

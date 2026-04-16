@@ -26,6 +26,8 @@ use_semantic: false
 use_semantic_ipe: false
 use_reg_model: false
 reg_model_name: dinov2_reg_small
+use_dino_splat: false
+d_dino_splat: 768
 d_semantic: 256
 d_semantic_reg: 256
 

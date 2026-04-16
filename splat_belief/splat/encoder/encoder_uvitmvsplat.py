@@ -38,6 +38,7 @@ class EncoderUViTMVSplatCfg:
     d_semantic_reg: int
     use_semantic: bool
     use_reg_model: bool
+    use_dino_splat: bool
     use_transmittance: bool
     depth_predictor_time_embed: bool
     depth_inference_min: float
@@ -60,6 +61,7 @@ class EncoderUViTMVSplatCfg:
     evolve_ctxt: bool
     inference_mode: bool
     use_depth_mask: bool
+    d_dino_splat: int = 768
     render_features: bool = True
     freeze_depth_predictor: bool = False
     conditioning_type: Literal["ray_encoding", "plucker"] = "ray_encoding"
@@ -85,6 +87,7 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
         self.border_px = cfg.border_px
         self.use_semantic = cfg.use_semantic
         self.use_reg_model = cfg.use_reg_model
+        self.use_dino_splat = getattr(cfg, 'use_dino_splat', False)
         self.evolve_ctxt = cfg.evolve_ctxt
         self.use_depth_mask = cfg.use_depth_mask
         self.use_camera_pose = cfg.use_camera_pose
@@ -153,6 +156,17 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
                     nn.Linear(cfg.d_feature*2, cfg.num_surfaces * cfg.d_semantic_reg)
                 )
         
+        if self.use_dino_splat:
+            _d_dino = getattr(cfg, 'd_dino_splat', 768)
+            self.to_dino_splat = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(cfg.d_feature, cfg.d_feature * 2),
+                nn.ReLU(),
+                nn.Linear(cfg.d_feature * 2, cfg.d_feature * 2),
+                nn.ReLU(),
+                nn.Linear(cfg.d_feature * 2, _d_dino),
+            )
+
         if self.use_depth_mask:
             self.depth_mask_predictor = nn.Sequential(
             nn.Conv2d(cfg.d_feature, cfg.d_feature, kernel_size=7, stride=1, padding=3),
@@ -545,7 +559,20 @@ class EncoderUViTMVSplat(Encoder[EncoderUViTMVSplatCfg]):
             semantic_reg_features = rearrange(semantic_reg_features, "b v (h w) c -> b v c h w", h=h, w=w)
             return semantic_reg_features
         return None
-    
+
+    def get_dino_splat_features(
+        self,
+        rendered_features: Tensor,
+    ) -> Optional[Tensor]:
+        """Project splatted features to DINOv2 embedding space."""
+        if self.use_dino_splat:
+            b, v, c, h, w = rendered_features.shape
+            features = rearrange(rendered_features, "b v c h w -> b v (h w) c")
+            dino_features = self.to_dino_splat(features)
+            dino_features = rearrange(dino_features, "b v (h w) c -> b v c h w", h=h, w=w)
+            return dino_features
+        return None
+
     def get_depth_mask(
         self,
         rendered_features: Tensor,

@@ -174,7 +174,8 @@ class SplatBelief(nn.Module):
         }
 
         # Propagate layout reconstruction outputs for auxiliary loss
-        for _key in ("layout_recon_cls_logits", "layout_recon_depth_pred",
+        for _key in ("layout_recon_cls_emb", "layout_recon_cls_logits",
+                     "layout_recon_depth_pred",
                      "layout_cls_gt", "layout_depth_gt", "clip_type_embeddings"):
             if _key in model_input:
                 misc[_key] = model_input[_key]
@@ -184,6 +185,15 @@ class SplatBelief(nn.Module):
                 "rendered_ctxt_depth_mask": context_rendered_depth_mask,
                 "rendered_trgt_depth_mask": target_rendered_depth_mask,
             })
+
+        # Splatted DINOv2 feature maps (projected from rendered features)
+        if hasattr(self.encoder, 'use_dino_splat') and self.encoder.use_dino_splat and not self.inference_mode:
+            dino_splat_trgt = self.encoder.get_dino_splat_features(target_rendered_features)
+            dino_splat_ctxt = self.encoder.get_dino_splat_features(context_rendered_features)
+            if dino_splat_trgt is not None:
+                misc["dino_splat_trgt"] = dino_splat_trgt  # (B, V, d_dino, H, W)
+            if dino_splat_ctxt is not None:
+                misc["dino_splat_ctxt"] = dino_splat_ctxt
 
         # Render intermediate
         if "intm_c2w" in model_input:
@@ -214,9 +224,15 @@ class SplatBelief(nn.Module):
             })
 
         extract_dino = False if self.dino_model is None else True
-        # Sample from target rendered semantic feature maps
+        # Dense semantic feature maps for layout-CLIP loss
         if self.use_semantic and not self.inference_mode:
             target_rendered_semantic = self.encoder.get_semantic_features(target_rendered_features)
+            misc["rendered_trgt_semantic"] = target_rendered_semantic  # (B, V, d_semantic, H, W)
+            context_rendered_semantic_map = self.encoder.get_semantic_features(context_rendered_features)
+            misc["rendered_ctxt_semantic"] = context_rendered_semantic_map  # (B, V, d_semantic, H, W)
+
+        # Sample from target rendered semantic feature maps
+        if self.use_semantic and not self.inference_mode and self.clip_model is not None:
             target_rendered_semantic_reg = None
             if self.dino_model is not None:
                 target_rendered_semantic_reg = self.encoder.get_semantic_reg_features(target_rendered_features)
@@ -233,8 +249,8 @@ class SplatBelief(nn.Module):
             misc[f"trgt_semantic"] = target_samples
         
         # Sample from context rendered semantic feature maps
-        if self.use_semantic and not self.inference_mode:
-            context_rendered_semantic = self.encoder.get_semantic_features(context_rendered_features)
+        if self.use_semantic and not self.inference_mode and self.clip_model is not None:
+            context_rendered_semantic = context_rendered_semantic_map
             context_rendered_semantic_reg = None
             if self.dino_model is not None:
                 context_rendered_semantic_reg = self.encoder.get_semantic_reg_features(context_rendered_features)
@@ -251,7 +267,7 @@ class SplatBelief(nn.Module):
             misc[f"ctxt_semantic"] = context_samples
         
         # If available, also sample from intermediate rendered semantic maps
-        if "intm_c2w" in model_input and self.use_semantic and not self.inference_mode:
+        if "intm_c2w" in model_input and self.use_semantic and not self.inference_mode and self.clip_model is not None:
             intm_rendered_semantic = self.encoder.get_semantic_features(intm_rendered_features)
             intm_rendered_semantic_reg = None
             if self.dino_model is not None:
@@ -340,7 +356,7 @@ class SplatBelief(nn.Module):
             frames.append(rgb.float().cpu().detach().numpy().astype(np.uint8))
             depth_frames.append(depth.float().cpu().detach())
 
-            if self.use_semantic:
+            if self.use_semantic and self.semantic_mapper is not None:
                 features = output.features[:, 0:1, ...]
                 if self.semantic_mode == "embed":
                     features = self.encoder.get_semantic_features(features)

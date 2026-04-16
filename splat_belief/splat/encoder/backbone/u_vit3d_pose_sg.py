@@ -33,6 +33,7 @@ class BackboneUViT3DPoseSGCfg(BackboneUViT3DPoseCfg):
     sg_use_gcn: bool = True            # False = skip GCN, encode objects independently
     sg_dim: int = 256                  # D_sg: scene graph feature dimension
     sg_clip_dim: int = 512             # CLIP embedding dim (512 for openai/clip-vit-base-patch32)
+    sg_text_encoder: str = "clip"       # "clip" or "minilm" — selects which text embeddings to use
     sg_type_embeddings_path: str = ""  # path to pre-computed sg_type_embeddings.pt
     sg_gcn_layers: int = 3
     sg_n_heads: int = 8                # for cross-attention
@@ -49,6 +50,7 @@ class BackboneUViT3DPoseSGCfg(BackboneUViT3DPoseCfg):
     layout_injection_mode: str = "additive"  # "additive" or "film"
     use_sparse_sg: bool = True         # keep sparse SG (cross-attn/FiLM); disable for ablation
     use_layout_recon_loss: bool = False # enable layout reconstruction auxiliary loss
+    layout_recon_mode: str = "open_vocab"  # "open_vocab" (cosine sim) or "closed_vocab" (cross-entropy)
 
 
 class UViT3DPoseSG(UViT3DPose):
@@ -119,7 +121,9 @@ class UViT3DPoseSG(UViT3DPose):
             # Use the lowest-resolution level (last channel) for efficiency
             self.layout_recon_head = LayoutReconstructionHead(
                 in_channels=channels[-1],
+                clip_dim=cfg.sg_clip_dim,
                 n_classes=cfg.n_object_types,
+                mode=cfg.layout_recon_mode,
             )
 
     def _encode_scene_graph(self, model_input: dict) -> tuple[Tensor, Tensor]:
@@ -351,7 +355,7 @@ class UViT3DPoseSG(UViT3DPose):
         )
 
         # ---- Layout reconstruction auxiliary loss (at bottleneck) ----
-        layout_recon_cls_logits = None
+        layout_recon_cls_out = None
         layout_recon_depth_pred = None
         if (
             hasattr(self, 'layout_recon_head')
@@ -359,7 +363,7 @@ class UViT3DPoseSG(UViT3DPose):
             and layout_cls is not None
         ):
             target_size = (layout_cls.shape[-2], layout_cls.shape[-1])  # (32, 32)
-            layout_recon_cls_logits, layout_recon_depth_pred = self.layout_recon_head(
+            layout_recon_cls_out, layout_recon_depth_pred = self.layout_recon_head(
                 x, target_size
             )
 
@@ -393,12 +397,15 @@ class UViT3DPoseSG(UViT3DPose):
         output_dict = {"features": out}
 
         # Layout reconstruction predictions for auxiliary loss
-        if layout_recon_cls_logits is not None:
-            output_dict["layout_recon_cls_logits"] = layout_recon_cls_logits  # (BT, n_cls, H, W)
+        if layout_recon_cls_out is not None:
+            if self.layout_recon_head.mode == "open_vocab":
+                output_dict["layout_recon_cls_emb"] = layout_recon_cls_out    # (BT, clip_dim, H, W)
+            else:
+                output_dict["layout_recon_cls_logits"] = layout_recon_cls_out  # (BT, n_classes, H, W)
             output_dict["layout_recon_depth_pred"] = layout_recon_depth_pred  # (BT, 1, H, W)
 
         # Always pass layout GT + CLIP embeddings when dense layout is active
-        # (needed by both layout_recon_loss and clip_semantic_loss)
+        # (needed by layout_recon_loss and dense_clip_layout_loss)
         if layout_cls is not None:
             output_dict["layout_cls_gt"] = layout_cls        # (BT, H, W) long
             output_dict["layout_depth_gt"] = layout_depth    # (BT, H, W) float
