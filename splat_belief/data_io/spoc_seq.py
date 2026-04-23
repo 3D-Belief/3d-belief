@@ -1,0 +1,567 @@
+from functools import lru_cache
+from pathlib import Path
+from typing import List, Optional, Tuple, Union
+
+import numpy as np
+import time
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as tf
+from torch.utils.data import Dataset
+from numpy.random import default_rng
+import cv2
+
+from splat_belief.utils.vision_utils import *
+from splat_belief.splat.layers import T5Encoder
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
+Stage = Literal["train", "test", "unit", "one", "one_test"]
+
+
+class Camera(object):
+    def __init__(self, extrinsics):
+        fx, fy, cx, cy = 0.390, 0.385, 0.5, 0.5
+        self.intrinsics = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+        self.w2c_mat = extrinsics
+        self.c2w_mat = np.linalg.inv(extrinsics)
+
+
+class SPOCDatasetSeq(Dataset):
+    """
+    Seq dataset corresponding to the video-backed SPOCDataset (un-seq).
+
+    - per scene: videos/rgb*.mp4, videos/depth*.mp4, pose/*.npy
+    - frame index is pose index (0..len(pose_files)-1)
+    - keyframes chosen by (angle > adjacent_angle) OR (translation > adjacent_distance)
+    - each keyframe has num_intermediate sampled frames from the segment since last keyframe
+    """
+    z_near: float = 0.01
+    z_far: float = 50.0
+    z_filter: float = 19.0
+    image_size: int = 64
+    background_color: torch.tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
+
+    avg_key_frame_interval = 8
+
+    def __init__(
+        self,
+        root: Union[str, Path],
+        num_context: int,
+        num_target: int,  # kept for signature consistency, not used (seq uses fixed-length keyframe list)
+        context_min_distance: int,
+        context_max_distance: int,
+        stage: Stage = "train",
+        num_intermediate: Optional[int] = 3,
+        language_encoder: Optional[T5Encoder] = None,
+        overfit_to_index: Optional[int] = None,
+        max_scenes: Optional[int] = None,
+        image_size: Optional[int] = 64,
+        adjacent_angle: float = 0.523,      # ~30 deg
+        adjacent_distance: float = 1.0,     # meters (pose translation space)
+        use_depth_supervision: bool = True,
+        depth_scale: float = 1000.0,
+    ) -> None:
+        super().__init__()
+        self.overfit_to_index = overfit_to_index
+        self.num_context = num_context
+        self.num_target = num_target
+        self.context_min_distance = context_min_distance
+        self.context_max_distance = context_max_distance
+        self.image_size = image_size
+        self.num_intermediate = num_intermediate
+        self.adjacent_angle = adjacent_angle
+        self.adjacent_distance = adjacent_distance
+        self.use_depth_supervision = use_depth_supervision
+        self.depth_scale = depth_scale
+
+        sub_dir = {"train": "train", "test": "test", "unit": "unit"}[stage]
+        image_root = Path(root) / sub_dir
+        scene_path_list = sorted([p for p in Path(image_root).glob("*/") if p.is_dir()])
+        if max_scenes is not None:
+            scene_path_list = scene_path_list[:max_scenes]
+        self.stage = stage
+        self.to_tensor = tf.ToTensor()
+        self.rng = default_rng()
+        self.global_seed = 42
+        self.normalize = normalize_to_neg_one_to_one
+
+        if language_encoder is not None:
+            self.lang_identity = language_encoder("").detach()
+        else:
+            # fall back to a dummy zero vector if you ever call without lang encoder
+            self.lang_identity = torch.zeros(1)
+
+        self.len = 0
+        # Keep a simplified layout: require per-scene files:
+        #  - rgb_trajectory.mp4
+        #  - depth_trajectory.mp4
+        #  - pose/*.npy  (one .npy file per frame)
+        self.scene_path_list = []
+        self.rgb_paths = []
+        self.depth_paths = []
+        self.pose_lists = []
+        self.num_frames_per_scene = []
+
+        for scene_path in scene_path_list:
+            rgb_path = scene_path / "rgb_trajectory.mp4"
+            depth_mp4 = scene_path / "depth_trajectory.mp4"
+            depth_npz = scene_path / "all_depths.npz"
+            poses_npz = scene_path / "all_poses.npz"
+            pose_dir = scene_path / "pose"
+
+            # prefer the npz-style (rgb_trajectory.mp4 + all_depths.npz + all_poses.npz)
+            if rgb_path.exists() and depth_npz.exists() and poses_npz.exists():
+                poses_arr = self._load_npz_poses(str(poses_npz))
+                num_frames = int(poses_arr.shape[0])
+                self.len += num_frames
+                self.scene_path_list.append(scene_path)
+                self.rgb_paths.append(str(rgb_path))
+                self.depth_paths.append(str(depth_npz))
+                # store a single npz path string for poses
+                self.pose_lists.append(str(poses_npz))
+                self.num_frames_per_scene.append(num_frames)
+                continue
+
+            # fallback to per-frame poses + mp4 depth (rgb_trajectory.mp4 + depth_trajectory.mp4 + pose/*.npy)
+            if rgb_path.exists() and depth_mp4.exists() and pose_dir.exists() and pose_dir.is_dir():
+                pose_files = sorted([p for p in pose_dir.glob("*.npy") if p.is_file()])
+                if len(pose_files) == 0:
+                    continue
+                num_frames = len(pose_files)
+                self.len += num_frames
+                self.scene_path_list.append(scene_path)
+                self.rgb_paths.append(str(rgb_path))
+                self.depth_paths.append(str(depth_mp4))
+                # store list of per-frame pose file strings
+                self.pose_lists.append([str(p) for p in pose_files])
+                self.num_frames_per_scene.append(num_frames)
+                continue
+
+            # if neither layout matches, skip scene
+            continue
+
+        print("[SPOC-SEQ] Scenes", len(self.scene_path_list))
+        print("[SPOC-SEQ] length dataset (pose frames)", self.len)
+
+        # Backwards-compatible aliases expected by external code
+        # all_* lists are per-scene containers where each scene entry is indexable
+        # and len(all_rgb_files[scene_idx]) should return the number of frames.
+        self.all_rgb_files = []
+        self.all_depth_files = []
+        self.all_pose_files = []
+        for i, n in enumerate(self.num_frames_per_scene):
+            # Repeat the rgb/depth path n times so len(...) returns number of frames
+            self.all_rgb_files.append([self.rgb_paths[i]] * int(n))
+            self.all_depth_files.append([self.depth_paths[i]] * int(n))
+            pf = self.pose_lists[i]
+            if isinstance(pf, str):
+                # single npz path -> repeat n times
+                self.all_pose_files.append([pf] * int(n))
+            else:
+                # already a list of per-frame pose file paths
+                self.all_pose_files.append(pf)
+
+    def __len__(self) -> int:
+        return len(self.scene_path_list)
+
+    # ----------------------------
+    # Video capture caching helpers
+    # ----------------------------
+    @lru_cache(maxsize=128)
+    def _get_cap(self, path: str):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {path}")
+        return cap
+
+    def _read_rgb_depth_from_video(self, rgb_path: str, depth_path: str, frame_id: int):
+        # rgb_path and depth_path are strings pointing to mp4 videos
+        cap_rgb = self._get_cap(rgb_path)
+        cap_depth = self._get_cap(depth_path)
+
+        # RGB
+        cap_rgb.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, frame = cap_rgb.read()
+        if not ok or frame is None:
+            raise RuntimeError(f"Failed to read RGB frame {frame_id} from {rgb_path}")
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = torch.tensor(frame.astype(np.float32)).permute(2, 0, 1) / 255.0
+        rgb = F.interpolate(
+            rgb.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        # Depth (mp4 with one channel or repeated channels)
+        cap_depth.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, dframe = cap_depth.read()
+        if not ok or dframe is None:
+            raise RuntimeError(f"Failed to read depth frame {frame_id} from {depth_path}")
+        dframe = dframe.astype(np.float32) / float(self.depth_scale)
+        # if depth has 3 channels, take first channel
+        if dframe.ndim == 3:
+            depth_single = dframe[..., 0]
+        else:
+            depth_single = dframe
+        depth = torch.tensor(depth_single, dtype=torch.float32).unsqueeze(0)
+        depth = F.interpolate(
+            depth.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        depth_mask = depth < self.z_filter
+        return rgb, depth, depth_mask
+
+    @lru_cache(maxsize=128)
+    def _load_npz_depths(self, npz_path: str):
+        data = np.load(npz_path)
+        # expect key 'depths'
+        if "depths" in data:
+            return data["depths"]
+        # fallback: return first array
+        keys = list(data.keys())
+        return data[keys[0]]
+
+    def read_frame(self, rgb_files, depth_files, pose_files, frame_id: int):
+        """Read RGB, depth and pose for a single frame.
+
+        rgb_files / depth_files / pose_files may be:
+          - an array-like (old format) where rgb_files[0] and depth_files[0] point to mp4s and pose_files is an array of .npy
+          - an array-like containing single strings pointing to new-style files (rgb_trajectory.mp4, all_depths.npz, all_poses.npz)
+        """
+        # rgb_files/depth_files are strings pointing to either mp4 (video) or npz (depth stack)
+        rgb_path = str(rgb_files)
+        depth_path = str(depth_files)
+
+        # read rgb
+        cap_rgb = self._get_cap(rgb_path)
+        cap_rgb.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, frame = cap_rgb.read()
+        if not ok or frame is None:
+            raise RuntimeError(f"Failed to read RGB frame {frame_id} from {rgb_path}")
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = torch.tensor(frame.astype(np.float32)).permute(2, 0, 1) / 255.0
+        rgb = F.interpolate(
+            rgb.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        # read depth: either mp4 or npz
+        if depth_path.endswith('.mp4'):
+            cap_depth = self._get_cap(depth_path)
+            cap_depth.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+            ok, dframe = cap_depth.read()
+            if not ok or dframe is None:
+                raise RuntimeError(f"Failed to read depth frame {frame_id} from {depth_path}")
+            dframe = dframe.astype(np.float32) / float(self.depth_scale)
+            if dframe.ndim == 3:
+                depth_single = dframe[..., 0]
+            else:
+                depth_single = dframe
+            depth = torch.tensor(depth_single, dtype=torch.float32).unsqueeze(0)
+        else:
+            # assume npz of depths
+            depths_arr = self._load_npz_depths(depth_path)
+            depth_val = depths_arr[int(frame_id)]
+            depth = torch.tensor(depth_val.astype(np.float32)).unsqueeze(0)
+
+        depth = F.interpolate(
+            depth.unsqueeze(0),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            antialias=True,
+        )[0]
+
+        depth_mask = depth < self.z_filter
+
+        # pose: either a single npz path string or a list of per-frame .npy files
+        if isinstance(pose_files, str) and pose_files.endswith('.npz'):
+            poses_arr = self._load_npz_poses(pose_files)
+            extrinsics = poses_arr[int(frame_id)]
+        else:
+            # pose_files is expected to be a list-like of .npy paths
+            pose_file = str(pose_files[int(frame_id)])
+            extrinsics = np.load(pose_file)
+
+        # Convert to camera-centric convention (match spoc.py behavior)
+        extrinsics = np.linalg.inv(extrinsics)
+        conversion = np.diag([1, -1, -1, 1])
+        extrinsics = conversion @ extrinsics
+        cam_param = Camera(extrinsics)
+        return rgb, depth, depth_mask, cam_param
+
+    @lru_cache(maxsize=128)
+    def _load_npz_poses(self, npz_path: str):
+        data = np.load(npz_path)
+        if "poses" in data:
+            return data["poses"]
+        keys = list(data.keys())
+        return data[keys[0]]
+
+    def __getitem__(self, index: int):
+        seed = hash((index, self.global_seed)) % (2**32)
+        self.rng = np.random.default_rng(seed)
+        scene_idx = self.rng.integers(0, len(self.scene_path_list))
+        if self.overfit_to_index is not None:
+            scene_idx = self.overfit_to_index
+
+        def fallback():
+            seed2 = hash((index, self.global_seed)) % (2**32)
+            self.rng = np.random.default_rng(seed2)
+            return self[self.rng.integers(0, len(self.scene_path_list))]
+
+        rgb_path = self.rgb_paths[scene_idx]
+        depth_path = self.depth_paths[scene_idx]
+        pose_files = self.pose_lists[scene_idx]
+        num_frames = self.num_frames_per_scene[scene_idx]
+        if num_frames < 2:
+            return fallback()
+
+        num_keyframes = self.context_max_distance * self.num_context
+
+        # start index heuristic (avoid going too close to end)
+        max_start = max(2, num_frames - num_keyframes * self.avg_key_frame_interval)
+        start_idx = int(self.rng.integers(1, max_start))
+
+        ids = list(range(start_idx, num_frames))
+        first_id = ids.pop(0)
+
+        # read first keyframe
+        rgb0, depth0, depth_mask0, cam0 = self.read_frame(rgb_path, depth_path, pose_files, first_id)
+
+        rgbs = [rgb0]
+        depths = [depth0]
+        depth_masks = [depth_mask0]
+        pose_c2w = [cam0.c2w_mat]
+        intrinsics = [torch.tensor(np.array(cam0.intrinsics)).float()]
+
+        inv_pose_first = inverse_transformation(torch.tensor(np.array([cam0.c2w_mat])).float()[0])
+
+        intm_keys = ["rgbs", "depth", "depth_mask", "intrinsics", "pose"]
+        intms = [{
+            "rgbs": [self.normalize(torch.stack([rgb0], axis=0))] * self.num_intermediate,
+            "depth": [torch.stack([depth0], axis=0)] * self.num_intermediate,
+            "depth_mask": [torch.stack([depth_mask0], axis=0)] * self.num_intermediate,
+            "intrinsics": [torch.stack([torch.tensor(np.array(cam0.intrinsics)).float()], axis=0)[0]] * self.num_intermediate,
+            "pose": [torch.einsum(
+                "ijk, ikl -> ijl",
+                inv_pose_first.unsqueeze(0).repeat(1, 1, 1),
+                torch.tensor(np.array([cam0.c2w_mat])).float()
+            )] * self.num_intermediate,
+        }]
+
+        z_previous = cam0.c2w_mat[:, 2][:3]
+        t_previous = cam0.c2w_mat[:, 3][:3]
+
+        current_intm = {k: [] for k in intm_keys}
+
+        for fid in ids:
+            rgb, depth, depth_mask, cam = self.read_frame(rgb_path, depth_path, pose_files, fid)
+
+            current_pose = cam.c2w_mat
+            z_idx = current_pose[:, 2][:3]
+            t_idx = current_pose[:, 3][:3]
+
+            angle = rotation_angle(z_previous, z_idx)
+            dist = np.linalg.norm(t_idx - t_previous)
+
+            # accumulate potential intermediates
+            current_intm["rgbs"].append(rgb)
+            current_intm["depth"].append(depth)
+            current_intm["depth_mask"].append(depth_mask)
+            current_intm["intrinsics"].append(torch.tensor(np.array(cam.intrinsics)).float())
+            current_intm["pose"].append(cam.c2w_mat)
+
+            # commit a new keyframe if we moved enough
+            if angle > self.adjacent_angle or dist > self.adjacent_distance:
+                z_previous = z_idx
+                t_previous = t_idx
+
+                rgbs.append(rgb)
+                depths.append(depth)
+                depth_masks.append(depth_mask)
+                intrinsics.append(torch.tensor(np.array(cam.intrinsics)).float())
+                pose_c2w.append(cam.c2w_mat)
+
+                # sample num_intermediate from current_intm
+                if len(current_intm["rgbs"]) == 0:
+                    # degenerate: no candidates, repeat current keyframe
+                    chosen = [0] * self.num_intermediate
+                    tmp_rgbs = [rgb] * self.num_intermediate
+                    tmp_depths = [depth] * self.num_intermediate
+                    tmp_masks = [depth_mask] * self.num_intermediate
+                    tmp_intr = [torch.tensor(np.array(cam.intrinsics)).float()] * self.num_intermediate
+                    tmp_pose = [cam.c2w_mat] * self.num_intermediate
+                else:
+                    chosen = self.rng.choice(len(current_intm["rgbs"]), size=self.num_intermediate, replace=True)
+                    tmp_rgbs = [current_intm["rgbs"][i] for i in chosen]
+                    tmp_depths = [current_intm["depth"][i] for i in chosen]
+                    tmp_masks = [current_intm["depth_mask"][i] for i in chosen]
+                    tmp_intr = [current_intm["intrinsics"][i] for i in chosen]
+                    tmp_pose = [current_intm["pose"][i] for i in chosen]
+
+                # normalize / shape them and convert pose to relative-to-first
+                tmp_rgbs = [self.normalize(torch.stack([x], axis=0)) for x in tmp_rgbs]
+                tmp_depths = [torch.stack([x], axis=0) for x in tmp_depths]
+                tmp_masks = [torch.stack([x], axis=0) for x in tmp_masks]
+                tmp_intr = [torch.stack([x], axis=0)[0] for x in tmp_intr]
+
+                abs_pose = [torch.tensor(np.array([p])).float() for p in tmp_pose]
+                inv_repeat = [inv_pose_first.unsqueeze(0).repeat(1, 1, 1) for _ in abs_pose]
+                rel_pose = [torch.einsum("ijk, ikl -> ijl", invr, ap) for invr, ap in zip(inv_repeat, abs_pose)]
+
+                intms.append({
+                    "rgbs": tmp_rgbs,
+                    "depth": tmp_depths,
+                    "depth_mask": tmp_masks,
+                    "intrinsics": tmp_intr,
+                    "pose": rel_pose,
+                })
+
+                current_intm = {k: [] for k in intm_keys}
+
+            if len(rgbs) >= num_keyframes:
+                break
+
+        # cycle padding to fixed length
+        cur_len = len(rgbs)
+        if cur_len < num_keyframes:
+            pad_count = num_keyframes - cur_len
+            n = cur_len
+            if n > 1:
+                pad_indices = list(range(n - 2, -1, -1)) + list(range(1, n))
+            else:
+                pad_indices = [0]
+            for i in range(pad_count):
+                j = pad_indices[i % len(pad_indices)]
+                rgbs.append(rgbs[j])
+                depths.append(depths[j])
+                depth_masks.append(depth_masks[j])
+                intrinsics.append(intrinsics[j])
+                pose_c2w.append(pose_c2w[j])
+                intms.append(intms[j])
+
+        assert len(rgbs) == num_keyframes
+        assert len(pose_c2w) == num_keyframes
+        assert len(intms) == num_keyframes
+
+        # build render_poses relative to first keyframe
+        abs_camera_poses = [torch.tensor(np.array([c2w])).float() for c2w in pose_c2w]
+        inv_camera_poses = [inverse_transformation(c2w[0]) for c2w in abs_camera_poses]
+        inv0 = inv_camera_poses[0]
+        inv0_repeat = [inv0.unsqueeze(0).repeat(1, 1, 1) for _ in abs_camera_poses]
+        render_poses = [torch.einsum("ijk, ikl -> ijl", invr, ap) for invr, ap in zip(inv0_repeat, abs_camera_poses)]
+
+        ret = {
+            "render_poses": render_poses,
+            "rgbs": [self.normalize(torch.stack([rgb], axis=0)) for rgb in rgbs],
+            "abs_camera_poses": abs_camera_poses,
+            "intrinsics": [torch.stack([intr], axis=0)[0] for intr in intrinsics],
+            "near": self.z_near,
+            "far": self.z_far,
+            "idx": torch.tensor([index]),
+            "image_shape": torch.tensor([self.image_size, self.image_size, 3]),
+            "lang": self.lang_identity,
+            "intms": intms,
+        }
+
+        if self.use_depth_supervision:
+            ret.update({
+                "depth": [torch.stack([d], axis=0) for d in depths],
+                "depth_mask": [torch.stack([m], axis=0) for m in depth_masks],
+            })
+
+        assert len(ret["render_poses"]) == len(ret["rgbs"]) == len(ret["abs_camera_poses"]) == len(ret["intrinsics"])
+
+        return (
+            ret,
+            [torch.stack([rgb], axis=0) for rgb in rgbs],
+            len(ids),  # how many raw frames were scanned from start_idx to stop
+        )
+
+    def data_for_temporal(self, video_idx: int, frames_render: Union[int, List] = 20):
+        scene_idx = video_idx
+        rgb_path = self.rgb_paths[scene_idx]
+        depth_path = self.depth_paths[scene_idx]
+        pose_files = self.pose_lists[scene_idx]
+        # num_frames stored in init
+        num_frames = self.num_frames_per_scene[scene_idx]
+        print(f"Scene {scene_idx} has {num_frames} frames")
+        if num_frames < 2:
+            raise ValueError(f"Scene {scene_idx} has too few frames: {num_frames}")
+
+        # get a list of frame indices
+        if isinstance(frames_render, (int, np.integer)):
+            ids = select_random_sequence(self.rng, num_frames, int(frames_render))
+            start_idx = int(ids[0])
+            end_idx = int(ids[-1])
+        else:
+            start_idx = int(frames_render[0])
+            end_idx = int(frames_render[1])
+            assert 0 <= start_idx < num_frames and 0 <= end_idx < num_frames
+            ids = np.arange(start_idx, end_idx + 1)
+
+        rgbs = []
+        depths = []
+        depth_masks = []
+        pose_c2w = []
+        intrinsics = []
+
+        for fid in ids:
+            rgb, depth, depth_mask, cam_param = self.read_frame(rgb_path, depth_path, pose_files, int(fid))
+            rgbs.append(rgb)
+            if self.use_depth_supervision:
+                depths.append(depth)
+                depth_masks.append(depth_mask)
+            intrinsics.append(torch.tensor(np.array(cam_param.intrinsics)).float())
+            pose_c2w.append(cam_param.c2w_mat)
+
+        print(f"start_idx: {ids[0]}, end_idx: {ids[-1]}, num_frames_render: {len(ids)}")
+
+        abs_camera_poses = [torch.tensor(np.array([c2w])).float() for c2w in pose_c2w]
+
+        # render_poses: each pose expressed in the coordinate frame of the first pose
+        inv_camera_poses = [inverse_transformation(c2w[0]) for c2w in abs_camera_poses]
+        inv0 = inv_camera_poses[0]
+        inv0_repeat = [inv0.unsqueeze(0).repeat(1, 1, 1) for _ in abs_camera_poses]
+        render_poses = [
+            torch.einsum("ijk, ikl -> ijl", invr, ap)
+            for invr, ap in zip(inv0_repeat, abs_camera_poses)
+        ]
+
+        ret = {
+            "render_poses": render_poses,
+            "rgbs": [self.normalize(torch.stack([rgb], axis=0)) for rgb in rgbs],
+            "abs_camera_poses": abs_camera_poses,
+            "intrinsics": [torch.stack([intr], axis=0)[0] for intr in intrinsics],
+            "near": self.z_near,
+            "far": self.z_far,
+            "image_shape": torch.tensor([self.image_size, self.image_size, 3]),
+            "lang": self.lang_identity,
+        }
+
+        if self.use_depth_supervision:
+            ret.update({
+                "depth": [torch.stack([d], axis=0) for d in depths],
+                "depth_mask": [torch.stack([m], axis=0) for m in depth_masks],
+            })
+
+        assert len(render_poses) == len(ret["rgbs"]) == len(ret["abs_camera_poses"]) == len(ret["intrinsics"])
+        if self.use_depth_supervision:
+            assert len(ret["depth"]) == len(ret["depth_mask"]) == len(ret["rgbs"])
+
+        return (
+            ret,
+            [torch.stack([rgb], axis=0) for rgb in rgbs],  # raw (unnormalized) rgbs
+            start_idx,
+            end_idx,
+        )

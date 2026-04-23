@@ -1,0 +1,24 @@
+name: "hm3d_seq"
+overfit_to_index: null
+lindisp: false
+viz_type: "interpolation"
+depth_loss_weight: 1.
+depth_mask_loss_weight: 0.1
+depth_smooth_loss_weight: 0.002
+semantic_loss_weight: 0.1
+semantic_reg_loss_weight: 0.1
+lpips_loss_weight: 1.0
+repa_loss_weight: 5.0
+rgb_loss_weight: 1.
+intermediate_weight: 2.0
+vggt_alignment_loss_weight: 0.1
+raw_dataset_dir: ""
+camera:
+  fx: 0.5
+  fy: 0.5
+  cx: 0.5
+  cy: 0.5
+  near: 0.01
+  far: 10.0
+  h: 64
+  w: 64

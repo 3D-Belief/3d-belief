@@ -1,0 +1,79 @@
+defaults:
+  - backbone: u_vit3d_pose
+
+name: uvitmvsplat
+
+opacity_mapping:
+  initial: 0.0
+  final: 0.0
+  warm_up: 1
+
+num_depth_candidates: 128
+num_surfaces: 1
+
+gaussians_per_pixel: 1
+
+gaussian_adapter:
+  gaussian_scale_min: 0.5
+  gaussian_scale_max: 15.0
+  sh_degree: 4
+  feature_sh_degree: 0  # 2
+  n_feature_channels: 0 # 4
+
+d_feature: 128
+
+use_semantic: false
+use_semantic_ipe: false
+use_reg_model: false
+reg_model_name: dinov2_reg_small
+d_semantic: 512
+d_semantic_reg: 384
+
+visualizer:
+  num_samples: 8
+  min_resolution: 256
+  export_ply: false
+
+# params for multi-view depth predictor
+costvolume_unet_feat_dim: 128
+costvolume_unet_channel_mult: [1,1,1]
+costvolume_unet_attn_res: [4]
+depth_unet_feat_dim: 32
+depth_unet_attn_res: [16]
+depth_unet_channel_mult: [1, 1, 1]
+downscale_factor: 1
+depth_upscale_factor: null
+
+# below are ablation settings, keep them as false for default model
+wo_depth_refine: false         # Table 3: base
+wo_cost_volume: false          # Table 3: w/o cost volume
+wo_backbone_cross_attn: false  # Table 3: w/o cross-view attention
+wo_cost_volume_refine: false   # Table 3: w/o U-Net
+
+# additional cfgs
+legacy_2views: false
+grid_sample_disable_cudnn: false
+encoder_ckpt: null
+costvolume_nearest_n_views: null
+multiview_trans_nearest_n_views: null
+fit_ckpt: false
+
+use_transmittance: true
+use_depth_mask: false
+predict_depth_mask: False
+depth_predictor_time_embed: true
+depth_inference_min: 0.2
+depth_inference_max: 10.0
+
+use_image_condition: true
+use_camera_pose: true
+evolve_ctxt: false
+inference_mode: true
+
+render_features: false
+conditioning_type: ray_encoding
+
+freeze_depth_predictor: false
+
+filter_border_gaussians: false
+border_px: 3

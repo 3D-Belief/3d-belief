@@ -1,0 +1,20 @@
+name: dit3d_pose
+
+variant: full
+pos_emb_type: rope_3d
+input_size: [64, 64]
+patch_size: 2
+hidden_size: 384
+max_tokens: 16
+depth: 12
+num_heads: 6
+mlp_ratio: 4.0
+use_gradient_checkpointing: False
+conditioning_modeling: film # concat (concatenate conditioning to the video input across channels), film (FiLM conditioning)
+conditioning_type: ray_encoding
+conditioning_dim: 180
+use_causal_mask: False
+external_cond_dropout: 0.1 # probability of dropping a camera pose of each video during training 
+use_repa: False
+repa_z_dim: 768
+use_vggt_alignment: False

@@ -1,0 +1,9 @@
+[submodule "third_party/spoc"]
+	path = third_party/spoc
+	url = https://github.com/3D-Belief/spoc.git
+[submodule "third_party/dfot"]
+	path = third_party/dfot
+	url = https://github.com/3D-Belief/dfot.git
+[submodule "third_party/nwm"]
+	path = third_party/nwm
+	url = https://github.com/3D-Belief/nwm.git
