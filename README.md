@@ -9,7 +9,7 @@
 ## 3D-Belief
 
 
-We propose **3D-Belief**, a generative 3D world model that predicts unseen regions in an explicit, actionable 3D representation from partial observations and updates this belief online as new observations arrive. It enables embodied agents to reason about the 3D world under partial observability and make sequential decisions based on up-to-date beliefs. 3D-Belief instantiates four key capabilities that a generative world model must have to support embodied decision-making:
+We propose **3D-Belief**, a generative 3D world model that predicts unseen regions in an explicit, actionable 3D representation from partial observations and updates this belief online as new observations arrive. It enables embodied agents to reason about the 3D world under partial observability and make sequential decisions based on up-to-date beliefs.
 
 - **Multi-hypothesis Belief Sampling**: generates diverse 3D scene completions from partial observations, explicitly representing uncertainty over unobserved regions so the agent can plan against multiple possible world states.
 - **Sequential Belief Updating**: refines the 3D belief online at each time step as new observations arrive, ensuring the agent always acts on the most current and consistent world representation.
