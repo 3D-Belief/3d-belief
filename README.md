@@ -1,5 +1,7 @@
 # 3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning
 
+![3D-Belief Overview](assets/figure_intro.png)
+
 <div align="center">
 
 <a href="https://3d-belief.github.io" target="_blank" rel="noopener noreferrer">
@@ -13,8 +15,6 @@
 </a>
 
 </div>
-
-![3D-Belief Overview](assets/figure_intro.png)
 
 ## 3D-Belief
 
