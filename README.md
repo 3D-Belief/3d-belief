@@ -1,4 +1,4 @@
-# 3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning
+<h1 align="center"><a href="https://3d-belief.github.io">3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning</a></h1>
 
 ![3D-Belief Overview](assets/figure_intro.png)
 
