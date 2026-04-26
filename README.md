@@ -177,7 +177,7 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 │   ├── config/            # Model configs
 │   └── data_io/           # Data loading utilities
 ├── wm_baselines/          # Baseline world model agents
-│   ├── agent/             # Agent implementations (VLM, frontier, DFOT-VGGT)
+│   ├── agent/             # Agent implementations
 │   ├── world_model/       # World model wrappers
 │   ├── planner/           # Planning modules
 │   ├── task_manager/      # Task management
@@ -185,7 +185,7 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 ├── scripts/
 │   ├── rollouts/          # object_searching.sh, reasoning.sh
 │   └── calculate_metrics/ # Per-task metric evaluation scripts
-└── third_party/           # Submodules: dfot, spoc
+└── third_party/           # Submodules
 ```
 
 ## Citation
