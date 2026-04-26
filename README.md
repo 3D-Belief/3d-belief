@@ -19,6 +19,7 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 - **Spatially Consistent Scene Memory**: maintains a coherent 3D memory that preserves previously observed regions accurately while integrating new information, avoiding drift or contradiction across time.
 - **Semantically Informed Future Prediction**: leverages semantic queries to guide prediction in unobserved regions, enabling goal-directed imagination about where relevant objects are likely to be found.
 
+## Quick Links
 
 - [Installation](#installation)
   - [Environment Setup](#environment-setup)
