@@ -4,7 +4,7 @@
 [![Paper](https://img.shields.io/badge/Paper-PDF-red?style=flat-square)](https://3d-belief.github.io/static/3D_Belief.pdf)
 [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Models%20%26%20Data-yellow?style=flat-square)](https://huggingface.co/datasets/SCAI-JHU/3d-belief)
 
-![3D-Belief Overview](assets/readme/figure_intro.png)
+![3D-Belief Overview](assets/figure_intro.png)
 
 ## 3D-Belief
 
