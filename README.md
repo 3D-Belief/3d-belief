@@ -1,27 +1,54 @@
-# 3D Belief
+# 3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning
 
-We propose 3D-Belief, a generative 3D world model that builds and updates 3D scene beliefs online to boost embodied agent performance in reasoning and planning tasks.
+[![Project Page](https://img.shields.io/badge/Project-Page-blue?style=flat-square)](https://3d-belief.github.io)
+[![Paper](https://img.shields.io/badge/Paper-PDF-red?style=flat-square)](https://3d-belief.github.io/static/3D_Belief.pdf)
+[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Models%20%26%20Data-yellow?style=flat-square)](https://huggingface.co/datasets/SCAI-JHU/3d-belief)
 
-## Usage
+---
 
-### Environment Setup 
+![3D-Belief Overview](assets/readme/figure_intro.png)
+
+*3D-Belief maintains K explicit 3D world hypotheses updated online from partial observations, enabling (A) multi-hypothesis belief sampling, (B) sequential belief updating, (C) spatially consistent scene memory, and (D) semantically informed prediction — the key capabilities needed for embodied reasoning and planning under partial observability.*
+
+---
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Evaluation](#evaluation)
+  - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
+  - [3D-CORE Reasoning](#3d-core-reasoning)
+- [Repository Structure](#repository-structure)
+- [Citation](#citation)
+
+
+## News
+
+- **[2026-04]** Code, pretrained checkpoints, and processed data released on [HuggingFace](https://huggingface.co/datasets/SCAI-JHU/3d-belief).
+- **[2026-04]** 3D-CORE benchmark released — covering object completion, room completion, and object permanence tasks.
+- **[2026-04]** Project website and paper live at [3d-belief.github.io](https://3d-belief.github.io).
+
+---
+
+## Installation
+
+### Environment Setup
 
 ```bash
 git clone https://github.com/3D-Belief/3d-belief
 cd 3d-belief
 git submodule update --init --recursive
-conda create -n 3d-belief python=3.10 -y 
+conda create -n 3d-belief python=3.10 -y
 conda activate 3d-belief
 conda config --add channels conda-forge
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
-# Install the one matches your cuda version
+# Install the one matching your CUDA version
 conda install -c nvidia cuda=12.1
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-# Install the one matches your cuda version
+# Install PyTorch matching your CUDA version
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
 conda install vulkan-tools
@@ -29,7 +56,7 @@ pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
 
-### Install Third-Party Packages
+### Third-Party Packages
 
 ```bash
 cd third_party/dfot
@@ -42,25 +69,25 @@ python -m scripts.download_training_data --save_dir ../../data --types all
 python -m objathor.dataset.download_annotations --version 2023_07_28 --path ../../data
 python -m objathor.dataset.download_assets --version 2023_07_28 --path ../../data
 python -m scripts.download_objaverse_houses --save_dir ../../data --subset val
-
 ```
 
+---
 
-### Download Data and Pretrained Checkpoints
-From the project root directory, open a terminal and log in to your Hugging Face account.
+## Data & Checkpoints
+
+Log in to your HuggingFace account from the project root:
 
 ```bash
 hf auth login
 ```
-Enter your password. You can now download the assets.
 
-The following commands download all the checkpoints under a created checkpoints/ directory.
+Download all pretrained checkpoints:
 
 ```bash
-hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "checkpoints/**" 
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "checkpoints/**"
 ```
 
-Then download and set up the assets under data/ directory.
+Download and set up evaluation data:
 
 ```bash
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/**"
@@ -69,58 +96,123 @@ unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_v
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
 
-### Benchmark Path Planning
-To benchmark the performance of 3d-Belief and other baseline models on the object searching task, you need to set up the paths first at `wm_baselines/config/paths.yaml`.
+---
 
-Then, if you want to run VLM-based models, export your keys:
+## Quick Start
+
+First, set up the benchmark paths at `wm_baselines/config/paths.yaml`.
+
+**Run object navigation (single model):**
+
+```bash
+bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
+```
+
+**Run 3D-CORE reasoning (single task/model pair):**
+
+```bash
+bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
+```
+
+---
+
+## Evaluation
+
+### Object Navigation (AI2-THOR)
+
+Configure paths at `wm_baselines/config/paths.yaml`. For VLM-based models, export your API keys:
+
 ```bash
 export OPENAI_API_KEY=...
 export GOOGLE_API_KEY=...
 ```
 
-Now, make sure that you are running the code from the project root directory, and
-run one model (`run_obj_searching_single`):
+Run a single model:
+
 ```bash
 bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
 ```
-You can replace the model key with others such as:
-`gpt_vlm_agent`, `gemini_vlm_agent`, `qwen3_vlm_agent`, `vggt_frontier`,
-`vggt_gpt_vlm_goal_selector`, `dfot_vggt_gpt_vlm_goal_selector`
 
-To run all the models sequentially:
+Available model keys: `gpt_vlm_agent`, `gemini_vlm_agent`, `qwen3_vlm_agent`, `vggt_frontier`, `vggt_gpt_vlm_goal_selector`, `dfot_vggt_gpt_vlm_goal_selector`
+
+Run all models sequentially (single GPU; may take a while):
+
 ```bash
 bash scripts/rollouts/object_searching_single.sh
 ```
-Since all the models run on a single GPU, this script may take a quite a while.
 
-Then, after a model rollout is done, you can evaluate the model's performance at:
+Evaluate predicted trajectories:
+
 ```bash
 python scripts/calculate_metrics/obj_searching_metrics.py <path_to_predicted_trajectories>
 ```
 
-### Benchmark 3D-CORE
+### 3D-CORE Reasoning
 
 3D-CORE includes three tasks:
-- object completion (`obj_comp_*`)
-- room completion (`room_comp_*`)
-- object permanence (`obj_perm_*`)
+- **Object Completion** (`obj_comp_*`)
+- **Room Completion** (`room_comp_*`)
+- **Object Permanence** (`obj_perm_*`)
 
-Run one task/model pair with:
+Run one task/model pair:
+
 ```bash
 bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
 ```
+
 Available agent keys:
 - `obj_comp_3d_belief`, `room_comp_3d_belief`, `obj_perm_3d_belief`
 - `obj_comp_dfot_vggt`, `room_comp_dfot_vggt`, `obj_perm_dfot_vggt`
 
-We use Gemini-2.5-Flash in evaluation, so make sure to export your key accordingly:
+We use Gemini-2.5-Flash for evaluation — export your key:
+
 ```bash
-export GOOGLE_API_KEY=...
+export GEMINI_API_KEY=...
 ```
 
-Evaluate each reasoning task with:
+Evaluate each task:
+
 ```bash
 python scripts/calculate_metrics/obj_comp_metrics.py <path_to_predicted_trajectories>
 python scripts/calculate_metrics/room_comp_metrics.py <path_to_predicted_trajectories>
 python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajectories>
+```
+
+---
+
+## Repository Structure
+
+```
+3d-belief/
+├── splat_belief/          # 3D-Belief model
+│   ├── diffusion/         # Diffusion model for 3D scene generation
+│   ├── splat/             # 3D Gaussian Splat scene representation
+│   ├── embodied/          # Embodied agent interface
+│   ├── config/            # Model configs
+│   └── data_io/           # Data loading utilities
+├── wm_baselines/          # Baseline world model agents
+│   ├── agent/             # Agent implementations (VLM, frontier, DFOT-VGGT)
+│   ├── world_model/       # World model wrappers
+│   ├── planner/           # Planning modules
+│   ├── task_manager/      # Task management
+│   └── config/            # Baseline configs including paths.yaml
+├── scripts/
+│   ├── rollouts/          # object_searching.sh, reasoning.sh
+│   └── calculate_metrics/ # Per-task metric evaluation scripts
+└── third_party/           # Submodules: dfot, spoc
+```
+
+---
+
+## Citation
+
+If you find 3D-Belief useful in your research, please cite:
+
+```bibtex
+@misc{yin20263dbelief,
+  title={3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning},
+  author={Yin, Yifan and Wen, Zehao and Chen, Jieneng and Zheng, Zehan and Dai, Nanru and Shi, Haojun and Ye, Suyu and Huang, Aydan and Zhang, Zheyuan and Yuille, Alan and Xie, Jianwen and Tewari, Ayush and Shu, Tianmin},
+  year={2026},
+  url={https://3d-belief.github.io/}
+}
 ```
