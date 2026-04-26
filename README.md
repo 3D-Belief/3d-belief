@@ -1,4 +1,4 @@
-<h1 align="center"><a href="https://3d-belief.github.io"><img src="assets/logo.png" height="50" style="vertical-align:middle;margin-right:8px"/>3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning</a></h1>
+<h1 align="center"><a href="https://3d-belief.github.io">3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning</a></h1>
 
 <div align="center">
 
