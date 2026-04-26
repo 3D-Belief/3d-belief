@@ -111,8 +111,8 @@ bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
 Configure paths at `wm_baselines/config/paths.yaml`. For VLM-based models, export your API keys:
 
 ```bash
-export OPENAI_API_KEY=...
-export GOOGLE_API_KEY=...
+export OPENAI_API_KEY=your_openai_api_key
+export GEMINI_API_KEY=your_gemini_api_key
 ```
 
 Run a single model:
@@ -155,7 +155,7 @@ Available agent keys:
 We use Gemini-2.5-Flash for evaluation — export your key:
 
 ```bash
-export GEMINI_API_KEY=...
+export GEMINI_API_KEY=your_gemini_api_key
 ```
 
 Evaluate each task:
