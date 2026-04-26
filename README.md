@@ -12,6 +12,16 @@
 
 ## 3D-Belief
 
+- [Installation](#installation)
+  - [Environment Setup](#environment-setup)
+  - [Third-Party Packages](#third-party-packages)
+- [Data & Checkpoints](#data--checkpoints)
+- [Quick Start](#quick-start)
+- [Evaluation](#evaluation)
+  - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
+  - [3D-CORE Reasoning](#3d-core-reasoning)
+- [Repository Structure](#repository-structure)
+- [Citation](#citation)
 
 We propose **3D-Belief**, a generative 3D world model that predicts unseen regions in an explicit, actionable 3D representation from partial observations and updates this belief online as new observations arrive. It enables embodied agents to reason about the 3D world under partial observability and make sequential decisions based on up-to-date beliefs.
 
