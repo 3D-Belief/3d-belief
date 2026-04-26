@@ -19,6 +19,12 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 - **Spatially Consistent Scene Memory**: maintains a coherent 3D memory that preserves previously observed regions accurately while integrating new information, avoiding drift or contradiction across time.
 - **Semantically Informed Future Prediction**: leverages semantic queries to guide prediction in unobserved regions, enabling goal-directed imagination about where relevant objects are likely to be found.
 
+## 🎉 News
+
+- **[2026-04]** Code, pretrained checkpoints, and processed data released on [HuggingFace](https://huggingface.co/datasets/SCAI-JHU/3d-belief).
+- **[2026-04]** 3D-CORE benchmark released — covering object completion, room completion, and object permanence tasks.
+- **[2026-04]** Project website and paper live at [3d-belief.github.io](https://3d-belief.github.io).
+
 ## Quick Links
 
 - [Installation](#installation)
@@ -30,13 +36,6 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
   - [3D-CORE Reasoning](#3d-core-reasoning)
 - [Repository Structure](#repository-structure)
 - [Citation](#citation)
-
-## 🎉 News
-
-- **[2026-04]** Code, pretrained checkpoints, and processed data released on [HuggingFace](https://huggingface.co/datasets/SCAI-JHU/3d-belief).
-- **[2026-04]** 3D-CORE benchmark released — covering object completion, room completion, and object permanence tasks.
-- **[2026-04]** Project website and paper live at [3d-belief.github.io](https://3d-belief.github.io).
-
 
 ## Installation
 
