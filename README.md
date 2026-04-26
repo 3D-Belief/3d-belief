@@ -1,8 +1,18 @@
 # 3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning
 
-[![Project Page](https://img.shields.io/badge/Project-Page-blue?style=flat-square)](https://3d-belief.github.io)
-[![Paper](https://img.shields.io/badge/Paper-PDF-red?style=flat-square)](https://3d-belief.github.io/static/3D_Belief.pdf)
-[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Models%20%26%20Data-yellow?style=flat-square)](https://huggingface.co/datasets/SCAI-JHU/3d-belief)
+<div align="center">
+
+<a href="https://3d-belief.github.io" target="_blank" rel="noopener noreferrer">
+  <img src="https://img.shields.io/badge/Project_Page-blue" alt="Project Page">
+</a>
+<a href="https://3d-belief.github.io/static/3D_Belief.pdf" target="_blank" rel="noopener noreferrer">
+  <img src="https://img.shields.io/badge/Paper-PDF-red" alt="Paper PDF">
+</a>
+<a href="https://huggingface.co/datasets/SCAI-JHU/3d-belief">
+  <img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models%20%26%20Data-yellow" alt="HuggingFace">
+</a>
+
+</div>
 
 ![3D-Belief Overview](assets/figure_intro.png)
 
