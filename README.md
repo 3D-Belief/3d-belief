@@ -16,7 +16,6 @@
   - [Environment Setup](#environment-setup)
   - [Third-Party Packages](#third-party-packages)
 - [Data & Checkpoints](#data--checkpoints)
-- [Quick Start](#quick-start)
 - [Evaluation](#evaluation)
   - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
   - [3D-CORE Reasoning](#3d-core-reasoning)
@@ -100,22 +99,6 @@ hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "dat
 # Unzipping may take several minutes
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
-```
-
-## Quick Start
-
-First, set up the benchmark paths at `wm_baselines/config/paths.yaml`.
-
-**Run object navigation (single model):**
-
-```bash
-bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
-```
-
-**Run 3D-CORE reasoning (single task/model pair):**
-
-```bash
-bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
 ```
 
 ## Evaluation
