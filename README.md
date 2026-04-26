@@ -4,8 +4,6 @@
 [![Paper](https://img.shields.io/badge/Paper-PDF-red?style=flat-square)](https://3d-belief.github.io/static/3D_Belief.pdf)
 [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Models%20%26%20Data-yellow?style=flat-square)](https://huggingface.co/datasets/SCAI-JHU/3d-belief)
 
----
-
 ![3D-Belief Overview](assets/readme/figure_intro.png)
 
 ## 3D-Belief
@@ -24,7 +22,6 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 - **[2026-04]** 3D-CORE benchmark released — covering object completion, room completion, and object permanence tasks.
 - **[2026-04]** Project website and paper live at [3d-belief.github.io](https://3d-belief.github.io).
 
----
 
 ## Installation
 
@@ -68,8 +65,6 @@ python -m objathor.dataset.download_assets --version 2023_07_28 --path ../../dat
 python -m scripts.download_objaverse_houses --save_dir ../../data --subset val
 ```
 
----
-
 ## Data & Checkpoints
 
 Log in to your HuggingFace account from the project root:
@@ -93,8 +88,6 @@ unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_v
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
 
----
-
 ## Quick Start
 
 First, set up the benchmark paths at `wm_baselines/config/paths.yaml`.
@@ -110,8 +103,6 @@ bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
 ```bash
 bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
 ```
-
----
 
 ## Evaluation
 
@@ -175,8 +166,6 @@ python scripts/calculate_metrics/room_comp_metrics.py <path_to_predicted_traject
 python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajectories>
 ```
 
----
-
 ## Repository Structure
 
 ```
@@ -198,8 +187,6 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 │   └── calculate_metrics/ # Per-task metric evaluation scripts
 └── third_party/           # Submodules: dfot, spoc
 ```
-
----
 
 ## Citation
 
