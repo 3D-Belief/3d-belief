@@ -33,6 +33,7 @@ beartype
 colorama
 colorspacious
 moviepy
+git+https://github.com/facebookresearch/vggt.git
 git+https://github.com/yifanyin11/latent-gaussian-rasterization.git
 dacite
 e3nn

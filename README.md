@@ -103,6 +103,8 @@ unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 
 ## Evaluation
 
+To evaluate on 3D-Core and the short episodes of SPOC, please follow the instructions below. See [Example Evaluation Results](RESULTS.md) for a reference of the results produced.
+
 ### Object Navigation (AI2-THOR)
 
 Configure paths at `wm_baselines/config/paths.yaml`. For VLM-based models, export your API keys:
