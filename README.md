@@ -163,19 +163,21 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 ```
 3d-belief/
 ├── splat_belief/          # 3D-Belief model
-│   ├── diffusion/         # Diffusion model for 3D scene generation
+│   ├── diffusion/         # Diffusion model wrapper
 │   ├── splat/             # 3D Gaussian Splat scene representation
-│   ├── embodied/          # Embodied agent interface
+│   ├── embodied/          # Embodied related tools
 │   ├── config/            # Model configs
 │   └── data_io/           # Data loading utilities
 ├── wm_baselines/          # Baseline world model agents
 │   ├── agent/             # Agent implementations
 │   ├── world_model/       # World model wrappers
-│   ├── planner/           # Planning modules
+│   ├── planner/           # Motion planning modules
 │   ├── task_manager/      # Task management
+│   ├── workspace/         # Evaluation entry points
 │   └── config/            # Baseline configs including paths.yaml
 ├── scripts/
-│   ├── rollouts/          # object_searching.sh, reasoning.sh
+│   ├── training/          # Training and vision evaluation scripts
+│   ├── rollouts/          # Embodied evaluation scripts
 │   └── calculate_metrics/ # Per-task metric evaluation scripts
 └── third_party/           # Submodules
 ```
