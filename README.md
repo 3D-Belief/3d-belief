@@ -31,7 +31,7 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
   - [Environment Setup](#environment-setup)
   - [Third-Party Packages](#third-party-packages)
 - [Data & Checkpoints](#data--checkpoints)
-- [Configure Paths for Your Machine](#configure-paths-for-your-machine)
+- [Configure Paths](#configure-paths)
 - [Evaluation](#evaluation)
   - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
   - [3D Contextual Reasoning (3D-CORE)](#3d-contextual-reasoning-3d-core)
@@ -102,7 +102,7 @@ unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_v
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
 
-## Configure Paths for Your Machine
+## Configure Paths
 
 A few config files contain absolute paths that were left over from the authors' development environment. **Edit these to point at your local data and checkpoints before running anything**:
 
