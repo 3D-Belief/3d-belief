@@ -33,7 +33,7 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 - [Data & Checkpoints](#data--checkpoints)
 - [Evaluation](#evaluation)
   - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
-  - [3D-CORE Reasoning](#3d-core-reasoning)
+  - [3D Contextual Reasoning (3D-CORE)](#3d-contextual-reasoning-3d-core)
 - [Repository Structure](#repository-structure)
 - [Citation](#citation)
 
@@ -133,7 +133,7 @@ Evaluate predicted trajectories:
 python scripts/calculate_metrics/obj_searching_metrics.py <path_to_predicted_trajectories>
 ```
 
-### 3D-CORE Reasoning
+### 3D Contextual Reasoning (3D-CORE)
 
 3D-CORE includes three tasks:
 - **Object Completion** (`obj_comp_*`)
