@@ -104,13 +104,7 @@ unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 
 ## Configure Paths
 
-A few config files contain absolute paths that were left over from the authors' development environment. **Edit these to point at your local data and checkpoints before running anything**:
-
-- [`wm_baselines/config/paths.yaml`](wm_baselines/config/paths.yaml) — central paths config used by every baseline. Most fields under `paths.episode_roots` and `paths.checkpoints` should point at the layout produced by the [Data & Checkpoints](#data--checkpoints) step (`data/...` and `checkpoints/...`). The file's header lists which workspace each entry feeds into.
-- [`splat_belief/config/dataset/composite.yaml`](splat_belief/config/dataset/composite.yaml) — `root_dir` for `spoc` and `dl3dv` datasets. Update if you train your own model.
-- [`splat_belief/config/config.yaml`](splat_belief/config/config.yaml) — `semantic_config`. Update if you train your own model with a custom semantic mapping.
-
-The submodule configs under `third_party/dfot`, `third_party/nwm`, and `third_party/spoc` also contain machine-specific paths and a WandB `entity` placeholder; edit those to match your environment if you intend to run training or fine-tuning inside the submodules.
+**Configure paths to point at your local data and checkpoints before running anything**. [`wm_baselines/config/paths.yaml`](wm_baselines/config/paths.yaml) contains central paths config used by every baseline. Most fields under `paths.episode_roots` and `paths.checkpoints` should point at the layout produced by the [Data & Checkpoints](#data--checkpoints) step (`data/...` and `checkpoints/...`). The file's header lists which workspace each entry feeds into.
 
 ## Evaluation
 
