@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_vggt_gemini_%j.out
-#SBATCH --error=/scratch/tshu2/zwen19/3dbelief/3d-belief/wm_baselines/output/_logs/obj_search_vggt_gemini_%j.err
+#SBATCH --output=wm_baselines/output/_logs/obj_search_vggt_gemini_%j.out
+#SBATCH --error=wm_baselines/output/_logs/obj_search_vggt_gemini_%j.err
 
 set -euo pipefail
 

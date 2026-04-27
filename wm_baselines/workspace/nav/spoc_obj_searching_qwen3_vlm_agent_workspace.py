@@ -25,10 +25,8 @@ ROOT_DIR = str(Path(__file__).parent.parent.parent.parent)
 sys.path.append(ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-import sys
-sys.path.insert(0, "/scratch/Workspace2/hshi33/spoc-robot-training")
+sys.path.insert(0, os.path.join(ROOT_DIR, "third_party", "spoc"))
 from environment.stretch_controller import StretchController
-sys.path.insert(0, "/scratch/Workspace2/hshi33/spoc")
 from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
 from spoc_utils.constants.objaverse_data_dirs import OBJAVERSE_HOUSES_DIR
 from wm_baselines.workspace.base_workspace import BaseWorkspace

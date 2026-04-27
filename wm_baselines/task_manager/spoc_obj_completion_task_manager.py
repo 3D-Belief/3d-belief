@@ -340,9 +340,6 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
         bbox_image = bbox_image.astype(np.uint8)
         # crop the bbox region
         bbox_crop = bbox_image[y_min:y_max, x_min:x_max]
-        # # DEBUG: save bbox image
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/bbox_image.png", bbox_image)
-        # cv2.imwrite("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/bbox_image_crop.png", bbox_crop)
         # calculate 3D point cloud of the target object
         rgb = np.array(self.observations[-1]['rgb'])
         depth = np.array(self.observations[-1]['depth'])
@@ -361,9 +358,7 @@ class SpocObjCompletionTaskManager(BaseTaskManager):
         target_pcd.translate(-ctr)
         # extract target 3D bounding box from target pcd
         box_aabb = box3d_from_aabb(target_pcd)
-        
-        # DEBUG: save target_pcd
-        # o3d.io.write_point_cloud("/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/reasoning/target_pcd.ply", target_pcd)
+
         ret = {
             "gt_bbox_2d": bbox_2d,
             "gt_bbox_image": bbox_crop,

@@ -94,12 +94,6 @@ class VGGTModel(BaseWorldModel):
             self.resample_pcd = False
             # Run VGGT inference to get scene point cloud
             self.scene_pcd, exe_time = self._inference_pcd()
-            ## DEBUG
-            color, depth = self.render_image(pose_map)
-            # save color
-            # imageio.imwrite(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/scene_color_{self.step}.png", color)
-            # save pcd as .ply
-            # o3d.io.write_point_cloud(f"/home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/wm_baselines/outputs/debug/scene_{self.step}.ply", self.scene_pcd)
             self._metrics["model_inference_time"] += exe_time
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
             resolution = self.obs_occupancy.resolution
