@@ -47,7 +47,7 @@ cd 3d-belief
 git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 -y
 conda activate 3d-belief
-conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 moviepy swig
+conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 swig -y
 # Install the one matching your CUDA version
 conda install -c nvidia cuda=12.1
 
