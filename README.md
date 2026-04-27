@@ -113,19 +113,13 @@ export OPENAI_API_KEY=your_openai_api_key
 export GEMINI_API_KEY=your_gemini_api_key
 ```
 
-Run a single model:
+Run evaluation for a selected model:
 
 ```bash
 bash scripts/rollouts/object_searching.sh 3d_belief_semantic_goal_selector
 ```
 
 Available model keys: `gpt_vlm_agent`, `gemini_vlm_agent`, `qwen3_vlm_agent`, `vggt_frontier`, `vggt_gpt_vlm_goal_selector`, `dfot_vggt_gpt_vlm_goal_selector`
-
-Run all models sequentially (single GPU; may take a while):
-
-```bash
-bash scripts/rollouts/object_searching_single.sh
-```
 
 Evaluate predicted trajectories:
 
