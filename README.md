@@ -182,7 +182,6 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 │   ├── workspace/         # Evaluation entry points
 │   └── config/            # Baseline configs including paths.yaml
 ├── scripts/
-│   ├── training/          # Training and vision evaluation scripts
 │   ├── rollouts/          # Embodied evaluation scripts
 │   └── calculate_metrics/ # Per-task metric evaluation scripts
 └── third_party/           # Submodules
