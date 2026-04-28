@@ -108,7 +108,7 @@ unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 
 ## Evaluation
 
-To evaluate on 3D-Core and the short episodes of SPOC, please follow the instructions below. See [Example Evaluation Results](RESULTS.md) for a reference of the results produced.
+To evaluate on 3D-CORE and the short SPOC object-navigation episodes, please follow the instructions below. See [Example Evaluation Results](RESULTS.md) for a reference of the results produced.
 
 ### Object Navigation (AI2-THOR)
 
