@@ -64,7 +64,7 @@ pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
 
-### Third-Party Packages
+### Third-Party Packages and Assets
 
 ```bash
 cd third_party/dfot
