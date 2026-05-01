@@ -46,8 +46,8 @@ class SPOCDataset(Dataset):
     context_min_distance: int
     context_max_distance: int
 
-    z_near: float = 0.01
-    z_far: float = 50.0
+    z_near: float = 0.2
+    z_far: float = 20.0
     z_filter: float = 19.0
     image_size: int = 64
     background_color: torch.tensor = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
