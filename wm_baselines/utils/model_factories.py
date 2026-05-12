@@ -23,6 +23,14 @@ def build_splat_model(
     use_semantic: Optional[bool] = None,
     inference_mode: Optional[str] = None,
     refiner: Optional[Union[Dict[str, Any], DictConfig]] = None,
+    obj_permanence_mode: str = "none",
+    obj_permanence_state_t_min: int = 1,
+    obj_permanence_mask_blur: int = 5,
+    obj_permanence_mask_threshold: float = 0.5,
+    obj_permanence_erode_kernel: int = 0,
+    dps_guidance_scale: float = 1.0,
+    dps_pos_weight: float = 1.0,
+    dps_opacity_weight: float = 0.5,
 ) -> Any:
 
     enc = encoder_visual_pair["encoder"]
@@ -52,6 +60,14 @@ def build_splat_model(
         clip_model=clip_model,
         dino_model=dino_model,
         refiner_cfg=refiner_cfg,
+        obj_permanence_mode=obj_permanence_mode,
+        obj_permanence_state_t_min=obj_permanence_state_t_min,
+        obj_permanence_mask_blur=obj_permanence_mask_blur,
+        obj_permanence_mask_threshold=obj_permanence_mask_threshold,
+        obj_permanence_erode_kernel=obj_permanence_erode_kernel,
+        dps_guidance_scale=dps_guidance_scale,
+        dps_pos_weight=dps_pos_weight,
+        dps_opacity_weight=dps_opacity_weight,
     ).cuda()
 
 def get_encoder_pair(cfg) -> DictConfig:
@@ -90,7 +106,10 @@ def build_semantic_bundle(
 
     dino_model = None
     if reg_model.get("enabled", False):
-        dino_model = build_2d_model(model_name=reg_model["name"]).to(reg_model.get("device", "cuda"))
+        dino_model = build_2d_model(
+            model_name=reg_model["name"],
+            weights_path=reg_model.get("weights_path", reg_model.get("weights")),
+        ).to(reg_model.get("device", "cuda"))
 
     semantic_mapper = SemanticMapper(
         config_path=semantic_config,
@@ -124,7 +143,7 @@ def build_diffusion(model: Any, dataset_cfg: Dict[str, Any], **kwargs):
         model=model,
         image_size=image_size,
         timesteps=kwargs.get("timesteps", 1000),
-        sampling_timesteps=kwargs.get("sampling_steps", 10),
+        sampling_timesteps=kwargs.get("sampling_steps", 15),
         loss_type=kwargs.get("loss_type", "l2"),
         objective=kwargs.get("objective", "pred_x0"),
         beta_schedule=kwargs.get("beta_schedule", "cosine"),
@@ -133,4 +152,5 @@ def build_diffusion(model: Any, dataset_cfg: Dict[str, Any], **kwargs):
         clean_target=kwargs.get("clean_target", False),
         use_semantic=getattr(model, "use_semantic", False),
         use_reg_model=getattr(model, "dino_model", None) is not None,
+        sampler=kwargs.get("sampler", "dpm_solver_pp"),
     ).cuda()

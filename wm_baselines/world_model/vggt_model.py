@@ -94,11 +94,22 @@ class VGGTModel(BaseWorldModel):
             self.resample_pcd = False
             # Run VGGT inference to get scene point cloud
             self.scene_pcd, exe_time = self._inference_pcd()
+            ## DEBUG
+            color, depth = self.render_image(pose_map)
+            # save color
+            # imageio.imwrite(f"wm_baselines/output/debug/scene_color_{self.step}.png", color)
+            # save pcd as .ply
+            # o3d.io.write_point_cloud(f"wm_baselines/output/debug/scene_{self.step}.ply", self.scene_pcd)
             self._metrics["model_inference_time"] += exe_time
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
-            resolution = self.obs_occupancy.resolution
-            obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+            self.obs_occupancy = OccupancyMap(
+                resolution=self.obs_occupancy.resolution,
+                obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+                ceiling_height=self.obs_occupancy.ceiling_height,
+                max_range=self.obs_occupancy.max_range,
+                free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+                seed=self._seed,
+            )
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
                 position, 
@@ -120,9 +131,14 @@ class VGGTModel(BaseWorldModel):
 
     def reset(self):
         """Reset the occupancy maps."""
-        resolution = self.obs_occupancy.resolution
-        obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+        self.obs_occupancy = OccupancyMap(
+            resolution=self.obs_occupancy.resolution,
+            obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+            ceiling_height=self.obs_occupancy.ceiling_height,
+            max_range=self.obs_occupancy.max_range,
+            free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+            seed=self._seed,
+        )
         self.initial_location = {}
         self.step = -1
         self._metrics = {

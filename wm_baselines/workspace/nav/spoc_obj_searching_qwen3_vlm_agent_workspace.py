@@ -25,7 +25,6 @@ ROOT_DIR = str(Path(__file__).parent.parent.parent.parent)
 sys.path.append(ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-sys.path.insert(0, os.path.join(ROOT_DIR, "third_party", "spoc"))
 from environment.stretch_controller import StretchController
 from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
 from spoc_utils.constants.objaverse_data_dirs import OBJAVERSE_HOUSES_DIR

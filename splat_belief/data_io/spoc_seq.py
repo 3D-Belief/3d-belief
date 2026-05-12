@@ -1,18 +1,21 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import numpy as np
 import time
 import torch
 import torch.nn.functional as F
-import torchvision.transforms as tf
 from torch.utils.data import Dataset
 from numpy.random import default_rng
 import cv2
 
 from splat_belief.utils.vision_utils import *
-from splat_belief.splat.layers import T5Encoder
+
+if TYPE_CHECKING:
+    from splat_belief.splat.layers import T5Encoder
+else:
+    T5Encoder = object
 
 try:
     from typing import Literal
@@ -20,6 +23,14 @@ except ImportError:
     from typing_extensions import Literal
 
 Stage = Literal["train", "test", "unit", "one", "one_test"]
+
+
+class ToTensor:
+    def __call__(self, image):
+        arr = np.asarray(image, dtype=np.float32)
+        if arr.ndim == 2:
+            arr = arr[..., None]
+        return torch.from_numpy(arr).permute(2, 0, 1) / 255.0
 
 
 class Camera(object):
@@ -84,7 +95,7 @@ class SPOCDatasetSeq(Dataset):
         if max_scenes is not None:
             scene_path_list = scene_path_list[:max_scenes]
         self.stage = stage
-        self.to_tensor = tf.ToTensor()
+        self.to_tensor = ToTensor()
         self.rng = default_rng()
         self.global_seed = 42
         self.normalize = normalize_to_neg_one_to_one

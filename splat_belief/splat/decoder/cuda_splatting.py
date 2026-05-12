@@ -67,87 +67,105 @@ def render_cuda(
     assert gaussian_color_sh_coefficients is not None or gaussian_feature_sh_coefficients is not None
     assert use_sh or gaussian_color_sh_coefficients.shape[-1] == 1
 
-    # Make sure everything is in a range where numerical issues don't appear.
-    if scale_invariant:
-        scale = 1 / near
-        extrinsics = extrinsics.clone()
-        extrinsics[..., :3, 3] = extrinsics[..., :3, 3] * scale[:, None]
-        gaussian_covariances = gaussian_covariances * (scale[:, None, None, None] ** 2)
-        gaussian_means = gaussian_means * scale[:, None, None]
-        near = near * scale
-        far = far * scale
-
-    color_sh_degree = 0
-    shs = None
-    features = None
-    colors_precomp = None
-    if use_sh:
+    # The CUDA splat rasterizer + linalg.inv require fp32. If the caller is
+    # running inside an autocast bf16/fp16 scope, cast inputs back to fp32
+    # and disable autocast for the rest of this function (otherwise matmuls
+    # like view_matrix @ projection_matrix would silently downcast to bf16).
+    with torch.amp.autocast(device_type="cuda", enabled=False):
+        extrinsics = extrinsics.float()
+        intrinsics = intrinsics.float()
+        near = near.float()
+        far = far.float()
+        background_color = background_color.float()
+        gaussian_means = gaussian_means.float()
+        gaussian_covariances = gaussian_covariances.float()
+        gaussian_opacities = gaussian_opacities.float()
         if gaussian_color_sh_coefficients is not None:
-            color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
-            shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
-        assert gaussian_feature_sh_coefficients is None
-        # In Latentsplat, gaussian_feature_sh_coefficients also have chance to use_sh 
-    else:
-        if gaussian_color_sh_coefficients is not None:
-            colors_precomp = gaussian_color_sh_coefficients[..., 0]
+            gaussian_color_sh_coefficients = gaussian_color_sh_coefficients.float()
         if gaussian_feature_sh_coefficients is not None:
-            features = gaussian_feature_sh_coefficients[..., 0]
+            gaussian_feature_sh_coefficients = gaussian_feature_sh_coefficients.float()
 
-    b, _, _ = extrinsics.shape
-    h, w = image_shape
+        # Make sure everything is in a range where numerical issues don't appear.
+        if scale_invariant:
+            scale = 1 / near
+            extrinsics = extrinsics.clone()
+            extrinsics[..., :3, 3] = extrinsics[..., :3, 3] * scale[:, None]
+            gaussian_covariances = gaussian_covariances * (scale[:, None, None, None] ** 2)
+            gaussian_means = gaussian_means * scale[:, None, None]
+            near = near * scale
+            far = far * scale
 
-    fov_x, fov_y = get_fov(intrinsics).unbind(dim=-1)
-    tan_fov_x = (0.5 * fov_x).tan()
-    tan_fov_y = (0.5 * fov_y).tan()
+        color_sh_degree = 0
+        shs = None
+        features = None
+        colors_precomp = None
+        if use_sh:
+            if gaussian_color_sh_coefficients is not None:
+                color_sh_degree = isqrt(gaussian_color_sh_coefficients.shape[-1]) - 1
+                shs = rearrange(gaussian_color_sh_coefficients, "b g xyz n -> b g n xyz").contiguous()
+            assert gaussian_feature_sh_coefficients is None
+            # In Latentsplat, gaussian_feature_sh_coefficients also have chance to use_sh 
+        else:
+            if gaussian_color_sh_coefficients is not None:
+                colors_precomp = gaussian_color_sh_coefficients[..., 0]
+            if gaussian_feature_sh_coefficients is not None:
+                features = gaussian_feature_sh_coefficients[..., 0]
 
-    projection_matrix = get_projection_matrix(near, far, fov_x, fov_y)
-    projection_matrix = rearrange(projection_matrix, "b i j -> b j i")
-    view_matrix = rearrange(extrinsics.inverse(), "b i j -> b j i")
-    full_projection = view_matrix @ projection_matrix
+        b, _, _ = extrinsics.shape
+        h, w = image_shape
 
-    all_images = []
-    all_feature_maps = []
+        fov_x, fov_y = get_fov(intrinsics).unbind(dim=-1)
+        tan_fov_x = (0.5 * fov_x).tan()
+        tan_fov_y = (0.5 * fov_y).tan()
 
-    for i in range(b):
-        # Set up a tensor for the gradients of the screen-space means.
-        mean_gradients = torch.zeros_like(gaussian_means[i], requires_grad=True)
-        try:
-            mean_gradients.retain_grad()
-        except Exception:
-            pass
+        projection_matrix = get_projection_matrix(near, far, fov_x, fov_y)
+        projection_matrix = rearrange(projection_matrix, "b i j -> b j i")
+        view_matrix = rearrange(extrinsics.inverse(), "b i j -> b j i")
+        full_projection = view_matrix @ projection_matrix
 
-        settings = GaussianRasterizationSettings(
-            image_height=h,
-            image_width=w,
-            tanfovx=tan_fov_x[i].item(),
-            tanfovy=tan_fov_y[i].item(),
-            bg=background_color[i],
-            scale_modifier=1.0,
-            viewmatrix=view_matrix[i],
-            projmatrix=full_projection[i],
-            sh_degree=color_sh_degree,
-            campos=extrinsics[i, :3, 3],
-            prefiltered=False,  # This matches the original usage.
-            debug=False,
-        )
-        rasterizer = GaussianRasterizer(settings)
+        all_images = []
+        all_feature_maps = []
 
-        row, col = torch.triu_indices(3, 3)
+        for i in range(b):
+            # Set up a tensor for the gradients of the screen-space means.
+            mean_gradients = torch.zeros_like(gaussian_means[i], requires_grad=True)
+            try:
+                mean_gradients.retain_grad()
+            except Exception:
+                pass
 
-        image, feature_map, _, _, _ = rasterizer(
-            means3D=gaussian_means[i],
-            means2D=mean_gradients,
-            shs=shs[i] if shs is not None else None,
-            colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
-            features=features[i] if features is not None else None,
-            opacities=gaussian_opacities[i, ..., None],
-            cov3D_precomp=gaussian_covariances[i, :, row, col],
-        )
-        all_images.append(image)
-        all_feature_maps.append(feature_map)
-    
-    all_images = torch.stack(all_images) if all_images[0] is not None else None
-    all_feature_maps = torch.stack(all_feature_maps) if all_feature_maps[0] is not None else None
+            settings = GaussianRasterizationSettings(
+                image_height=h,
+                image_width=w,
+                tanfovx=tan_fov_x[i].item(),
+                tanfovy=tan_fov_y[i].item(),
+                bg=background_color[i],
+                scale_modifier=1.0,
+                viewmatrix=view_matrix[i],
+                projmatrix=full_projection[i],
+                sh_degree=color_sh_degree,
+                campos=extrinsics[i, :3, 3],
+                prefiltered=False,  # This matches the original usage.
+                debug=False,
+            )
+            rasterizer = GaussianRasterizer(settings)
+
+            row, col = torch.triu_indices(3, 3)
+
+            image, feature_map, _, _, _ = rasterizer(
+                means3D=gaussian_means[i],
+                means2D=mean_gradients,
+                shs=shs[i] if shs is not None else None,
+                colors_precomp=colors_precomp[i] if colors_precomp is not None else None,
+                features=features[i] if features is not None else None,
+                opacities=gaussian_opacities[i, ..., None],
+                cov3D_precomp=gaussian_covariances[i, :, row, col],
+            )
+            all_images.append(image)
+            all_feature_maps.append(feature_map)
+
+        all_images = torch.stack(all_images) if all_images[0] is not None else None
+        all_feature_maps = torch.stack(all_feature_maps) if all_feature_maps[0] is not None else None
 
     return RenderOutput(color=all_images, depth=None, features=all_feature_maps)
 
@@ -281,37 +299,49 @@ def render_depth_and_features_cuda(
     scale_invariant: bool = True,
     mode: DepthRenderingMode = "depth",
 ) -> Float[Tensor, "batch height width"]:
-    # Specify colors according to Gaussian depths.
-    camera_space_gaussians = einsum(
-        extrinsics.inverse(), homogenize_points(gaussian_means), "b i j, b g j -> b g i"
-    )
-    fake_color = camera_space_gaussians[..., 2]
+    with torch.amp.autocast(device_type="cuda", enabled=False):
+        # Cast inputs to fp32 (rasterizer + linalg.inv require fp32).
+        extrinsics = extrinsics.float()
+        intrinsics = intrinsics.float()
+        near = near.float()
+        far = far.float()
+        gaussian_means = gaussian_means.float()
+        gaussian_covariances = gaussian_covariances.float()
+        gaussian_opacities = gaussian_opacities.float()
+        if gaussian_features is not None:
+            gaussian_features = gaussian_features.float()
 
-    if mode == "disparity":
-        fake_color = 1 / fake_color
-    elif mode == "log":
-        fake_color = fake_color.minimum(near[:, None]).maximum(far[:, None]).log()
+        # Specify colors according to Gaussian depths.
+        camera_space_gaussians = einsum(
+            extrinsics.inverse(), homogenize_points(gaussian_means), "b i j, b g j -> b g i"
+        )
+        fake_color = camera_space_gaussians[..., 2]
 
-    # Handle features
-    gaussian_feature_sh_coefficients = gaussian_features.unsqueeze(-1) if gaussian_features is not None else None
+        if mode == "disparity":
+            fake_color = 1 / fake_color
+        elif mode == "log":
+            fake_color = fake_color.minimum(near[:, None]).maximum(far[:, None]).log()
 
-    # Render using depth as color.
-    b, _ = fake_color.shape
-    result = render_cuda(
-        extrinsics,
-        intrinsics,
-        near,
-        far,
-        image_shape,
-        torch.zeros((b, 3), dtype=fake_color.dtype, device=fake_color.device),
-        gaussian_means,
-        gaussian_covariances,
-        gaussian_opacities,
-        repeat(fake_color, "b g -> b g c ()", c=3),
-        gaussian_feature_sh_coefficients, # batch gaussian channels d_sh
-        scale_invariant=scale_invariant,
-        use_sh=False,
-    )
-    depth = result.color.mean(dim=1)
-    features = result.features
-    return RenderOutput(color=None, depth=depth, features=features)
+        # Handle features
+        gaussian_feature_sh_coefficients = gaussian_features.unsqueeze(-1) if gaussian_features is not None else None
+
+        # Render using depth as color.
+        b, _ = fake_color.shape
+        result = render_cuda(
+            extrinsics,
+            intrinsics,
+            near,
+            far,
+            image_shape,
+            torch.zeros((b, 3), dtype=fake_color.dtype, device=fake_color.device),
+            gaussian_means,
+            gaussian_covariances,
+            gaussian_opacities,
+            repeat(fake_color, "b g -> b g c ()", c=3),
+            gaussian_feature_sh_coefficients, # batch gaussian channels d_sh
+            scale_invariant=scale_invariant,
+            use_sh=False,
+        )
+        depth = result.color.mean(dim=1)
+        features = result.features
+        return RenderOutput(color=None, depth=depth, features=features)

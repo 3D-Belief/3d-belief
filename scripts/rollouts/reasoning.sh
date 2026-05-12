@@ -22,7 +22,9 @@ CONDA_ENV="3d-belief"
 
 # Environment variables (kept from original script)
 export XFORMERS_DISABLED=1
-export CUDA_VISIBLE_DEVICES=0
+export PYTHONUNBUFFERED=1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export PYTHONNOUSERSITE=1
 export OBJAVERSE_DATA_DIR="data/2023_07_28"
 export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 
@@ -94,19 +96,24 @@ shift 1
 EXTRA_HYDRA_ARGS=""
 get_agent_config "${AGENT}"
 
+PYTHON_BIN="python"
 if command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base)"
-  set +u
-  source "${CONDA_BASE}/etc/profile.d/conda.sh"
-  conda activate "${CONDA_ENV}"
-  set -u
-  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+  CONDA_PREFIX="${CONDA_BASE}/envs/${CONDA_ENV}"
+  if [[ -x "${CONDA_PREFIX}/bin/python" ]]; then
+    export PATH="${CONDA_PREFIX}/bin:${PATH}"
+    export CONDA_DEFAULT_ENV="${CONDA_ENV}"
+    export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+    PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+  else
+    echo "[WARN] Conda env '${CONDA_ENV}' not found at ${CONDA_PREFIX}. Using PATH python."
+  fi
 else
   echo "[WARN] conda not found in PATH. Skipping conda activate."
 fi
 
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_FILE}"
-SAVE_PATH="${OUTPUT_DIR}/${SAVE_NAME}"
+SAVE_PATH="${WM_BASELINES_SAVE_PATH:-${OUTPUT_DIR}/${SAVE_NAME}}"
 EPISODE_ROOT="${EPISODE_OVERRIDE:-}"
 
 echo "=============================================="
@@ -121,8 +128,9 @@ if [[ ! -f "${SCRIPT_PATH}" ]]; then
     echo "         The command will likely fail. Continuing anyway..."
 fi
 
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python "${SCRIPT_PATH}" \
-    +seed=42 \
+SEED="${SEED:-42}"
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 "${PYTHON_BIN}" "${SCRIPT_PATH}" \
+    +seed=${SEED} \
     embodied_task.trajectory.save_path="${SAVE_PATH}" \
     embodied_task.episode_root="${EPISODE_ROOT}" \
     ${EXTRA_HYDRA_ARGS} \

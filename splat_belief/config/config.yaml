@@ -1,6 +1,6 @@
 defaults:
   - wandb: local
-  - dataset: hm3d
+  - dataset: spoc
   - model/encoder: epidiff
   - model/decoder: splatting_cuda
   - _self_
@@ -37,7 +37,7 @@ setting_name: "pixelsplat"
 ngpus: 2
 results_folder: "raw_results"
 
-semantic_config: "/home/scai/Workspace/hshi33/DFM/config/semantic/hm3d.yaml"
+semantic_config: "splat_belief/config/semantic/onehot.yaml"
 semantic_mode: "embed" # one_hot, embed
 semantic_viz: "feat" # seg, query, feat
 
@@ -77,7 +77,40 @@ load_pn: False
 lock_pn_steps: 0
 
 load_enc: False
-lock_enc_steps: 0
+# Component-only finetuning. Set finetune_component to one of:
+#   encoder | depth_predictor | semantic_head
+# and finetune_steps > 0 to freeze everything except that component for the
+# first N steps; after step N, all parameters are unlocked.
+finetune_component: null
+finetune_steps: 0
+
+# Open-vocab semantic head supervision mode. One of:
+#   clip_patch_sampled  -- legacy: 15 random-scale CLIP image patches per view
+#   class_text_only     -- per-pixel class-text targets (CLIP-text by default)
+#   class_text_image    -- both: alpha * text + (1-alpha) * patch-CLIP-image
+# The dense DINOv3 reg head on to_semantic_reg is independent of this and
+# stays trained when use_reg_model=true regardless of this mode.
+semantic_supervision_mode: clip_patch_sampled
+# Path to a precomputed class-text embedding table (.pt). Required when
+# semantic_supervision_mode in {class_text_only, class_text_image}. Produced
+# by scripts/training/precompute_clip_text_targets.py. Must contain keys
+# {name_to_id, id_to_name, embeddings (N+1, D)}; row 0 is the ignore vector.
+class_text_table_path: null
+# Text/image weighting for class_text_image mode. 1.0 → text-only, 0.0 →
+# image-only, 0.5 weights both equally. Only used when mode is class_text_image.
+class_text_image_alpha: 0.5
+
+# Diffusion sampler. Options:
+#   ddim          -- legacy: DDIM at sampling_steps timesteps (default 50)
+#   dpm_solver_pp -- DPM-Solver++(2M) order-2 multistep, ~3-5x faster at same quality
+#                    with sampling_steps=15 vs ddim sampling_steps=50.
+sampler: ddim
+
+# Inference precision. Wraps model.sample() in torch.autocast.
+#   fp32 -- default; weights and ops in float32
+#   bf16 -- bfloat16 autocast on H100 / A100; same dynamic range as fp32, ~1.5-2x faster
+#   fp16 -- float16 autocast; narrower range, prefer bf16 if both are available
+inference_dtype: fp32
 
 load_optimizer: False
 
@@ -85,6 +118,7 @@ use_identity: True
 ctxt_losses_factor: 1.0
 
 inference_sample_from_dataset: False
+inference_indices: null
 inference_num_samples: 12
 inference_min_frames: 20
 inference_max_frames: 30
@@ -103,7 +137,23 @@ use_history: True
 use_object_binary_mask: False
 background_weight: 0.1
 
+# Object permanence guidance for temporal inference. See
+# docs/object_permanence_guidance.md.
+obj_permanence_mode: none
+obj_permanence_state_t_min: 1
+obj_permanence_mask_blur: 5
+obj_permanence_mask_threshold: 0.5
+obj_permanence_erode_kernel: 0
+dps_guidance_scale: 1.0
+dps_pos_weight: 1.0
+dps_opacity_weight: 0.5
+
 repa_encoder_resolution: 1024
+# REPA encoder name. Format: <type>-<arch>-<size>, e.g. dinov2-vit-b, dinov3-vit-b.
+# Supported types: dinov2, dinov2_reg, dinov3.
+repa_encoder_name: dinov2-vit-b
+# Optional path to local DINOv3 weights (.pth). Leave null to download from torch.hub.
+repa_encoder_weights: null
 
 clevr_first_frame_prob: 0.1
 clevr_start_frame_id: 1
@@ -119,7 +169,10 @@ alignment:
   alignment_context_length: 2 # number of frames to use for repa loss
   # vggt_layer_index: -1 
   # encoder_info: [1, 1374, 2048]
-  encoder_info: [24, 512, 512]
+  # VGGT-1B last-layer patch grid for 518x518 input, patch_size 14:
+  # 37x37 = 1369 patches, each 2048-dim. Required by REPA cosine alignment
+  # against the un-pooled last transformer layer of VGGT.
+  encoder_info: [2048, 37, 37]
   mid_channels: 128
   latents_info: null
 

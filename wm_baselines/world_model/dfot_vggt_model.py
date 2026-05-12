@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import sys
 import os
+import types
 from pathlib import Path
 from PIL import Image
 from typing import Union, List
@@ -47,6 +49,60 @@ from wm_baselines.utils.vision_utils import (
     _as_tensor3x3,
     _depth_scale_from_intrinsics
 )
+
+def _ensure_numpy_sctypes_compat() -> None:
+    """Provide NumPy 1.x scalar-type tables for older DFoT metric deps."""
+    if not hasattr(np, "sctypes"):
+        np.sctypes = {
+            "int": [np.int8, np.int16, np.int32, np.int64],
+            "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+            "float": [np.float16, np.float32, np.float64],
+            "complex": [np.complex64, np.complex128],
+            "others": [np.bool_, np.bytes_, np.str_, np.object_],
+        }
+
+def _install_lightweight_wandb_stub() -> None:
+    """Avoid importing the full WandB package from DFoT inference-only imports."""
+    if "wandb" in sys.modules:
+        return
+
+    class _WandbValue:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __getattr__(self, name: str) -> Any:
+            return _noop
+
+    class _CommError(Exception):
+        pass
+
+    def _noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    def _init(*args: Any, **kwargs: Any) -> _WandbValue:
+        return _WandbValue()
+
+    wandb_stub = types.ModuleType("wandb")
+    wandb_stub.__spec__ = importlib.machinery.ModuleSpec(
+        "wandb",
+        loader=None,
+        is_package=True,
+    )
+    wandb_stub.__path__ = []
+    wandb_stub.__dict__.update(
+        {
+            "run": None,
+            "Video": _WandbValue,
+            "Image": _WandbValue,
+            "Artifact": _WandbValue,
+            "Api": _WandbValue,
+            "init": _init,
+            "log": _noop,
+            "finish": _noop,
+            "errors": types.SimpleNamespace(CommError=_CommError),
+        }
+    )
+    sys.modules["wandb"] = wandb_stub
 
 def instantiate_dfot_model_wrapper(
     dfot_repo: Union[str, Path],
@@ -95,7 +151,10 @@ def instantiate_dfot_model_wrapper(
     # # Resolve interpolations (optional but often helpful)
     # OmegaConf.resolve(cfg)
 
-    # Import after sys.path is set
+    # Import after sys.path is set. DFoT pulls in imgaug through pyiqa; older
+    # imgaug expects np.sctypes, which NumPy 2 removed.
+    _ensure_numpy_sctypes_compat()
+    _install_lightweight_wandb_stub()
     from model_wrapper import ModelWrapper  # from the DFoT repo
 
     # Instantiate wrapper (DFoT code expects (cfg, ckpt_path))
@@ -146,12 +205,22 @@ class DFoTVGGTModel(BaseWorldModel):
         self.current_pose: Tensor = None
 
     def reset(self):
-        resolution = self.obs_occupancy.resolution
-        obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
-        resolution = self.belief_occupancy.resolution
-        obstacle_height_thresh = self.belief_occupancy.obstacle_height_thresh
-        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+        self.obs_occupancy = OccupancyMap(
+            resolution=self.obs_occupancy.resolution,
+            obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+            ceiling_height=self.obs_occupancy.ceiling_height,
+            max_range=self.obs_occupancy.max_range,
+            free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+            seed=self._seed,
+        )
+        self.belief_occupancy = OccupancyMap(
+            resolution=self.belief_occupancy.resolution,
+            obstacle_height_thresh=self.belief_occupancy.obstacle_height_thresh,
+            ceiling_height=self.belief_occupancy.ceiling_height,
+            max_range=self.belief_occupancy.max_range,
+            free_overrides_occupied=self.belief_occupancy.free_overrides_occupied,
+            seed=self._seed,
+        )
         self.initial_location = {}
         self.step = -1
         self._metrics = {
@@ -241,9 +310,14 @@ class DFoTVGGTModel(BaseWorldModel):
 
             self._metrics["model_inference_time"] += exe_time
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
-            resolution = self.obs_occupancy.resolution
-            obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+            self.obs_occupancy = OccupancyMap(
+                resolution=self.obs_occupancy.resolution,
+                obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+                ceiling_height=self.obs_occupancy.ceiling_height,
+                max_range=self.obs_occupancy.max_range,
+                free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+                seed=self._seed,
+            )
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
                 position, 
@@ -461,6 +535,92 @@ class DFoTVGGTModel(BaseWorldModel):
         )
 
         return render_poses
+
+    @staticmethod
+    def _downsample_key_frame_indices(
+        key_frame_indices: Sequence[int],
+        num_key_frames: int,
+    ) -> List[int]:
+        """Downsample key frames while preserving the first and final trajectory pose."""
+        if num_key_frames <= 0:
+            raise ValueError("num_key_frames must be positive")
+        if len(key_frame_indices) <= num_key_frames:
+            return list(key_frame_indices)
+        pick_positions = np.floor(
+            np.linspace(0, len(key_frame_indices) - 1, num_key_frames)
+        ).astype(int)
+        pick_positions[-1] = len(key_frame_indices) - 1
+        return [int(key_frame_indices[pos]) for pos in pick_positions]
+
+    def _build_dfot_conditions(
+        self,
+        poses_w2c: Sequence[Tensor],
+        intrinsics_flat: Sequence[float],
+        pad_to: Optional[int] = None,
+    ) -> Tensor:
+        if not poses_w2c:
+            raise ValueError("poses_w2c must contain at least one pose")
+        intrinsics = torch.tensor(
+            intrinsics_flat,
+            device=self.device,
+            dtype=torch.float32,
+        )
+        rows = [
+            torch.cat(
+                [
+                    intrinsics,
+                    pose.to(self.device, dtype=torch.float32)[:3, :].reshape(-1),
+                ],
+                dim=0,
+            )
+            for pose in poses_w2c
+        ]
+        if pad_to is not None and len(rows) < pad_to:
+            rows.extend([rows[-1]] * (pad_to - len(rows)))
+        return torch.stack(rows, dim=0).unsqueeze(0)
+
+    def _predict_key_video_autoregressive(
+        self,
+        key_frame_poses: Sequence[Tensor],
+        intrinsics_flat: Sequence[float],
+    ) -> Tensor:
+        """Predict each keyframe from the previous generated keyframe."""
+        if not key_frame_poses:
+            raise ValueError("key_frame_poses must contain at least one pose")
+
+        algo = self.dfot_model.algo
+        generated_frames = [self.current_rgb.detach()]
+        context = self.current_rgb.detach().unsqueeze(0).unsqueeze(0)
+        previous_pose = key_frame_poses[0]
+
+        from algorithms.dfot.history_guidance import HistoryGuidance
+
+        with torch.no_grad():
+            for target_pose in key_frame_poses[1:]:
+                conds = self._build_dfot_conditions(
+                    [previous_pose, target_pose],
+                    intrinsics_flat,
+                    pad_to=algo.max_tokens,
+                )
+                history_guidance = HistoryGuidance.from_config(
+                    config=algo.cfg.tasks.prediction.history_guidance,
+                    timesteps=algo.timesteps,
+                )
+                pred_norm, _ = algo._predict_sequence(
+                    context,
+                    length=2,
+                    conditions=conds,
+                    history_guidance=history_guidance,
+                    reconstruction_guidance=algo.cfg.diffusion.reconstruction_guidance,
+                    sliding_context_len=1,
+                )
+                next_frame = pred_norm[0, 1].detach()
+                generated_frames.append(next_frame)
+                context = next_frame.unsqueeze(0).unsqueeze(0)
+                previous_pose = target_pose
+
+        video_norm = torch.stack(generated_frames, dim=0).unsqueeze(0)
+        return algo._unnormalize_x(video_norm).detach().clamp(0.0, 1.0)
     
     @with_timing
     def _imagine_in_place(
@@ -497,17 +657,18 @@ class DFoTVGGTModel(BaseWorldModel):
                 key_frame_indices.append(idx)
                 z_previous = z_idx
                 t_previous = t_idx
-        key_frame_poses = [render_poses[idx] for idx in key_frame_indices]
-        # if len(key_frame_poses) > num_key_frames, keep the first num_key_frames
-        if len(key_frame_poses) > num_key_frames:
-            key_frame_poses = key_frame_poses[:num_key_frames]
+        key_frame_indices = self._downsample_key_frame_indices(
+            key_frame_indices,
+            num_key_frames,
+        )
+        key_frame_poses_c2w = [render_poses[idx] for idx in key_frame_indices]
         # if less, pad by repeating the last one
-        while len(key_frame_poses) < num_key_frames:
-            key_frame_poses.append(key_frame_poses[-1])
+        while len(key_frame_poses_c2w) < num_key_frames:
+            key_frame_poses_c2w.append(key_frame_poses_c2w[-1])
 
         intrinsics_flat = [self.camera.fx, self.camera.fy, self.camera.cx, self.camera.cy]  # fx, fy, cx, cy
         # take inverse to get world to camera
-        key_frame_poses = [torch.linalg.inv(pose) for pose in key_frame_poses]
+        key_frame_poses = [torch.linalg.inv(pose) for pose in key_frame_poses_c2w]
         # reshape each pose to (3, 4) and flatten
         key_frame_poses_flat = [pose[:3, :].reshape(-1) for pose in key_frame_poses]  # (num_key_frames, 12)
         # convert to torch tensor
@@ -560,36 +721,22 @@ class DFoTVGGTModel(BaseWorldModel):
                 key_frame_indices.append(idx)
                 z_previous = z_idx
                 t_previous = t_idx
-        key_frame_poses = [render_poses[idx] for idx in key_frame_indices]
-        # if len(key_frame_poses) > num_key_frames, keep the first num_key_frames
-        if len(key_frame_poses) > num_key_frames:
-            key_frame_poses = key_frame_poses[:num_key_frames]
+        key_frame_indices = self._downsample_key_frame_indices(
+            key_frame_indices,
+            num_key_frames,
+        )
+        key_frame_poses_c2w = [render_poses[idx] for idx in key_frame_indices]
         # if less, pad by repeating the last one
-        extra_frames = num_key_frames - len(key_frame_poses)
-        while len(key_frame_poses) < num_key_frames:
-            key_frame_poses.append(key_frame_poses[-1])
+        extra_frames = num_key_frames - len(key_frame_poses_c2w)
+        while len(key_frame_poses_c2w) < num_key_frames:
+            key_frame_poses_c2w.append(key_frame_poses_c2w[-1])
         intrinsics_flat = [self.camera.fx, self.camera.fy, self.camera.cx, self.camera.cy]  # fx, fy, cx, cy
         # take inverse to get world to camera
-        key_frame_poses = [torch.linalg.inv(pose) for pose in key_frame_poses]
-        # reshape each pose to (3, 4) and flatten
-        key_frame_poses_flat = [pose[:3, :].reshape(-1) for pose in key_frame_poses]  # (num_key_frames, 12)
-        # convert to torch tensor
-        key_frame_poses_tensor = torch.stack(key_frame_poses_flat, dim=0).to(self.device)  # (T, 12)
-        # [fx,fy,cx,cy] + 12*E -> (T,16)
-        conds = torch.cat(
-            [
-                torch.tensor(intrinsics_flat, device=self.device).unsqueeze(0).repeat(len(key_frame_poses_tensor), 1),
-                key_frame_poses_tensor,
-            ],
-            dim=1,
-        ).unsqueeze(0)  # (1, T, 16)
-        # videos in inp is the self.current_rgb repeated num_key_frames times
-        videos = self.current_rgb.unsqueeze(0).unsqueeze(0).repeat(1, num_key_frames, 1, 1, 1)  # (1, T, 3, H, W)
-        inp = {
-            "videos": videos,
-            "conds": conds,
-        }
-        key_video = self.dfot_model.inference(inp)
+        key_frame_poses = [torch.linalg.inv(pose) for pose in key_frame_poses_c2w]
+        key_video = self._predict_key_video_autoregressive(
+            key_frame_poses,
+            intrinsics_flat,
+        )
 
         key_video = key_video[0]  # (T, 3, H, W)
         # remove extra frames if any

@@ -57,7 +57,8 @@ model:
       extended_visualization: false
       use_history: false    
     timesteps: 1000
-    sampling_steps: 50
+    sampling_steps: 15
+    sampler: dpm_solver_pp
     loss_type: "l2"
     objective: "pred_x0"
     beta_schedule: "cosine"
@@ -97,6 +98,16 @@ obs_occupancy:
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height
   max_range: 3.0
+  # Set to null or 0 to disable the hack that force-marks a disk around the
+  # agent's standing position as free on the first integration step.
+  agent_free_radius: 0.5
+  # If True, negate pcd Y on entry (use when the incoming pcd is in a Y-down
+  # / OpenCV-camera-style world frame but you want the Y-up thresholds below
+  # to mean "world height").
+  flip_y: false
+  # Print Y/sensor/threshold stats on every integrate() call to debug
+  # convention mismatches (floor-as-obstacle, doorway-as-obstacle, etc.).
+  debug: false
 
 belief_occupancy:
   _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
@@ -104,14 +115,27 @@ belief_occupancy:
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height
   max_range: 3.0
+  agent_free_radius: 0.5
+  flip_y: false
+  debug: false
+
+# If True, _extract_inc_pcd negates pcd Y before returning it (legacy hard-
+# coded behavior). Set False to test whether ceiling/obstacle thresholds were
+# actually tuned against the unflipped frame.
+inc_pcd_flip_y: true
 
 adjacent_angle: 0.523599  # 30 degrees
 adjacent_distance: 1.0  # meters
 
 coverage_threshold: 0.4
 
-obs_filter_border_gaussians: false
+obs_filter_border_gaussians: true
 obs_depth_min: 0.1
 obs_depth_max: 10.0
+
+occupancy_min_opacity: 0.1       # drop diffusion gaussians with opacity < this
+occupancy_max_scale_m: 0.3       # drop gaussians whose largest axis length (m) exceeds this
+occupancy_max_range_m: 4.0       # only ingest gaussians within this distance + camera frustum
+occupancy_border_px: 4           # when obs_filter_border_gaussians=true, exclude this many border px from occupancy ingestion (rendering unaffected)
 
 disable_imagination: false

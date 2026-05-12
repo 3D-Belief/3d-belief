@@ -5,7 +5,9 @@
 # Individual workspace configs can reference these via Hydra interpolation,
 # e.g.  episode_root: ${paths.episode_roots.obj_searching}
 #
-# Before running, update every path below to match your local environment.
+# Defaults assume the repository layout produced by the README download steps.
+# Override individual paths from the command line if your data or checkpoints
+# live elsewhere.
 # =============================================================================
 
 paths:
@@ -37,7 +39,7 @@ paths:
   output_root: wm_baselines/output
 
   # ---------------------------------------------------------------------------
-  # 3D Belief (DFM) model checkpoints
+  # 3D Belief model checkpoints
   # ---------------------------------------------------------------------------
   checkpoints:
     # 3D Belief – semantic model (used for semantic goal selector, obj/room completion, obj permanence)
@@ -59,6 +61,10 @@ paths:
     # NWM checkpoint
     # Used by: nwm_vggt_model
     nwm: checkpoints/nwm_finetune_spoc.pth.tar
+
+    # Finetuned VLM adapter (Qwen-2 LoRA)
+    # Used by: spoc_obj_searching_finetuned_vlm_agent
+    vlm_adapter: ""
 
   # ---------------------------------------------------------------------------
   # External repository paths (needed at runtime for model loading)

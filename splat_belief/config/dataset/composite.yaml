@@ -23,10 +23,4 @@ datasets:
     weight: 1.0
     ctxt_min: 2
     ctxt_max: 15
-    root_dir: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/codebase/embodied_tasks/spoc/data/spoc_trajectories
-
-  - name: dl3dv
-    weight: 1.0
-    ctxt_min: 2
-    ctxt_max: 10
-    root_dir: /home/ubuntu/jianwen-us-midwest-1/shulab-jhu/dataset/dl3dv
+    root_dir: data/spoc_trajectories

@@ -21,7 +21,7 @@ class VGGTAlignmentLoss(nn.Module):
                  apply_unnormalize_recon: bool = False,
                  unormalize_lambda: float =  1, # lambda for unormalize recon loss
                  latents_info: list = None, # the shape of generative model latents
-                 encoder_info: list = [24, 1374, 2048], # the shape of encoder output
+                 encoder_info: list = [2048, 37, 37], # (D, H, W) of VGGT patch-token grid for 518x518 input, patch_size 14
                  mid_channels: int = 128,
                  vggt_layer_index=None, # -1 means last layer, -2 means second last layer, etc.
                 ):
@@ -71,23 +71,25 @@ class VGGTAlignmentLoss(nn.Module):
         self.encoder_info = encoder_info
         self.mid_channels = mid_channels
         self.projectors = nn.ModuleList()
+        out_channels, out_h, out_w = self.encoder_info  # (2048, 37, 37) by default
         for c, h, w in self.latents_info:
             projector = ConvProjector(
                 in_channels=c,
                 in_h=h,
                 in_w=w,
-                out_h=self.encoder_info[1],
-                out_w=self.encoder_info[2],
-                mid_channels=mid_channels
+                out_h=out_h,
+                out_w=out_w,
+                mid_channels=mid_channels,
+                out_channels=out_channels,
             )
             self.projectors.append(projector)
-        ## this module aims to recon normalized latent feature to unnormalized feature 
+        ## this module aims to recon normalized latent feature to unnormalized feature
         self.apply_unnormalize_recon = apply_unnormalize_recon
         if self.apply_unnormalize_recon:
             self.feature_unormalizer = nn.Sequential(
-                nn.Conv2d(self.encoder_info[0], mid_channels, kernel_size=1),
+                nn.Conv2d(out_channels, mid_channels, kernel_size=1),
                 nn.ReLU(),
-                nn.Conv2d(mid_channels, self.encoder_info[0], kernel_size=1)
+                nn.Conv2d(mid_channels, out_channels, kernel_size=1)
             )
     def load_projector_from_ckpt(self,ckpt_path):
         ckpt = torch.load(ckpt_path,map_location='cpu',weights_only=False)
@@ -171,63 +173,69 @@ class VGGTAlignmentLoss(nn.Module):
         images_resized = torch.clamp(images_resized, 0.0, 1.0)
         return images_resized
     
-    def forward(self, latents, images):
-        """
-        Args:
-            latents from UViT :  (B, T * H * W, C)  T*H*W = patches 
-            latents: list[Tensor], shape [B,T,C,H,W]
-            images: Tensor, [B, C, H, W]，原始图像
-        Returns:
-            alignment_loss: 对齐损失（平均 cosine 距离）
-        """
-        images = images[:, :self.alignment_context_length, :, :, :]  # [B, T, C, H, W]
-        images = self.vggt_processor(images) # [B, 3, T, H, W]
-        with torch.no_grad():
-            # target_feats = self.vggt_model.encode(images)  # list[Tensor], shape [B,T,1374, 2048]
-            aggregated_tokens_list, patch_start_idx = self.vggt_model.shortcut_forward(images) #  24x []
-            # interpolate to few dimension 
-            target_h,target_w =  self.encoder_info[1], self.encoder_info[2]  # 1374, 2048
-            aggregated_tokens_list = [F.interpolate(tokens, size=(target_h, target_w), mode='bilinear', align_corners=False) for tokens in aggregated_tokens_list]
-            aggregated_tokens = torch.stack(aggregated_tokens_list)  # [B*T, 512, 512]
-            target_feats = rearrange(aggregated_tokens,'c b t h w -> b t c h w')
-            
-        alignment_loss = 0.
-        unormalize_loss = 0. 
-        assert len(latents) == len(self.projectors), f"latents length {len(latents)} should match projectors length {len(self.projectors)}"
-        
-        for latent, projector in zip(latents, self.projectors):
-            # print(f"[externl.vggt_alignment_loss][VGGTAlignmentLoss][forward] latent shape: {latent.shape}, projector: {projector}")
-            latent = latent[:,:self.alignment_context_length,...]
-            latent = rearrange(latent, 'b t c h w -> (b t) c h w')  # [B*T, C, H, W]
-            
-            target_feat = rearrange(target_feats, 'b t c h w -> (b t) c h w')  # [B, C, H, W]
-            # target feature : torch.Size([16, 24, 512, 512])
-            latent_proj = projector(latent)  # [BT,  C ,H, W]
-            H,W = latent_proj.shape[2], latent_proj.shape[3]
-            # flatten空间维度
-            latent_proj_flat = rearrange(latent_proj, 'b c h w -> b c (h w)')
-            target_feat_flat = rearrange(target_feat, 'b c h w -> b c (h w)')
-            # 假设 T是通道，S是空间flatten：
-            latent_proj_norm = F.normalize(latent_proj_flat, p=2, dim=-1)   # 归一化通道维
-            target_feat_norm = F.normalize(target_feat_flat, p=2, dim=-1) # B C H*W 
+    def forward(self, latents, images, return_depth=False):
+        """REPA-style cosine alignment between UViT latents and VGGT patch-token features.
 
-            # 计算每个空间点的向量相似度（点积），
-            # sum over通道T维度得到空间向量相似度，shape: [B, S]
-            alignment_loss += mean_flat(-(latent_proj_norm * target_feat_norm)).sum(dim=-1)  # [B, S]
+        Args:
+            latents: list[Tensor], each [B, T, C, H, W] from UViT levels
+            images: [B, T_total, 3, H_in, W_in] in [0, 1]
+            return_depth: if True, also return VGGT's predicted depth + confidence.
+        Returns:
+            alignment_loss (scalar in [-1, 1]); optionally (loss, vggt_depth, vggt_conf)
+        """
+        images = images[:, :self.alignment_context_length, :, :, :]
+        images = self.vggt_processor(images)  # [B, T, 3, 518, 518]
+
+        with torch.no_grad():
+            aggregated_tokens_list, patch_start_idx = self.vggt_model.shortcut_forward(images)
+            if return_depth:
+                # depth: [B, T, 1, H, W]; conf: [B, T, H, W]; H=W=518.
+                vggt_depth, vggt_conf = self.vggt_model.depth_head(
+                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                )
+            # Use the last transformer layer only.
+            tokens = aggregated_tokens_list[-1]  # [B, T, P, D=2048]
+            # Drop special tokens (camera + register) which are not spatial.
+            patch_tokens = tokens[:, :, patch_start_idx:, :]  # [B, T, P_patch, D]
+            n_patches = patch_tokens.shape[2]
+            grid = int(round(n_patches ** 0.5))
+            assert grid * grid == n_patches, (
+                f"VGGT patch count {n_patches} is not a perfect square; "
+                f"check patch_start_idx={patch_start_idx} and image size."
+            )
+            # Reshape to a 2D spatial grid: [BT, D, grid, grid].
+            target_feat = rearrange(
+                patch_tokens, 'b t (h w) d -> (b t) d h w', h=grid, w=grid
+            )
+
+        alignment_loss = 0.0
+        unormalize_loss = 0.0
+        assert len(latents) == len(self.projectors), (
+            f"latents length {len(latents)} should match projectors length {len(self.projectors)}"
+        )
+
+        for latent, projector in zip(latents, self.projectors):
+            latent = latent[:, :self.alignment_context_length, ...]
+            latent = rearrange(latent, 'b t c h w -> (b t) c h w')
+            latent_proj = projector(latent)  # [BT, D, grid, grid]
+
+            # Cosine similarity along the feature dim, averaged over spatial positions.
+            l = F.normalize(latent_proj, p=2, dim=1)
+            t = F.normalize(target_feat, p=2, dim=1)
+            cos_per_pos = (l * t).sum(dim=1)  # [BT, grid, grid] in [-1, 1]
+            alignment_loss = alignment_loss + (-cos_per_pos.mean())
+
             if self.apply_unnormalize_recon:
-                # 计算 unnormalize loss
-                latent_proj_norm = rearrange(latent_proj_norm, 'b c (h w) -> b c h w ',h = H)  # [B, C, S, 1] 
-                # import pdb; pdb.set_trace() 
-                unormalized_latent_proj = self.feature_unormalizer(latent_proj_norm)
-                # mse loss 
-                unormalize_loss += F.mse_loss(unormalized_latent_proj, target_feat)
-                
-        alignment_loss /= len(latents)
+                unormalized_latent_proj = self.feature_unormalizer(l)
+                unormalize_loss = unormalize_loss + F.mse_loss(unormalized_latent_proj, target_feat)
+
+        alignment_loss = alignment_loss / len(latents)
         if self.apply_unnormalize_recon:
-            unormalize_loss /= len(latents)
-            unormalize_lambda = self.unormalize_lambda
-            unormalize_loss = unormalize_lambda * unormalize_loss 
-            loss = alignment_loss + unormalize_loss
+            unormalize_loss = unormalize_loss / len(latents)
+            loss = alignment_loss + self.unormalize_lambda * unormalize_loss
         else:
             loss = alignment_loss
+
+        if return_depth:
+            return loss, vggt_depth, vggt_conf
         return loss

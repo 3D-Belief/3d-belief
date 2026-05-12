@@ -135,9 +135,13 @@ class Diffusion(nn.Module):
         use_reg_model=False,
         use_vggt_alignment=False,
         cfg=None,
+        semantic_supervision_mode="clip_patch_sampled",
+        sampler="ddim",
     ):
         super().__init__()
         assert not (type(self) == Diffusion and model.channels != model.out_dim)
+        self.sampler = sampler
+        assert self.sampler in ("ddim", "dpm_solver_pp"), f"unknown sampler {self.sampler!r}"
 
         self.cfg = cfg
         self.model = model
@@ -158,6 +162,20 @@ class Diffusion(nn.Module):
         self.use_object_binary_mask = use_object_binary_mask
         self.background_weight = background_weight
         self.use_vggt_alignment = use_vggt_alignment
+        self.semantic_supervision_mode = semantic_supervision_mode
+        valid_modes = (
+            "clip_patch_sampled",
+            "class_text_only",
+            "class_text_image",
+        )
+        assert (
+            self.semantic_supervision_mode in valid_modes
+        ), f"semantic_supervision_mode must be one of {valid_modes}, got {self.semantic_supervision_mode!r}"
+        # Text/image weighting for class_text_image mode. alpha=1.0 → text-only,
+        # 0.0 → image-only. 0.5 weights both equally.
+        self.class_text_image_alpha = (
+            cfg.get("class_text_image_alpha", 0.5) if cfg is not None else 0.5
+        )
         if self.use_vggt_alignment:
             print("using vggt alignment loss")
             self.build_alignment_module(cfg)
@@ -614,11 +632,108 @@ class Diffusion(nn.Module):
         return out_dict
 
     @torch.no_grad()
+    def dpm_solver_pp_sample(self, shape, return_all_timesteps=False, inp=None, global_step=100000):
+        """DPM-Solver++(2M) data-prediction sampler.
+
+        Higher-order ODE solver in log-SNR space. Empirically matches DDIM
+        quality at ~3-5x fewer steps. Uses self.sampling_timesteps as the
+        step budget (try 15-20 vs the 50 used for DDIM).
+
+        Reference: Lu et al, "DPM-Solver++: Fast Solver for Guided Sampling
+        of Diffusion Probabilistic Models" (2022). Uses the data-prediction
+        parameterization, which matches this repo's `pred_x0` objective.
+        """
+        batch, device = shape[0], self.betas.device
+        T = self.num_timesteps
+        N = self.sampling_timesteps  # number of NFE budget
+        temperature = self.temperature
+
+        # Schedule: same uniform-in-t grid DDIM uses; per-step alpha / sigma
+        # / lambda come straight from the model's noise schedule at those
+        # discrete t values. (Snap-to-grid uniform-in-lambda introduced
+        # non-uniform h's which destabilised the order-2 extrapolation.)
+        alphas_sqrt = self.alphas_cumprod.sqrt()
+        sigmas = (1.0 - self.alphas_cumprod).clamp_min(1e-12).sqrt()
+        lambdas = torch.log(alphas_sqrt / sigmas)  # (T,) — half log-SNR
+        times = torch.linspace(-1, T - 1, N + 1).int().tolist()
+        times = list(reversed(times))  # [T-1, ..., 0, -1]
+
+        if "num_frames_render" in inp.keys():
+            num_frames_render = inp["num_frames_render"]
+        else:
+            num_frames_render = 20
+
+        img = torch.randn(shape, device=device) * temperature
+        imgs = [img]
+        x_pred_prev = None
+        h_prev = None
+
+        # Main loop. We compute x_pred at the CURRENT timestep, then use it
+        # plus the previous x_pred to do an order-2 multistep update.
+        for i in tqdm(range(len(times) - 1), desc="dpm-solver++ step"):
+            t = times[i]
+            t_next = times[i + 1]
+            time_cond = torch.full((batch,), t, device=device, dtype=torch.long)
+            if self.clean_target:
+                inp["noisy_trgt_rgb"] = inp["trgt_rgb"][:, 0, :, :, :]
+            else:
+                inp["noisy_trgt_rgb"] = img
+            _, x_pred, _ = self.model_predictions(
+                inp, time_cond, clip_x_start=True, render_high_res=False,
+            )
+
+            if t_next < 0:
+                img = x_pred
+                imgs.append(img)
+                # Final rendering — mirrors ddim_sample tail.
+                frames, depth_frames, semantics, render_poses = self.model.render_video(
+                    inp, time_cond, n=num_frames_render, render_high_res=False,
+                )
+                continue
+
+            alpha_t = alphas_sqrt[t]; sigma_t = sigmas[t]
+            alpha_s = alphas_sqrt[t_next]; sigma_s = sigmas[t_next]
+            h = lambdas[t_next] - lambdas[t]   # > 0 (s has higher SNR than t)
+
+            if x_pred_prev is None:
+                # Order-1 update (DPM-Solver++(1) == DDIM in log-SNR).
+                D = x_pred
+            else:
+                # Order-2 multistep update.
+                r = (h_prev / h.clamp_min(1e-9)).clamp_min(1e-9)
+                D = (1.0 + 1.0 / (2.0 * r)) * x_pred - (1.0 / (2.0 * r)) * x_pred_prev
+                # Cap the order-2 extrapolation. x_pred is already dyn-thresholded
+                # to [-1, 1] inside model_predictions; bound D within [-1.5, 1.5]
+                # so a stray outlier in either pred can't blow up the update.
+                D = D.clamp(-1.5, 1.5)
+
+            img = (sigma_s / sigma_t) * img + alpha_s * (1.0 - torch.exp(-h)) * D
+            imgs.append(img)
+            x_pred_prev = x_pred
+            h_prev = h
+
+        ret = img if not return_all_timesteps else torch.stack(imgs, dim=1)
+        ret = self.unnormalize(ret)
+        out_dict = {
+            "images": ret,
+            "videos": frames,
+            "depth_videos": depth_frames,
+            "semantic_videos": semantics,
+            "inp": inp,
+            "render_poses": render_poses,
+            "time_cond": time_cond,
+        }
+        return out_dict
+
+    @torch.no_grad()
     def sample(self, batch_size=2, return_all_timesteps=False, inp=None):
         image_size, channels = self.image_size, self.channels
-        sample_fn = (
-            self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
-        )
+        if self.sampler == "dpm_solver_pp":
+            sample_fn = self.dpm_solver_pp_sample
+        elif self.is_ddim_sampling:
+            sample_fn = self.ddim_sample
+        else:
+            sample_fn = self.p_sample_loop
         return sample_fn(
             (batch_size, channels, image_size, image_size),
             return_all_timesteps=return_all_timesteps,
@@ -726,6 +841,62 @@ class Diffusion(nn.Module):
         )
         errors = errors.view(b, h, w)
         return errors
+
+    def _compute_dense_semantic_loss(self, pass_dict, t):
+        """Per-pixel cosine-distance semantic loss for class_text_only and
+        class_text_image modes.
+
+        For class_text_only: pulls each non-background pixel toward its
+        class-text vector.
+
+        For class_text_image: combined loss
+            alpha * text_cos_loss + (1-alpha) * image_patch_cos_loss
+        where text_cos_loss is the same per-pixel class-text cosine and
+        image_patch_cos_loss is the legacy patch-sampled CLIP-image cosine
+        (one embedding per random crop, supervises the head at the crop
+        center). Both targets live in CLIP-512 space.
+        """
+        mode = self.semantic_supervision_mode
+        if mode not in ("class_text_only", "class_text_image"):
+            return None
+
+        rendered = pass_dict["semantic_dense"]  # (B, V, D, H, W)
+
+        # ---- class-text term (per-pixel cosine where class_map > 0) ----
+        text_target = pass_dict["class_text_target"].to(rendered.dtype)
+        a_n = rendered / rendered.norm(dim=2, keepdim=True).clamp_min(1e-6)
+        b_n = text_target / text_target.norm(dim=2, keepdim=True).clamp_min(1e-6)
+        cos_text = 1.0 - (a_n * b_n).sum(dim=2)  # (B, V, H, W)
+        valid = (pass_dict["class_map"] > 0).float()
+        denom = valid.sum(dim=(1, 2, 3)).clamp_min(1.0)
+        text_loss = (cos_text * valid).sum(dim=(1, 2, 3)) / denom
+
+        if mode == "class_text_only":
+            return text_loss * extract(self.p2_loss_weight, t, text_loss.shape)
+
+        # ---- class_text_image: also add patch-sampled CLIP-image term ----
+        # NOTE on gradient balancing:
+        # The dense text term `text_loss` averages cosine over `denom` valid
+        # pixels (~thousands). The image term touches only V*N patch centers
+        # (~tens). If we used `cos_img.mean(dim=(1,2))` here, the per-touched-
+        # pixel gradient from the image term would be ~(denom/(V*N))≈hundreds
+        # of times larger than the text per-pixel gradient, dominating
+        # training and collapsing the rendered semantic field to a single
+        # near-uniform direction (queries become indistinguishable).
+        # Fix: divide the image term by the SAME `denom` so each supervised
+        # pixel gets a per-pixel gradient of comparable magnitude. The image
+        # loss VALUE then becomes small relative to text_loss, but `alpha`
+        # still trades off the per-pixel gradient contributions cleanly.
+        center_feats = pass_dict["center_features"]  # (B, V, N, C)
+        clip_embs = pass_dict["clip_embeddings"].to(center_feats.dtype)  # (B, V, N, C)
+        cf_n = center_feats / center_feats.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        ce_n = clip_embs / clip_embs.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        cos_img = 1.0 - (cf_n * ce_n).sum(dim=-1)  # (B, V, N)
+        image_loss = cos_img.sum(dim=(1, 2)) / denom  # (B,) — same denom as text
+
+        alpha = float(self.class_text_image_alpha)
+        loss = alpha * text_loss + (1.0 - alpha) * image_loss
+        return loss * extract(self.p2_loss_weight, t, loss.shape)
 
     def p_losses(self, inp, t, noise=None, global_step=100000):
         num_target = inp["trgt_rgb"].shape[1]
@@ -881,28 +1052,28 @@ class Diffusion(nn.Module):
         semantic_loss = None
         semantic_loss_reg = None
         if self.use_semantic:
-            semantic_gt = trgt_semantic["clip_embeddings"]
-            rendered_trgt_semantic = trgt_semantic["center_features"]
-            semantic_gt = semantic_gt.to(rendered_trgt_semantic.dtype)
-            if self.use_object_binary_mask:
-                trgt_object_mask = trgt_obj_binary_mask.unsqueeze(2)
-                # masked is 1, background is background_weight
-                factor = trgt_object_mask.float() * 1.0 + (~trgt_object_mask).float() * self.background_weight
-                semantic_gt = semantic_gt * factor
-                rendered_trgt_semantic = rendered_trgt_semantic * factor
-            semantic_loss = self.loss_fn(semantic_gt, rendered_trgt_semantic, reduction="none")
-            semantic_loss = reduce(semantic_loss, "b ... -> b (...)", "mean")
-            semantic_loss = semantic_loss * extract(self.p2_loss_weight, t, semantic_loss.shape)
-            if self.use_reg_model:
-                semantic_reg_gt = trgt_semantic["dino_embeddings"]
-                rendered_trgt_semantic_reg = trgt_semantic["center_features_reg"]
-                semantic_reg_gt = semantic_reg_gt.to(rendered_trgt_semantic_reg.dtype)
+            if self.semantic_supervision_mode == "clip_patch_sampled":
+                semantic_gt = trgt_semantic["clip_embeddings"]
+                rendered_trgt_semantic = trgt_semantic["center_features"]
+                semantic_gt = semantic_gt.to(rendered_trgt_semantic.dtype)
                 if self.use_object_binary_mask:
                     trgt_object_mask = trgt_obj_binary_mask.unsqueeze(2)
                     # masked is 1, background is background_weight
                     factor = trgt_object_mask.float() * 1.0 + (~trgt_object_mask).float() * self.background_weight
-                    semantic_reg_gt = semantic_reg_gt * factor
-                    rendered_trgt_semantic_reg = rendered_trgt_semantic_reg * factor
+                    semantic_gt = semantic_gt * factor
+                    rendered_trgt_semantic = rendered_trgt_semantic * factor
+                semantic_loss = self.loss_fn(semantic_gt, rendered_trgt_semantic, reduction="none")
+                semantic_loss = reduce(semantic_loss, "b ... -> b (...)", "mean")
+                semantic_loss = semantic_loss * extract(self.p2_loss_weight, t, semantic_loss.shape)
+            else:
+                # class_text_only — dense per-pixel cosine to class-text targets.
+                semantic_loss = self._compute_dense_semantic_loss(trgt_semantic, t)
+            if self.use_reg_model:
+                # Dense pixel-aligned reg supervision: compare predicted reg map (B,V,C,H,W)
+                # against the DINOv3 feature map at the same resolution.
+                semantic_reg_gt = trgt_semantic["dino_dense"]
+                rendered_trgt_semantic_reg = trgt_semantic["semantic_reg_dense"]
+                semantic_reg_gt = semantic_reg_gt.to(rendered_trgt_semantic_reg.dtype)
                 semantic_loss_reg = self.loss_fn(semantic_reg_gt, rendered_trgt_semantic_reg, reduction="none")
                 semantic_loss_reg = reduce(semantic_loss_reg, "b ... -> b (...)", "mean")
                 semantic_loss_reg = semantic_loss_reg * extract(self.p2_loss_weight, t, semantic_loss_reg.shape)
@@ -1021,32 +1192,31 @@ class Diffusion(nn.Module):
         loss_intermediate_semantic = None
         loss_intermediate_semantic_reg = None
         if self.use_semantic and intm_semantic is not None:
-            intermediate_semantic_gt = intm_semantic["clip_embeddings"]
-            rendered_intm_semantic = intm_semantic["center_features"]
-            intermediate_semantic_gt = intermediate_semantic_gt.to(rendered_intm_semantic.dtype)
-            if self.use_object_binary_mask:
-                intm_obj_binary_mask = inp["intm_obj_binary_mask"].reshape(b * v, 1)
-                factor = intm_obj_binary_mask.float() * 1.0 + (~intm_obj_binary_mask).float() * self.background_weight
-                intermediate_semantic_gt = intermediate_semantic_gt * factor
-                rendered_intm_semantic = rendered_intm_semantic * factor
-            loss_intermediate_semantic = self.loss_fn(
-            rendered_intm_semantic, intermediate_semantic_gt, reduction="none"
-            )
-            loss_intermediate_semantic = reduce(loss_intermediate_semantic, "b ... -> b (...)", "mean")
-            loss_intermediate_semantic = loss_intermediate_semantic * extract(
-                self.p2_loss_weight, t, loss_intermediate_semantic.shape
-            )
-            if self.use_reg_model:
-                intermediate_semantic_reg_gt = intm_semantic["dino_embeddings"]
-                rendered_intm_semantic_reg = intm_semantic["center_features_reg"]
-                intermediate_semantic_reg_gt = intermediate_semantic_reg_gt.to(rendered_intm_semantic_reg.dtype)
+            if self.semantic_supervision_mode == "clip_patch_sampled":
+                intermediate_semantic_gt = intm_semantic["clip_embeddings"]
+                rendered_intm_semantic = intm_semantic["center_features"]
+                intermediate_semantic_gt = intermediate_semantic_gt.to(rendered_intm_semantic.dtype)
                 if self.use_object_binary_mask:
                     intm_obj_binary_mask = inp["intm_obj_binary_mask"].reshape(b * v, 1)
                     factor = intm_obj_binary_mask.float() * 1.0 + (~intm_obj_binary_mask).float() * self.background_weight
-                    intermediate_semantic_reg_gt = intermediate_semantic_reg_gt * factor
-                    rendered_intm_semantic_reg = rendered_intm_semantic_reg * factor
+                    intermediate_semantic_gt = intermediate_semantic_gt * factor
+                    rendered_intm_semantic = rendered_intm_semantic * factor
+                loss_intermediate_semantic = self.loss_fn(
+                rendered_intm_semantic, intermediate_semantic_gt, reduction="none"
+                )
+                loss_intermediate_semantic = reduce(loss_intermediate_semantic, "b ... -> b (...)", "mean")
+                loss_intermediate_semantic = loss_intermediate_semantic * extract(
+                    self.p2_loss_weight, t, loss_intermediate_semantic.shape
+                )
+            else:
+                loss_intermediate_semantic = self._compute_dense_semantic_loss(intm_semantic, t)
+            if self.use_reg_model:
+                # Dense pixel-aligned reg supervision against DINOv3 features.
+                intermediate_semantic_reg_gt = intm_semantic["dino_dense"]
+                rendered_intm_semantic_reg = intm_semantic["semantic_reg_dense"]
+                intermediate_semantic_reg_gt = intermediate_semantic_reg_gt.to(rendered_intm_semantic_reg.dtype)
                 loss_intermediate_semantic_reg = self.loss_fn(
-                rendered_intm_semantic_reg, intermediate_semantic_reg_gt, reduction="none"
+                    rendered_intm_semantic_reg, intermediate_semantic_reg_gt, reduction="none"
                 )
                 loss_intermediate_semantic_reg = reduce(loss_intermediate_semantic_reg, "b ... -> b (...)", "mean")
                 loss_intermediate_semantic_reg = loss_intermediate_semantic_reg * extract(
@@ -1162,28 +1332,26 @@ class Diffusion(nn.Module):
             semantic_loss_ctxt = None
             semantic_loss_ctxt_reg = None
             if self.use_semantic:
-                semantic_gt_ctxt = ctxt_semantic["clip_embeddings"]
-                rendered_ctxt_semantic = ctxt_semantic["center_features"]
-                semantic_gt_ctxt = semantic_gt_ctxt.to(rendered_ctxt_semantic.dtype)
-                if self.use_object_binary_mask:
-                    ctxt_obj_binary_mask = inp["ctxt_obj_binary_mask"][:, 0, ...]
-                    ctxt_obj_binary_mask = ctxt_obj_binary_mask.view(b, v, 1, h, w)
-                    factor = ctxt_obj_binary_mask.float() * 1.0 + (~ctxt_obj_binary_mask).float() * self.background_weight
-                    semantic_gt_ctxt = semantic_gt_ctxt * factor
-                    rendered_ctxt_semantic = rendered_ctxt_semantic * factor
-                semantic_loss_ctxt = self.loss_fn(semantic_gt_ctxt, rendered_ctxt_semantic, reduction="none")
-                semantic_loss_ctxt = reduce(semantic_loss_ctxt, "b ... -> b (...)", "mean")
-                semantic_loss_ctxt = semantic_loss_ctxt * extract(self.p2_loss_weight, t_zero, semantic_loss_ctxt.shape)
-                if self.use_reg_model:
-                    semantic_reg_gt_ctxt = ctxt_semantic["dino_embeddings"]
-                    rendered_ctxt_semantic_reg = ctxt_semantic["center_features_reg"]
-                    semantic_reg_gt_ctxt = semantic_reg_gt_ctxt.to(rendered_ctxt_semantic_reg.dtype)
+                if self.semantic_supervision_mode == "clip_patch_sampled":
+                    semantic_gt_ctxt = ctxt_semantic["clip_embeddings"]
+                    rendered_ctxt_semantic = ctxt_semantic["center_features"]
+                    semantic_gt_ctxt = semantic_gt_ctxt.to(rendered_ctxt_semantic.dtype)
                     if self.use_object_binary_mask:
                         ctxt_obj_binary_mask = inp["ctxt_obj_binary_mask"][:, 0, ...]
                         ctxt_obj_binary_mask = ctxt_obj_binary_mask.view(b, v, 1, h, w)
                         factor = ctxt_obj_binary_mask.float() * 1.0 + (~ctxt_obj_binary_mask).float() * self.background_weight
-                        semantic_reg_gt_ctxt = semantic_reg_gt_ctxt * factor
-                        rendered_ctxt_semantic_reg = rendered_ctxt_semantic_reg * factor
+                        semantic_gt_ctxt = semantic_gt_ctxt * factor
+                        rendered_ctxt_semantic = rendered_ctxt_semantic * factor
+                    semantic_loss_ctxt = self.loss_fn(semantic_gt_ctxt, rendered_ctxt_semantic, reduction="none")
+                    semantic_loss_ctxt = reduce(semantic_loss_ctxt, "b ... -> b (...)", "mean")
+                    semantic_loss_ctxt = semantic_loss_ctxt * extract(self.p2_loss_weight, t_zero, semantic_loss_ctxt.shape)
+                else:
+                    semantic_loss_ctxt = self._compute_dense_semantic_loss(ctxt_semantic, t_zero)
+                if self.use_reg_model:
+                    # Dense pixel-aligned reg supervision against DINOv3 features.
+                    semantic_reg_gt_ctxt = ctxt_semantic["dino_dense"]
+                    rendered_ctxt_semantic_reg = ctxt_semantic["semantic_reg_dense"]
+                    semantic_reg_gt_ctxt = semantic_reg_gt_ctxt.to(rendered_ctxt_semantic_reg.dtype)
                     semantic_loss_ctxt_reg = self.loss_fn(rendered_ctxt_semantic_reg, semantic_reg_gt_ctxt, reduction="none")
                     semantic_loss_ctxt_reg = reduce(semantic_loss_ctxt_reg, "b ... -> b (...)", "mean")
                     semantic_loss_ctxt_reg = semantic_loss_ctxt_reg * extract(self.p2_loss_weight, t_zero, semantic_loss_ctxt_reg.shape)
@@ -1305,7 +1473,8 @@ class Trainer(object):
         cfg=None,
         num_context=1,
         load_enc=False,
-        lock_enc_steps=0,
+        finetune_component=None,
+        finetune_steps=0,
         use_identity=False,
         load_optimizer=False,
         use_depth_smoothness=False,
@@ -1372,7 +1541,13 @@ class Trainer(object):
         self.step = 0
 
         self.load_enc = load_enc
-        self.lock_enc_steps = lock_enc_steps
+        self.finetune_component = finetune_component
+        self.finetune_steps = finetune_steps
+        if self.finetune_steps > 0 and self.finetune_component is None:
+            raise ValueError(
+                "finetune_steps > 0 requires finetune_component to be set "
+                "(one of 'encoder', 'depth_predictor', 'semantic_head')."
+            )
 
         self.use_identity = use_identity
 
@@ -1435,12 +1610,36 @@ class Trainer(object):
         data = torch.load(str(path), map_location=torch.device("cpu"),)
 
         model = self.accelerator.unwrap_model(self.model)
-        # model = self.model
-        # load all parameteres
-        # data["model"].pop("model.encoder.backbone.external_cond_embedding.patch_embedder.proj.weight")
-        # data["model"].pop("model.encoder.backbone.embed_input.proj.weight")
-        # data["model"].pop("model.encoder.backbone.project_output.proj.weight")
-        print(model.load_state_dict(data["model"], strict=False))
+        # The repa_encoder and dino_model are loaded fresh from torch.hub and may
+        # have a different architecture than what's in the checkpoint
+        # (e.g. dinov2 → dinov3), so drop their keys to avoid size mismatches.
+        def _should_drop(key: str) -> bool:
+            return ("repa_encoder" in key) or ("dino_model" in key)
+        for key in list(data["model"].keys()):
+            if _should_drop(key):
+                data["model"].pop(key)
+        if "ema" in data:
+            for key in list(data["ema"].keys()):
+                if _should_drop(key):
+                    data["ema"].pop(key)
+
+        # Drop checkpoint entries whose shape doesn't match the current model.
+        # Needed e.g. after the VGGT-alignment projector output shape change
+        # from (24, 512, 512) -> (2048, 37, 37); the old projector / unormalizer
+        # params are now incompatible and must re-initialize from scratch
+        # (they're tiny and learnable anyway).
+        ckpt_state = data["model"]
+        own_state = model.state_dict()
+        dropped = []
+        for k in list(ckpt_state.keys()):
+            if k in own_state and ckpt_state[k].shape != own_state[k].shape:
+                dropped.append((k, tuple(ckpt_state[k].shape), tuple(own_state[k].shape)))
+                ckpt_state.pop(k)
+        if dropped:
+            print(f"[load] dropped {len(dropped)} shape-mismatched keys (will re-init):")
+            for k, ck_shape, mod_shape in dropped:
+                print(f"   - {k}: ckpt {ck_shape} != model {mod_shape}")
+        print(model.load_state_dict(ckpt_state, strict=False))
         
         if self.load_optimizer and "opt" in data:
             try:
@@ -1456,13 +1655,17 @@ class Trainer(object):
                 print("fail to load optimizer")
         
         if self.accelerator.is_main_process and "ema" in data:
-            # data["ema"].pop("ema_model.model.encoder.backbone.external_cond_embedding.patch_embedder.proj.weight")
-            # data["ema"].pop("ema_model.model.encoder.backbone.embed_input.proj.weight")
-            # data["ema"].pop("ema_model.model.encoder.backbone.project_output.proj.weight")
-            # data["ema"].pop("online_model.model.encoder.backbone.external_cond_embedding.patch_embedder.proj.weight")
-            # data["ema"].pop("online_model.model.encoder.backbone.embed_input.proj.weight")
-            # data["ema"].pop("online_model.model.encoder.backbone.project_output.proj.weight")
-            print(self.ema.load_state_dict(data["ema"], strict=False))
+            # Same shape-mismatch filter as the main model state dict (see above).
+            ema_ckpt = data["ema"]
+            ema_own = self.ema.state_dict()
+            ema_dropped = []
+            for k in list(ema_ckpt.keys()):
+                if k in ema_own and ema_ckpt[k].shape != ema_own[k].shape:
+                    ema_dropped.append(k)
+                    ema_ckpt.pop(k)
+            if ema_dropped:
+                print(f"[load] dropped {len(ema_dropped)} EMA shape-mismatched keys (will re-init)")
+            print(self.ema.load_state_dict(ema_ckpt, strict=False))
 
         if self.load_optimizer and "scaler" in data and exists(self.accelerator.scaler):
             self.accelerator.scaler.load_state_dict(data["scaler"])
@@ -1508,17 +1711,43 @@ class Trainer(object):
 
         print(f"Encoder weights loaded successfully from {path}")
 
-    def lock_encoder(self):
-        model = self.accelerator.unwrap_model(self.model)
-        for param in model.model.encoder.backbone.parameters():
-            param.requires_grad = False
-        print("Encoder weights locked.")
+    def _component_modules(self, component):
+        encoder = self.accelerator.unwrap_model(self.model).model.encoder
+        if component == "encoder":
+            return [encoder]
+        if component == "depth_predictor":
+            return [encoder.depth_predictor]
+        if component == "semantic_head":
+            modules = []
+            if hasattr(encoder, "to_semantic"):
+                modules.append(encoder.to_semantic)
+            if hasattr(encoder, "to_semantic_reg"):
+                modules.append(encoder.to_semantic_reg)
+            if not modules:
+                raise RuntimeError(
+                    "finetune_component='semantic_head' but encoder has neither "
+                    "to_semantic nor to_semantic_reg (check use_semantic / use_reg_model)."
+                )
+            return modules
+        raise ValueError(
+            f"Unknown finetune_component {component!r}; "
+            "expected one of 'encoder', 'depth_predictor', 'semantic_head'."
+        )
 
-    def unlock_encoder(self):
+    def restrict_to_component(self):
         model = self.accelerator.unwrap_model(self.model)
-        for param in model.model.encoder.backbone.parameters():
+        for param in model.parameters():
+            param.requires_grad = False
+        for module in self._component_modules(self.finetune_component):
+            for param in module.parameters():
+                param.requires_grad = True
+        print(f"Finetune restricted to component '{self.finetune_component}'.")
+
+    def unlock_all(self):
+        model = self.accelerator.unwrap_model(self.model)
+        for param in model.parameters():
             param.requires_grad = True
-        print("Encoder weights unlocked.")
+        print("All parameters unlocked.")
 
     def train(self):
         accelerator = self.accelerator
@@ -1530,9 +1759,9 @@ class Trainer(object):
         log_path = os.path.join(str(self.results_folder), 'logs.json.txt')
         start_time = time.time()
 
-        # lock encoder if needed
-        if self.lock_enc_steps > 0:
-            self.lock_encoder()
+        # restrict training to a single component for the first finetune_steps
+        if self.finetune_steps > 0:
+            self.restrict_to_component()
         
         with JsonLogger(log_path) as json_logger:
             with tqdm(
@@ -1543,9 +1772,9 @@ class Trainer(object):
 
                 while self.step < self.train_num_steps:
 
-                    # unlock encoder if reached the max lock step
-                    if self.step == self.lock_enc_steps:
-                        self.unlock_encoder()
+                    # unlock everything once the component-only finetune phase ends
+                    if self.finetune_steps > 0 and self.step == self.finetune_steps:
+                        self.unlock_all()
                     
                     total_loss = 0.0
                     total_rgb_loss = 0.0

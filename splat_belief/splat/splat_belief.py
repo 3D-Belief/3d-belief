@@ -57,6 +57,9 @@ class SplatBelief(nn.Module):
         feature_patch_min_scale: float = 0.05,
         feature_patch_max_scale: float = 0.5,
         feature_patch_num_samples: int = 15,
+        # Per-pixel class-text supervision (mode == "class_text_only").
+        semantic_supervision_mode: str = "clip_patch_sampled",
+        class_text_table: Optional[Tensor] = None,
     ) -> None:
         super().__init__()
 
@@ -87,6 +90,14 @@ class SplatBelief(nn.Module):
         self.unnormalize = unnormalize_to_zero_to_one
         self.gaussians = None
 
+        # Class-text supervision plumbing (mode == "class_text_only").
+        self.semantic_supervision_mode = semantic_supervision_mode
+        # Frozen lookup table mapping class id (0 = ignore) -> D-dim text embed.
+        if class_text_table is not None:
+            self.register_buffer("class_text_table", class_text_table.float(), persistent=False)
+        else:
+            self.class_text_table = None
+
     def forward(self, model_input, t, global_step=100000):
         b, num_context, _, h, w = model_input["ctxt_rgb"].shape
 
@@ -116,14 +127,14 @@ class SplatBelief(nn.Module):
                 raw_ctxt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
             )
             repa_gt_ctxt = self.repa_encoder.forward_features(raw_ctxt)
-            if 'dinov2' in self.repa_encoder_name: repa_gt_ctxt = repa_gt_ctxt['x_norm_patchtokens']
+            if 'dino' in self.repa_encoder_name: repa_gt_ctxt = repa_gt_ctxt['x_norm_patchtokens']
 
             raw_trgt = self.unnormalize(model_input["trgt_rgb"]).squeeze(1)
             raw_trgt = preprocess_raw_image(
                 raw_trgt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
             )
             repa_gt_trgt = self.repa_encoder.forward_features(raw_trgt)
-            if 'dinov2' in self.repa_encoder_name: repa_gt_trgt = repa_gt_trgt['x_norm_patchtokens']
+            if 'dino' in self.repa_encoder_name: repa_gt_trgt = repa_gt_trgt['x_norm_patchtokens']
 
         # Augmented gaussians
         gaussians = context_gaussians + target_gaussians
@@ -207,62 +218,36 @@ class SplatBelief(nn.Module):
                 "rendered_intm_depth": intm_rendered_depth,
             })
 
-        extract_dino = False if self.dino_model is None else True
-        # Sample from target rendered semantic feature maps
+        # ---- Per-pass semantic supervision targets ----
         if self.use_semantic and not self.inference_mode:
-            target_rendered_semantic = self.encoder.get_semantic_features(target_rendered_features)
-            target_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                target_rendered_semantic_reg = self.encoder.get_semantic_reg_features(target_rendered_features)
-            target_samples = self.sample_patches_and_get_clip_embeddings(
-                target_rendered_semantic,
-                self.unnormalize(model_input["trgt_rgb"]),
-                num_samples=self.feature_patch_num_samples,
-                min_scale=self.feature_patch_min_scale,
-                max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=target_rendered_semantic_reg
+            self._build_semantic_pass(
+                pass_key="trgt_semantic",
+                rendered_features=target_rendered_features,
+                rgb_normed=model_input["trgt_rgb"],
+                class_map=model_input.get("trgt_class_map"),
+                misc=misc,
             )
-            
-            misc[f"trgt_semantic"] = target_samples
-        
-        # Sample from context rendered semantic feature maps
-        if self.use_semantic and not self.inference_mode:
-            context_rendered_semantic = self.encoder.get_semantic_features(context_rendered_features)
-            context_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                context_rendered_semantic_reg = self.encoder.get_semantic_reg_features(context_rendered_features)
-            context_samples = self.sample_patches_and_get_clip_embeddings(
-                context_rendered_semantic,
-                self.unnormalize(model_input["ctxt_rgb"]),
-                num_samples=self.feature_patch_num_samples,
-                min_scale=self.feature_patch_min_scale,
-                max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=context_rendered_semantic_reg
+            self._build_semantic_pass(
+                pass_key="ctxt_semantic",
+                rendered_features=context_rendered_features,
+                rgb_normed=model_input["ctxt_rgb"],
+                class_map=model_input.get("ctxt_class_map"),
+                misc=misc,
             )
-    
-            misc[f"ctxt_semantic"] = context_samples
-        
-        # If available, also sample from intermediate rendered semantic maps
-        if "intm_c2w" in model_input and self.use_semantic and not self.inference_mode:
-            intm_rendered_semantic = self.encoder.get_semantic_features(intm_rendered_features)
-            intm_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                intm_rendered_semantic_reg = self.encoder.get_semantic_reg_features(intm_rendered_features)
-            intm_samples = self.sample_patches_and_get_clip_embeddings(
-                intm_rendered_semantic,
-                self.unnormalize(model_input["intm_rgb"]),
-                num_samples=self.feature_patch_num_samples,
-                min_scale=self.feature_patch_min_scale,
-                max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=intm_rendered_semantic_reg
-            )
-            
-            # Update misc with the sampled patches and their center features
-            misc[f"intm_semantic"] = intm_samples
-        
+            if "intm_c2w" in model_input:
+                self._build_semantic_pass(
+                    pass_key="intm_semantic",
+                    rendered_features=intm_rendered_features,
+                    rgb_normed=model_input["intm_rgb"],
+                    class_map=model_input.get("intm_class_map"),
+                    misc=misc,
+                )
+
+            # CLIP forward needed when any per-pass dict carries rgb_patches —
+            # used by clip_patch_sampled and (the image-side of) class_text_image.
+            if self.semantic_supervision_mode in ("clip_patch_sampled", "class_text_image"):
+                self._run_clip_on_collected_patches(misc)
+
         return self.normalize(target_rendered_color), target_rendered_depth, misc
     
     def render(self, gaussians, extrinsics, intrinsics, near, far, h, w):
@@ -388,6 +373,104 @@ class SplatBelief(nn.Module):
         print(f"render_poses: {render_poses.shape}")
         return render_poses
 
+    def _compute_dense_dino_targets(self, rgb_maps):
+        """Run the (frozen) DINO encoder on rgb_maps and return dense feature maps.
+
+        Inputs are expected at rendered resolution; outputs are bilinearly
+        upsampled back to that resolution so they can be compared pixel-wise
+        against the encoder's dense reg head output.
+
+        Returns: tensor of shape (batch, views, dino_c, height, width).
+        """
+        batch, views, _, height, width = rgb_maps.shape
+        rgb_flat = rgb_maps.reshape(batch * views, 3, height, width)
+        # DINOv2 uses patch_size=14, DINOv3 uses patch_size=16. Read it off the model.
+        dino_patch_size = self.dino_model.patch_embed.patch_size
+        if isinstance(dino_patch_size, (tuple, list)):
+            dino_patch_size = dino_patch_size[0]
+        # Run DINO at a multiple-of-patch-size resolution so reshape is well-defined.
+        dino_h0 = max(dino_patch_size, height // 4 * dino_patch_size)
+        dino_w0 = max(dino_patch_size, width // 4 * dino_patch_size)
+        rgb_resized = torch.nn.functional.interpolate(
+            rgb_flat, size=(dino_h0, dino_w0), mode='bilinear', align_corners=False
+        )
+        with torch.no_grad():
+            feats = forward_2d_model_batch(rgb_resized, self.dino_model)
+            _, dino_c, dh, dw = feats.shape
+            feats = torch.nn.functional.interpolate(
+                feats, size=(height, width), mode='bilinear', align_corners=False
+            ).reshape(batch, views, dino_c, height, width)
+        return feats
+
+    def _build_semantic_pass(self, pass_key, rendered_features, rgb_normed, class_map, misc):
+        """Populate misc[pass_key] with the targets needed for the active
+        supervision mode. Always includes `semantic_dense` (the raw projection
+        used for inference queries). Also populates dense DINO reg targets when
+        the reg head is enabled.
+        """
+        rendered_semantic = self.encoder.get_semantic_features(rendered_features)
+        unnorm = self.unnormalize(rgb_normed)
+        mode = self.semantic_supervision_mode
+
+        if mode in ("clip_patch_sampled", "class_text_image"):
+            samples = self.sample_patches_and_get_clip_embeddings(
+                rendered_semantic, unnorm,
+                num_samples=self.feature_patch_num_samples,
+                min_scale=self.feature_patch_min_scale,
+                max_scale=self.feature_patch_max_scale,
+            )
+        else:
+            samples = {}
+
+        samples["semantic_dense"] = rendered_semantic
+
+        # Dense DINO reg head — orthogonal supervision, kept under all modes
+        # whenever use_reg_model is enabled (signaled by dino_model presence).
+        if self.dino_model is not None:
+            samples["semantic_reg_dense"] = self.encoder.get_semantic_reg_features(rendered_features)
+            samples["dino_dense"] = self._compute_dense_dino_targets(unnorm)
+
+        # Class-text targets (modes that consume per-pixel class-text targets).
+        if mode in ("class_text_only", "class_text_image") and self.class_text_table is not None:
+            if class_map is None:
+                raise RuntimeError(
+                    f"semantic_supervision_mode={mode!r} requires {pass_key.replace('semantic', 'class_map')} "
+                    "in model_input; enable load_class_maps in the dataset."
+                )
+            samples["class_text_target"] = self._compute_class_text_targets(class_map.long())
+            samples["class_map"] = class_map
+
+        misc[pass_key] = samples
+
+    def _compute_class_text_targets(self, class_map):
+        """Build a dense per-pixel class-text target tensor.
+
+        Inputs:
+            class_map: (batch, views, H, W) int64 of class IDs (0 = ignore).
+        Returns:
+            text_target: (batch, views, D, H, W) float, the class-text vector
+                at every non-ignore pixel; zero where class_id == 0.
+        """
+        assert self.class_text_table is not None, "class_text_table is required"
+        b, v, h, w = class_map.shape
+        d = self.class_text_table.shape[-1]
+        flat_ids = class_map.reshape(-1).clamp_min(0).long()
+        n_classes = self.class_text_table.shape[0]
+        flat_ids = torch.where(flat_ids < n_classes, flat_ids, torch.zeros_like(flat_ids))
+        text_target = (
+            self.class_text_table[flat_ids]
+            .reshape(b, v, h, w, d)
+            .permute(0, 1, 4, 2, 3)
+            .contiguous()
+        )
+        ignore_mask = (class_map == 0).unsqueeze(2)
+        text_target = text_target * (~ignore_mask).float()
+        return text_target
+
+    # CLIP image normalization constants (OpenAI CLIP / open_clip ViT-B/16)
+    _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+    _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
     def sample_patches_and_get_clip_embeddings(
         self,
         semantic_maps,
@@ -396,202 +479,97 @@ class SplatBelief(nn.Module):
         min_scale=0.03125,  # 1/32 of the image size
         max_scale=1.0,
         seed=None,
-        extract_dino=False,
-        reg_patch_size=4,
-        semantic_reg_maps=None,
     ):
         """
-        Randomly sample pixels from rendered semantic feature maps and get CLIP embeddings for patches
-        centered at these pixels at random scales.
-        
-        Args:
-            semantic_maps: Tensor of semantic feature maps [batch, views, channels, height, width]
-            rgb_maps: Tensor of RGB maps [batch, views, 3, height, width] 
-            num_samples: Number of random pixels to sample
-            min_scale: Minimum scale factor (relative to image size)
-            max_scale: Maximum scale factor (relative to image size)
-            seed: Random seed for reproducibility
-            extract_dino: Whether to extract DINO feature embeddings
-            
+        Vectorized random-patch sampler that supervises the CLIP-style semantic head.
+        Returns a dict with `center_features` (predicted features at sampled pixel
+        centers) and `rgb_patches` (224x224 ImageNet-normalised fp16 patches, ready
+        for CLIP). The caller is expected to run CLIP separately on `rgb_patches`
+        — typically batched once across all passes (trgt/ctxt/intm).
+
+        Shapes:
+            semantic_maps: (B, V, C, H, W)
+            rgb_maps:      (B, V, 3, H, W)
         Returns:
-            Dictionary containing stacked tensors of sampled features and embeddings
+            center_features: (B, V, N, C)
+            rgb_patches:     (B, V, N, 3, 224, 224)
         """
         if seed is not None:
             torch.manual_seed(seed)
-            
-        # Get dimensions
-        batch, views, channels, height, width = semantic_maps.shape
-        
-        # Extract DINO features for all images at once if requested and model is available
-        dino_feature_maps = None
-        if extract_dino and hasattr(self, 'dino_model') and self.dino_model is not None:
-            # Reshape RGB maps to [batch*views, 3, height, width] for batch processing
-            rgb_flat = rgb_maps.reshape(batch * views, 3, height, width)
-            dino_h0 = height // reg_patch_size * 14 # dinov2 uses patch size of 14
-            dino_w0 = width // reg_patch_size * 14
-            # Resize images for DINO model
-            rgb_resized = torch.nn.functional.interpolate(
-                rgb_flat, size=(dino_h0, dino_w0), mode='bilinear', align_corners=False
-            )
-            with torch.no_grad():
-                dino_feature_maps = forward_2d_model_batch(rgb_resized, self.dino_model)
-                # Reshape back to [batch, views, feature_dim, feature_height, feature_width]
-                _, dino_c, dino_h, dino_w = dino_feature_maps.shape
-                dino_feature_maps = dino_feature_maps.reshape(batch, views, dino_c, dino_h, dino_w)
-                
-                # Interpolate DINO features to match semantic maps size
-                dino_feature_maps = torch.nn.functional.interpolate(
-                    dino_feature_maps.flatten(0, 1),  # [batch*views, dino_c, dino_h, dino_w]
-                    size=(height, width),
-                    mode='bilinear',
-                    align_corners=False
-                ).reshape(batch, views, dino_c, height, width)
-                
-        # Initialize output containers
-        all_center_features = []
-        all_center_features_reg = []
-        all_rgb_patches = []
-        all_batch_indices = []
-        all_dino_features = [] if extract_dino else None
-        
-        # For each batch
-        for b in range(batch):
-            batch_rgb_patches = []
-            batch_center_features = []
-            if extract_dino and semantic_reg_maps is not None:
-                batch_center_features_reg = []
-            batch_pixel_positions = []
-            batch_scales = []
-            batch_view_indices = []
-            batch_dino_features = [] if extract_dino else None
-            
-            # For each view
-            for v in range(views):
-                view_center_features = []
-                view_center_features_reg = [] if extract_dino and semantic_reg_maps is not None else None
-                view_rgb_patches = []
-                view_pixel_positions = []
-                view_scales = []
-                view_dino_features = [] if extract_dino else None
-                
-                # Generate random pixel coordinates
-                rand_pixels = []
-                for _ in range(num_samples):
-                    # Random x, y positions
-                    y = torch.randint(0, height, (1,)).item()
-                    x = torch.randint(0, width, (1,)).item()
-                    
-                    # Log-uniform sampling between min_scale and max_scale
-                    log_min = np.log(min_scale)
-                    log_max = np.log(max_scale)
-                    log_scale = log_min + torch.rand(1).item() * (log_max - log_min)
-                    scale = np.exp(log_scale)
-                    
-                    # Calculate patch size based on scale
-                    patch_size = max(1, int(min(height, width) * scale))
-                    
-                    # Calculate patch boundaries with clamping to image boundaries
-                    half_size = patch_size // 2
-                    y_min = max(0, y - half_size)
-                    y_max = min(height, y + half_size)
-                    x_min = max(0, x - half_size)
-                    x_max = min(width, x + half_size)
-                    
-                    rand_pixels.append((y, x, scale, y_min, y_max, x_min, x_max))
-                
-                # Extract patches for this view
-                for y, x, scale, y_min, y_max, x_min, x_max in rand_pixels:
-                    # Extract features at the center point
-                    center_feature = semantic_maps[b, v, :, y, x]
-                    # center_feature = center_feature / center_feature.norm(dim=-1, keepdim=True)
-                    view_center_features.append(center_feature)
-                    # Extract regularized semantic features if available
-                    if extract_dino and semantic_reg_maps is not None:
-                        center_feature_reg = semantic_reg_maps[b, v, :, y, x]
-                        view_center_features_reg.append(center_feature_reg)
-                    
-                    # Extract DINO features at the center point if available
-                    if extract_dino and dino_feature_maps is not None:
-                        # Directly get DINO feature at center pixel using same coordinates
-                        dino_feature = dino_feature_maps[b, v, :, y, x]
-                        view_dino_features.append(dino_feature)
-                    
-                    # Sample RGB for the same patch
-                    rgb_patch = rgb_maps[b, v, :, y_min:y_max, x_min:x_max]
-                    
-                    rgb_patch_resized = self.clip_process(rgb_patch).half()
-                    
-                    # Store resized patch for later batch processing with CLIP
-                    view_rgb_patches.append(rgb_patch_resized)
-                    view_pixel_positions.append((y, x))
-                    view_scales.append(scale)
-                
-                # Add view data to batch containers
-                batch_center_features.append(torch.stack(view_center_features))
-                if extract_dino and view_center_features_reg:
-                    batch_center_features_reg.append(torch.stack(view_center_features_reg))
-                batch_rgb_patches.extend(view_rgb_patches)
-                batch_pixel_positions.extend(view_pixel_positions)
-                batch_scales.extend(view_scales)
-                batch_view_indices.extend([v] * len(view_rgb_patches))
-                if extract_dino and view_dino_features:
-                    batch_dino_features.append(torch.stack(view_dino_features))
-            
-            # Stack view features for this batch
-            all_center_features.append(torch.stack(batch_center_features))  # [views, num_samples, channels]
-            if extract_dino and batch_center_features_reg:
-                all_center_features_reg.append(torch.stack(batch_center_features_reg)) # [views, num_samples, reg_channels]
-            if extract_dino and batch_dino_features:
-                all_dino_features.append(torch.stack(batch_dino_features))  # [views, num_samples, dino_dim]
-            
-            # Process all RGB patches for this batch through CLIP at once
-            if hasattr(self, 'clip_model') and self.clip_model is not None and batch_rgb_patches:
-                # Stack all patches for batch inference
-                stacked_rgb_patches = torch.stack(batch_rgb_patches)  # [views*num_samples, 3, 224, 224]
-                
-                with torch.no_grad():
-                    batch_clip_embeddings = self.clip_model.encode_image(stacked_rgb_patches)
-                    # batch_clip_embeddings /= batch_clip_embeddings.norm(dim=-1, keepdim=True)
-                
-                # Reshape to match the views and samples dimensions
-                batch_clip_embeddings = batch_clip_embeddings.reshape(views, num_samples, -1)
-                all_rgb_patches.append(stacked_rgb_patches.reshape(views, num_samples, 3, 224, 224))
-            else:
-                batch_clip_embeddings = None
-                if batch_rgb_patches:
-                    all_rgb_patches.append(torch.stack(batch_rgb_patches).reshape(views, num_samples, 3, 224, 224))
-            
-            # Store batch clip embeddings
-            if batch_clip_embeddings is not None:
-                all_batch_indices.append(torch.full((views * num_samples,), b, dtype=torch.long))
-            
-        # Create final return dictionary with stacked tensors
-        result = {}
-        
-        # Stack center features across batches: [batch, views, num_samples, channels]
-        if all_center_features:
-            result["center_features"] = torch.stack(all_center_features)
-        
-        # Stack regularized center features if available: [batch, views, num_samples, reg_channels]
-        if extract_dino and all_center_features_reg is not None:
-            result["center_features_reg"] = torch.stack(all_center_features_reg)
-        
-        # Stack DINO features if extracted: [batch, views, num_samples, dino_dim]
-        if extract_dino and all_dino_features:
-            result["dino_embeddings"] = torch.stack(all_dino_features)
-        
-        # Stack RGB patches: [batch, views, num_samples, 3, 224, 224]
-        if all_rgb_patches:
-            result["rgb_patches"] = torch.stack(all_rgb_patches)
-        
-        # Stack CLIP embeddings if available: [batch, views, num_samples, embedding_dim]
-        if hasattr(self, 'clip_model') and self.clip_model is not None and 'batch_clip_embeddings' in locals() and batch_clip_embeddings is not None:
-            clip_embeddings = []
-            for b in range(batch):
-                # Get all embeddings for this batch
-                clip_embeddings.append(batch_clip_embeddings)
-            
-            if clip_embeddings:
-                result["clip_embeddings"] = torch.stack(clip_embeddings) # [batch, views, num_samples, embedding_dim]
-        
-        return result
+
+        B, V, C, H, W = semantic_maps.shape
+        N = num_samples
+        device = semantic_maps.device
+
+        # Random pixel coords + log-uniform scales, all on device, no CPU syncs.
+        ys = torch.randint(0, H, (B, V, N), device=device)
+        xs = torch.randint(0, W, (B, V, N), device=device)
+        log_scale = torch.empty((B, V, N), device=device).uniform_(
+            float(np.log(min_scale)), float(np.log(max_scale))
+        )
+        scales = log_scale.exp()  # (B, V, N)
+
+        # Center features via gather: semantic_maps[b, v, :, ys[b,v,n], xs[b,v,n]].
+        sm_flat = semantic_maps.reshape(B, V, C, H * W)
+        flat_idx = (ys * W + xs).unsqueeze(2).expand(-1, -1, C, -1)  # (B, V, C, N)
+        centers = torch.gather(sm_flat, 3, flat_idx)                  # (B, V, C, N)
+        centers = centers.permute(0, 1, 3, 2).contiguous()            # (B, V, N, C)
+
+        # Variable-scale 224x224 RGB patch extraction via grid_sample.
+        # Half-extent of the patch in pixels (clamped to >= 1 px).
+        half_pix = (min(H, W) * scales / 2.0).clamp(min=1.0)  # (B, V, N)
+
+        lin = torch.linspace(-1.0, 1.0, 224, device=device)
+        gy, gx = torch.meshgrid(lin, lin, indexing="ij")  # (224, 224) each
+        base_x = gx[None, None, None]  # (1, 1, 1, 224, 224)
+        base_y = gy[None, None, None]
+        cx = xs.float()[..., None, None]            # (B, V, N, 1, 1)
+        cy = ys.float()[..., None, None]
+        hp = half_pix[..., None, None]              # (B, V, N, 1, 1)
+        sample_x = cx + base_x * hp                  # pixel coords
+        sample_y = cy + base_y * hp
+        sample_x = (sample_x / max(W - 1, 1)) * 2.0 - 1.0
+        sample_y = (sample_y / max(H - 1, 1)) * 2.0 - 1.0
+        grid = torch.stack([sample_x, sample_y], dim=-1)  # (B, V, N, 224, 224, 2)
+
+        rgb_flat = rgb_maps.reshape(B * V, 3, H, W)
+        grid_per_bv = grid.reshape(B * V, N * 224, 224, 2)
+        rgb_patches = torch.nn.functional.grid_sample(
+            rgb_flat, grid_per_bv,
+            mode="bilinear", padding_mode="border", align_corners=True,
+        )  # (B*V, 3, N*224, 224)
+        rgb_patches = rgb_patches.reshape(B * V, 3, N, 224, 224).permute(0, 2, 1, 3, 4)
+        rgb_patches = rgb_patches.reshape(B, V, N, 3, 224, 224)
+
+        # CLIP image normalisation, then cast to fp16 to match clip_model precision.
+        mean = torch.tensor(self._CLIP_MEAN, device=device, dtype=rgb_patches.dtype).view(1, 1, 1, 3, 1, 1)
+        std = torch.tensor(self._CLIP_STD, device=device, dtype=rgb_patches.dtype).view(1, 1, 1, 3, 1, 1)
+        rgb_patches = ((rgb_patches - mean) / std).half()
+
+        return {"center_features": centers, "rgb_patches": rgb_patches}
+
+    def _run_clip_on_collected_patches(self, misc):
+        """Single CLIP forward across trgt/ctxt/intm patches stashed in misc.
+        Replaces each pass's `rgb_patches` entry with `clip_embeddings`."""
+        if self.clip_model is None:
+            return
+        keys = []
+        chunks = []
+        for k in ("trgt_semantic", "ctxt_semantic", "intm_semantic"):
+            if k not in misc or "rgb_patches" not in misc[k]:
+                continue
+            patches = misc[k]["rgb_patches"]  # (B, V, N, 3, 224, 224)
+            B_k, V_k, N_k = patches.shape[:3]
+            chunks.append(patches.reshape(-1, 3, 224, 224))
+            keys.append((k, B_k, V_k, N_k))
+        if not chunks:
+            return
+        all_patches = torch.cat(chunks, dim=0)
+        with torch.no_grad():
+            all_clip = self.clip_model.encode_image(all_patches)  # (total, dim)
+        offset = 0
+        for k, B_k, V_k, N_k in keys:
+            count = B_k * V_k * N_k
+            misc[k]["clip_embeddings"] = all_clip[offset:offset + count].reshape(B_k, V_k, N_k, -1)
+            offset += count
+            del misc[k]["rgb_patches"]

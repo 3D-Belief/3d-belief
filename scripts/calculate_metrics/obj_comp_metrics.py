@@ -36,11 +36,11 @@ Each JSON example:
 }
 
 Usage:
-  python analyze_metrics.py /path/to/root \
+  python analyze_metrics.py <prediction_root> \
       --outdir results \
       --bins 10
   # OR custom bin edges (inclusive of left edge, exclusive of right except last bin):
-  python analyze_metrics.py /path/to/root \
+  python analyze_metrics.py <prediction_root> \
       --outdir results \
       --bin-edges "0,0.2,0.5,0.8,1.0"
 """

@@ -9,18 +9,7 @@ import open3d as o3d
 try:
     from rollout_utils import visualize_semantic_query_intensity_map
 except ImportError:
-    def visualize_semantic_query_intensity_map(semantic):
-        """Fallback: apply a colormap to produce an RGB heatmap when rollout_utils is unavailable."""
-        import numpy as np
-        import matplotlib.cm as cm
-        arr = np.asarray(semantic, dtype=np.float32)
-        vmin, vmax = arr.min(), arr.max()
-        if vmax - vmin > 1e-8:
-            arr = (arr - vmin) / (vmax - vmin)
-        else:
-            arr = np.zeros_like(arr)
-        rgba = cm.turbo(arr)
-        return (rgba[..., :3] * 255).astype(np.uint8)
+    from wm_baselines.utils.vision_utils import visualize_semantic_query_intensity_map
 from wm_baselines.agent.perception.occupancy import OccupancyMap
 from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
 from wm_baselines.world_model.base_world_model import BaseWorldModel
@@ -145,7 +134,15 @@ class RoomCompletionReasoningAgent(BaseAgent):
                     occupancy.save_occupancy_map(self.assets_save_path_ep / key / f"occupancy_map_{self.step}.png")
                 elif key=='pcd':
                     if trace_asset.get('pcd', None) is None: continue
-                    o3d.io.write_point_cloud(str(self.assets_save_path_ep / key / f"pcd_{self.step}.ply"), trace_asset['pcd'])
+                    # Save the actual gaussian scene (with opacity/SH/scales/rotations) so the
+                    # PLY is loadable by 3DGS viewers (splatviz, gaussian-splatting). Falls back
+                    # to plain o3d point cloud if the world model does not expose export_scene.
+                    ply_path = self.assets_save_path_ep / key / f"pcd_{self.step}.ply"
+                    if hasattr(self.world_model, 'export_scene') and getattr(self.world_model, 'current_pose', None) is not None:
+                        c2w = torch.linalg.inv(self.world_model.current_pose.float()).unsqueeze(0)
+                        self.world_model.export_scene(ply_path, c2w)
+                    else:
+                        o3d.io.write_point_cloud(str(ply_path), trace_asset['pcd'])
                 elif key=='rgb':
                     if trace_asset.get('rgb', None) is None: continue
                     rgb = trace_asset['rgb']

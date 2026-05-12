@@ -16,6 +16,9 @@ class OccupancyMap:
         max_range: float = 2.0,
         free_overrides_occupied: bool = True,
         seed: Optional[int] = None,
+        agent_free_radius: Optional[float] = 0.5,
+        flip_y: bool = False,
+        debug: bool = False,
     ):
         """
         Y-up, Z-forward convention:
@@ -24,12 +27,28 @@ class OccupancyMap:
           Z: forward
         Projects the 3D point cloud onto the X-Z plane,
         building a height-map of Y values and an occupancy grid.
+
+        Convention switches
+        -------------------
+        flip_y: if True, negate pcd[:, 1] (and sensor_origin Y) on entry to
+          integrate(). Use this when the caller is feeding a Y-down (OpenCV-
+          camera-style) world frame but the thresholds here are written for
+          Y-up. With Y-up: floor ~ 0, eye ~ +1.6, ceiling ~ +2.4, so
+          obstacle_height_thresh should be slightly ABOVE the floor (e.g. 0.15)
+          and ceiling_height slightly BELOW the ceiling (e.g. 1.8).
+        debug: if True, print pcd / sensor / threshold diagnostics on each
+          integrate() call so you can verify the convention is what you expect.
         """
         self.resolution = resolution
         self.obstacle_height_thresh = obstacle_height_thresh
         self.ceiling_height = ceiling_height
         self.max_range = max_range
         self.free_overrides_occupied = free_overrides_occupied
+        # If None or <= 0, disable the hack that force-marks a disk around the
+        # agent as free on the first frame of integrate().
+        self.agent_free_radius = agent_free_radius
+        self.flip_y = bool(flip_y)
+        self.debug = bool(debug)
         self._seed = seed
         self.rng = np.random.default_rng(seed)
 
@@ -58,6 +77,37 @@ class OccupancyMap:
         current observation's map, without importing obstacles (1) or unknowns (-1).
         Obstacles in the current map are never overwritten by prev_free_map.
         """
+        # Optional Y-axis flip to convert a Y-down (OpenCV-camera-style) frame
+        # into the Y-up convention this class assumes for thresholds.
+        if self.flip_y and pcd.shape[0] > 0:
+            pcd = pcd.copy()
+            pcd[:, 1] = -pcd[:, 1]
+            position = (float(position[0]), -float(position[1]), float(position[2]))
+
+        if self.debug:
+            if pcd.shape[0] > 0:
+                y_arr = pcd[:, 1]
+                # Count points in the diagnostic mid-height band that distinguishes
+                # the two regimes the user is comparing:
+                #   thresh=-0.5  (low bar)  -> these all become obstacle
+                #   thresh=-0.12 (high bar) -> these are NOT obstacle
+                in_mid_band = ((y_arr > -0.5) & (y_arr <= -0.12)).sum()
+                print(
+                    f"[OccupancyMap.debug] flip_y={self.flip_y} "
+                    f"pcd.N={pcd.shape[0]} "
+                    f"y[min={y_arr.min():.3f} max={y_arr.max():.3f} "
+                    f"mean={y_arr.mean():.3f} med={np.median(y_arr):.3f}] "
+                    f"sensor_y={float(position[1]):.3f} "
+                    f"ceiling_height={self.ceiling_height} "
+                    f"obstacle_height_thresh={self.obstacle_height_thresh} "
+                    f"-> kept_below_ceiling={int((y_arr <= self.ceiling_height).sum())} "
+                    f"above_obstacle_thresh={int((y_arr > self.obstacle_height_thresh).sum())} "
+                    f"mid_band(-0.5,-0.12]={int(in_mid_band)} "
+                    f"frac_mid_band={float(in_mid_band)/max(1,pcd.shape[0]):.3f}"
+                )
+            else:
+                print(f"[OccupancyMap.debug] empty pcd, sensor_y={float(position[1]):.3f}")
+
         # Filter out invalid points
         pcd = pcd[pcd[:, 1] <= self.ceiling_height]
         # Extract yaw from rotation parameter
@@ -86,7 +136,11 @@ class OccupancyMap:
                 sensor_origin=position,
                 yaw=yaw,
                 intrinsics=intrinsics,
-                free_radius=0.5,
+                free_radius=(
+                    self.agent_free_radius
+                    if self.agent_free_radius is not None and self.agent_free_radius > 0
+                    else None
+                ),
             )
             # Import FREE space from previous map (if any)
             if prev_free_map is not None:
@@ -100,6 +154,9 @@ class OccupancyMap:
                 max_range=self.max_range,
                 free_overrides_occupied=self.free_overrides_occupied,
                 seed=self._seed,
+                agent_free_radius=self.agent_free_radius,
+                flip_y=False,  # already flipped above on `self`'s entry path
+                debug=self.debug,
             )
             temp_map.set_point_cloud(
                 pcd=pcd,

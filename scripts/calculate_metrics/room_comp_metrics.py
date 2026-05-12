@@ -21,7 +21,7 @@ root/
   ...
 
 Usage:
-  python analyze_metrics_simple.py /path/to/root --outdir results
+  python analyze_metrics_simple.py <prediction_root> --outdir results
 """
 
 import argparse

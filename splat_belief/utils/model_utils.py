@@ -26,6 +26,14 @@ timm_model_card = {
     "deit3_base": "deit3_base_patch16_224.fb_in1k"
 }
 
+# torch.hub model_config tokens for DINOv3 (patch_size=16). Used by build_2d_model
+# when loading via torch.hub instead of timm.
+DINOV3_HUB_CONFIGS = {
+    "dinov3_small": "s",
+    "dinov3_base": "b",
+    "dinov3_large": "l",
+}
+
 def viz_feat(feat, file_path):
 
     _, _, h, w = feat.shape
@@ -99,22 +107,42 @@ def _custom_get_intermediate_layers(
 
     return tuple(outputs)
 
-def build_2d_model(model_name="dinov2_small"):
+def build_2d_model(model_name="dinov2_small", weights_path=None):
 
-    assert model_name in timm_model_card.keys(), "invalid model name"
-    model = timm.create_model(
-        timm_model_card[model_name],
-        pretrained=True,
-        num_classes=0,
-        dynamic_img_size=True,
-        dynamic_img_pad=False,
-    )
-    model.eval()
+    if model_name in timm_model_card:
+        model = timm.create_model(
+            timm_model_card[model_name],
+            pretrained=True,
+            num_classes=0,
+            dynamic_img_size=True,
+            dynamic_img_pad=False,
+        )
+        model.eval()
 
-    model._orig_get_intermediate_layers = model.get_intermediate_layers
-    model.get_intermediate_layers = types.MethodType(_custom_get_intermediate_layers, model)
+        model._orig_get_intermediate_layers = model.get_intermediate_layers
+        model.get_intermediate_layers = types.MethodType(_custom_get_intermediate_layers, model)
 
-    return model
+        return model
+
+    if model_name in DINOV3_HUB_CONFIGS:
+        hub_kwargs = {}
+        if weights_path:
+            hub_kwargs["weights"] = weights_path
+        model = torch.hub.load(
+            "facebookresearch/dinov3",
+            f"dinov3_vit{DINOV3_HUB_CONFIGS[model_name]}16",
+            **hub_kwargs,
+        )
+        model.head = torch.nn.Identity()
+        model.eval()
+        # DINOv3's native get_intermediate_layers already supports reshape=True
+        # and uses different kwargs (return_class_token / return_extra_tokens) —
+        # leave it alone and flag for the call-site to dispatch correctly.
+        model._is_dinov3 = True
+
+        return model
+
+    raise ValueError(f"invalid model name {model_name!r}")
 
 def forward_2d_model_batch(images, feature_extractor):
 
@@ -130,19 +158,31 @@ def forward_2d_model_batch(images, feature_extractor):
     normalized = normalize(resized)
     batch = normalized.to(device)
 
-    featmap = feature_extractor.get_intermediate_layers(
-        batch,
-        n=[len(feature_extractor.blocks)-1],
-        reshape=True,
-        return_prefix_tokens=False,
-        norm=True,
-    )[-1]
+    if getattr(feature_extractor, "_is_dinov3", False):
+        # DINOv3 hub model: kwargs are return_class_token / return_extra_tokens.
+        featmap = feature_extractor.get_intermediate_layers(
+            batch,
+            n=[len(feature_extractor.blocks) - 1],
+            reshape=True,
+            return_class_token=False,
+            return_extra_tokens=False,
+            norm=True,
+        )[-1]
+    else:
+        # DINOv2 / timm path via the _custom_get_intermediate_layers shim.
+        featmap = feature_extractor.get_intermediate_layers(
+            batch,
+            n=[len(feature_extractor.blocks) - 1],
+            reshape=True,
+            return_prefix_tokens=False,
+            norm=True,
+        )[-1]
 
     return featmap
 
 @torch.no_grad()
-def load_repa_encoder(enc_name, device, resolution=256):
-    
+def load_repa_encoder(enc_name, device, resolution=256, weights_path=None):
+
     encoder_type, architecture, model_config = enc_name.split('-')
 
     if 'dinov2' in encoder_type:
@@ -158,11 +198,28 @@ def load_repa_encoder(enc_name, device, resolution=256):
         encoder.head = torch.nn.Identity()
         encoder = encoder.to(device)
         encoder.eval()
-        
+
+    elif 'dinov3' in encoder_type:
+        hub_kwargs = {}
+        if weights_path:
+            hub_kwargs['weights'] = weights_path
+        encoder = torch.hub.load('facebookresearch/dinov3', f'dinov3_vit{model_config}16', **hub_kwargs)
+        # DINOv3 uses RoPE (no absolute pos_embed to resample)
+        encoder.head = torch.nn.Identity()
+        encoder = encoder.to(device)
+        encoder.eval()
+
+    else:
+        raise ValueError(f"unsupported repa encoder type {encoder_type!r}")
+
     return encoder, encoder_type, architecture
 
 def preprocess_raw_image(x, enc_type, resolution=256):
     if 'dinov2' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
         x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+    elif 'dinov3' in enc_type:
+        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+        target_size = 16 * (resolution // 16)  # ensure divisible by patch_size=16
+        x = torch.nn.functional.interpolate(x, target_size, mode='bicubic')
     return x

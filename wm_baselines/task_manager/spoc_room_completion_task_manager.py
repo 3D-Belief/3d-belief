@@ -89,24 +89,35 @@ class SpocRoomCompletionTaskManager(BaseTaskManager):
         return self.imagination_poses
     
     def _extract_key_poses(self, poses):
-        key_poses = []
-        key_indices = []
-        z_start = poses[0][:, 2][:3]
-        t_start = poses[0][:, 3][:3]
-        z_previous = z_start
-        t_previous = t_start
         num_frames = len(poses)
-        for idx in range(1, num_frames):
+        if num_frames == 0:
+            return [], []
+        if num_frames == 1:
+            return [poses[0]], [0]
+
+        key_indices = []
+        anchor_idx = 0
+        idx = 1
+        while idx < num_frames:
+            anchor_pose = poses[anchor_idx]
             current_pose = poses[idx]
-            z_idx = current_pose[:, 2][:3]  # current forward vector
-            t_idx = current_pose[:, 3][:3]  # current translation
-            angle = rotation_angle(z_previous, z_idx)
-            distance = np.linalg.norm(t_idx - t_previous)
-            if angle > self.adjacent_angle or distance > self.adjacent_distance or idx==num_frames-1: # must include the last
-                key_poses.append(current_pose)
+            angle = rotation_angle(anchor_pose[:, 2][:3], current_pose[:, 2][:3])
+            distance = np.linalg.norm(current_pose[:, 3][:3] - anchor_pose[:, 3][:3])
+            if angle > self.adjacent_angle or distance > self.adjacent_distance:
+                candidate_idx = idx - 1
+                if candidate_idx <= anchor_idx:
+                    candidate_idx = idx
+                if not key_indices or key_indices[-1] != candidate_idx:
+                    key_indices.append(candidate_idx)
+                anchor_idx = candidate_idx
+                idx = anchor_idx + 1
+                continue
+
+            if idx == num_frames - 1 and idx != anchor_idx:
                 key_indices.append(idx)
-                z_previous = z_idx
-                t_previous = t_idx
+            idx += 1
+
+        key_poses = [poses[idx] for idx in key_indices]
         return key_poses, key_indices
 
     def reset(self, idx=None):

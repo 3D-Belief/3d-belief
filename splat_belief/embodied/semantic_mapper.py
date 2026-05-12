@@ -118,7 +118,7 @@ class SemanticMapper(torch.nn.Module):
             # Normalize to [0, 1] range for better visualization
             intensity_map = (intensity_map - intensity_map.min()) / (intensity_map.max() - intensity_map.min() + 1e-8)
             # Convert to colormap
-            intensity_np = intensity_map.detach().cpu().numpy()
+            intensity_np = intensity_map.detach().float().cpu().numpy()
             intensity_list = []
             # Apply colormap (jet, viridis, plasma, etc.) by looping over the batch
             for i in range(intensity_np.shape[0]):

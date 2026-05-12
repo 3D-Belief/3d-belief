@@ -9,18 +9,7 @@ import open3d as o3d
 try:
     from rollout_utils import visualize_semantic_query_intensity_map
 except ImportError:
-    def visualize_semantic_query_intensity_map(semantic):
-        """Fallback: apply a colormap to produce an RGB heatmap when rollout_utils is unavailable."""
-        import numpy as np
-        import matplotlib.cm as cm
-        arr = np.asarray(semantic, dtype=np.float32)
-        vmin, vmax = arr.min(), arr.max()
-        if vmax - vmin > 1e-8:
-            arr = (arr - vmin) / (vmax - vmin)
-        else:
-            arr = np.zeros_like(arr)
-        rgba = cm.turbo(arr)
-        return (rgba[..., :3] * 255).astype(np.uint8)
+    from wm_baselines.utils.vision_utils import visualize_semantic_query_intensity_map
 from wm_baselines.env_interface.base_env_interface import BaseEnvInterface
 from wm_baselines.world_model.base_world_model import BaseWorldModel
 from wm_baselines.planner.base_planner import BasePlanner
@@ -91,6 +80,22 @@ class ObjCompletionReasoningAgent(BaseAgent):
         """Calculate metrics for the current episode."""
         gt_ret = self.env_interface.task_manager._calculate_gt_metrics()
         self.current_assets.update(**gt_ret)
+        if not gt_ret or "gt_target_pcd" not in gt_ret:
+            # Target object not visible from GT pose; skip metric calculation for this step.
+            print("[calculate_metrics] Skipping metrics: GT target not visible.")
+            metrics = {
+                "visibility": self.env_interface.task_manager.visibility_percents[self.env_interface.task_manager._current_step-1],
+                "metric_bev_iou": 0.0,
+                "metric_iou_3d": 0.0,
+                "metric_chamfer": float("nan"),
+                "clip_similarity": 0.0,
+                "siglip_similarity": 0.0,
+                "lpips_distance": 1.0,
+            }
+            self.current_assets["metrics"] = metrics
+            self.current_assets["gt_bbox_image"] = None
+            self.current_assets["rendered_bbox_image"] = None
+            return metrics
         rendered_ret = self.env_interface.task_manager._calculate_rendered_metrics(self.current_assets, seed=gt_ret.get("target_seed", None))
         gt_bbox_3d = gt_ret.get("gt_bbox_3d", None)
         rendered_bbox_3d = rendered_ret.get("rendered_bbox_3d", None)
@@ -165,8 +170,22 @@ class ObjCompletionReasoningAgent(BaseAgent):
             # Save the specified assets to the designated path
             for key in self.assets_save_keys:
                 if key=='pcd':
-                    if trace_asset.get('pcd', None) is None: continue
-                    o3d.io.write_point_cloud(str(self.assets_save_path_ep / key / f"pcd_{self.step}.ply"), trace_asset['pcd'])
+                    # Save the actual gaussian scene (with opacity/SH/scales/rotations) so the
+                    # PLY is loadable by 3DGS viewers (splatviz, gaussian-splatting). Falls back
+                    # to plain o3d point cloud if the world model does not expose export_scene.
+                    ply_path = self.assets_save_path_ep / key / f"pcd_{self.step}.ply"
+                    if trace_asset.get('pcd', None) is not None:
+                        if hasattr(self.world_model, 'export_scene') and getattr(self.world_model, 'current_pose', None) is not None:
+                            c2w = torch.linalg.inv(self.world_model.current_pose.float()).unsqueeze(0)
+                            self.world_model.export_scene(ply_path, c2w)
+                        else:
+                            o3d.io.write_point_cloud(str(ply_path), trace_asset['pcd'])
+                    elif trace_asset.get('imagine_colored_pcd', None) is not None:
+                        # Fallback for world models (e.g. dfot_vggt) that produce a colored
+                        # point cloud per full 3D imagination instead of a persistent scene.
+                        o3d.io.write_point_cloud(str(ply_path), trace_asset['imagine_colored_pcd'])
+                    else:
+                        continue
                 elif key=='rgb':
                     if trace_asset.get('rgb', None) is None: continue
                     rgb = trace_asset['rgb']

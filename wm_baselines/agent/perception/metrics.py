@@ -1,12 +1,12 @@
+from __future__ import annotations
+
 import numpy as np
-import open3d as o3d
-import torch, functools
+import functools
 from PIL import Image
-from typing import Iterable, Sequence, Tuple, Union, List, Optional
-from wm_baselines.agent.perception.occupancy import OccupancyMap
-from transformers import CLIPModel, CLIPProcessor, AutoProcessor, SiglipModel
-import torchvision.transforms as T
-from lpips import LPIPS
+from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union, List, Optional
+
+if TYPE_CHECKING:
+    from wm_baselines.agent.perception.occupancy import OccupancyMap
 
 try:
     from shapely.geometry import Polygon
@@ -19,6 +19,17 @@ try:
     _HAS_CV2 = True
 except Exception:
     _HAS_CV2 = False
+
+
+def _torch_no_grad(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import torch
+
+        with torch.no_grad():
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 class Box3D:
     """
@@ -139,6 +150,20 @@ def _apply_resize_pipeline(
         resized.append(im_r)
     return processor(images=resized, return_tensors="pt")
 
+def _as_pooled_features(model_output):
+    """Return a feature tensor from HF models that may return model-output objects."""
+    import torch
+
+    if isinstance(model_output, torch.Tensor):
+        return model_output
+    if hasattr(model_output, "pooler_output") and model_output.pooler_output is not None:
+        return model_output.pooler_output
+    if hasattr(model_output, "image_embeds") and model_output.image_embeds is not None:
+        return model_output.image_embeds
+    if hasattr(model_output, "last_hidden_state") and model_output.last_hidden_state is not None:
+        return model_output.last_hidden_state.mean(dim=1)
+    raise TypeError(f"Unsupported feature output type: {type(model_output)!r}")
+
 def bev_intersection_area(a: Box3D, b: Box3D) -> float:
     A = _rect_corners_bev(a)
     B = _rect_corners_bev(b)
@@ -208,7 +233,7 @@ def box_errors(a: Box3D, b: Box3D):
         "yaw_err_deg": yaw_err_deg,
     }
 
-def box3d_from_aabb(pcd: o3d.geometry.PointCloud) -> Box3D:
+def box3d_from_aabb(pcd: Any) -> Box3D:
     """
     Build a Box3D from an axis-aligned bbox of an Open3D point cloud.
     Yaw is set to 0 by definition (aligned with world axes).
@@ -223,7 +248,7 @@ def box3d_from_aabb(pcd: o3d.geometry.PointCloud) -> Box3D:
     return Box3D(center=tuple(c), size=tuple(extent), yaw=0.0)
 
 
-def box3d_from_obb(pcd: o3d.geometry.PointCloud, up_axis: str = "z") -> Box3D:
+def box3d_from_obb(pcd: Any, up_axis: str = "z") -> Box3D:
     """
     Build a Box3D from an oriented bbox (keeps yaw if you want it).
     Assumes 'yaw' is rotation about the chosen up-axis (default Z-up).
@@ -295,12 +320,14 @@ def default_chamfer_from_gt(gt_pcd, *, chamfer_fn):
 
 @functools.lru_cache(maxsize=4)
 def _load_clip(model_name: str, device: str):
+    from transformers import CLIPModel, CLIPProcessor
+
     model = CLIPModel.from_pretrained(model_name)
     proc  = CLIPProcessor.from_pretrained(model_name)
     model = model.to(device).eval()
     return model, proc
 
-@torch.no_grad()
+@_torch_no_grad
 def clip_similarity(
     images_a,
     images_b,
@@ -314,6 +341,8 @@ def clip_similarity(
     Pairwise cosine similarities for arbitrary-size inputs.
     Returns: {'cosine': Tensor[N], 'emb_a': Tensor[N,D], 'emb_b': Tensor[N,D]}
     """
+    import torch
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, processor = _load_clip(model_name, device)
     A, B = _pair_lists(images_a, images_b)
@@ -325,7 +354,7 @@ def clip_similarity(
         pixel_values = pixel_values.to(dtype)
         model = model.to(dtype)
 
-    feats = model.get_image_features(pixel_values=pixel_values)  # [2N, D]
+    feats = _as_pooled_features(model.get_image_features(pixel_values=pixel_values))  # [2N, D]
     feats = torch.nn.functional.normalize(feats.float(), dim=-1)
 
     N = len(A)
@@ -341,12 +370,14 @@ def clip_similarity(
 
 @functools.lru_cache(maxsize=4)
 def _load_siglip(model_name: str, device: str):
+    from transformers import AutoProcessor, SiglipModel
+
     model = SiglipModel.from_pretrained(model_name)
     proc  = AutoProcessor.from_pretrained(model_name)
     model = model.to(device).eval()
     return model, proc
 
-@torch.no_grad()
+@_torch_no_grad
 def siglip_similarity(
     images_a,
     images_b,
@@ -359,6 +390,8 @@ def siglip_similarity(
     """
     Pairwise semantic similarity with SigLIP for arbitrary-size inputs.
     """
+    import torch
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, processor = _load_siglip(model_name, device)
     A, B = _pair_lists(images_a, images_b)
@@ -370,7 +403,7 @@ def siglip_similarity(
         pixel_values = pixel_values.to(dtype)
         model = model.to(dtype)
 
-    feats = model.get_image_features(pixel_values=pixel_values)  # [2N, D]
+    feats = _as_pooled_features(model.get_image_features(pixel_values=pixel_values))  # [2N, D]
     feats = torch.nn.functional.normalize(feats.float(), dim=-1)
 
     N = len(A)
@@ -386,11 +419,15 @@ def siglip_similarity(
 
 @functools.lru_cache(maxsize=4)
 def _load_lpips(net: str, device: str):
+    from lpips import LPIPS
+
     # nets: 'vgg' (standard), 'alex', 'squeeze'
     model = LPIPS(net=net).to(device).eval()
     return model
 
 def _prep_lpips_t(img: Image.Image, size: Optional[Tuple[int,int]] = None):
+    import torchvision.transforms as T
+
     """
     Convert PIL -> Tensor in [-1,1], optionally resizing/cropping to `size` (H,W).
     If size is None, keep original resolution.
@@ -431,7 +468,7 @@ def _common_size(
         return (max(Ha, Hb), max(Wa, Wb))
     raise ValueError("mode must be one of {'fixed','min','max'}")
 
-@torch.no_grad()
+@_torch_no_grad
 def lpips_distance(
     images_a,
     images_b,
@@ -447,6 +484,8 @@ def lpips_distance(
     Returns:
       {'distance': Tensor[N]}
     """
+    import torch
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = _load_lpips(net, device)
 

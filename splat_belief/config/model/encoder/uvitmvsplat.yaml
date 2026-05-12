@@ -26,6 +26,9 @@ use_semantic: false
 use_semantic_ipe: false
 use_reg_model: false
 reg_model_name: dinov2_reg_small
+# Optional path to local DINOv3 weights for the reg supervision encoder.
+# Leave null to download via torch.hub (requires Meta DINOv3 license).
+reg_model_weights: null
 d_semantic: 256
 d_semantic_reg: 256
 

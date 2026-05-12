@@ -52,37 +52,42 @@ class SpocObjCompletion3DBeliefWorkspace(BaseWorkspace):
         print(f"Loaded {len(self.task_manager.episodes)} episodes from {self.task_manager.episode_root}")
         self.task_manager.set_camera(self.agent.camera)
 
-        for ep_idx, ep in enumerate(self.task_manager.episodes):
-            try:
-                self.env_interface.reset()
-                self.agent.reset()
-                print(f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: {self.task_manager.current_ep_name}")
-                max_steps = self.task_manager.num_steps
-                current_ep_name = self.task_manager.current_ep_name
-                ep_save_path = os.path.join(save_path, current_ep_name) if save_path else None
-                if ep_save_path:
-                    os.makedirs(ep_save_path, exist_ok=True)
-                step = 0
-                done = False
-                while (step < max_steps) and (not done):
-                    step += 1
-                    self.agent.observe()
-                    # ## DEBUG
-                    # if not self.task_manager.done:
-                    #     continue
-                    self.agent.imagine()
-                    self.agent.calculate_metrics()
-                    self.agent.save_step()
-                    done = self.task_manager.is_done()
-                    print(f"Step {step}/{max_steps}, Done: {done}")
+        # Optional episode filtering via env var, e.g. WM_BASELINES_EPISODE_INDICES="32,142"
+        _ep_filter_env = os.environ.get("WM_BASELINES_EPISODE_INDICES", "").strip()
+        if _ep_filter_env:
+            episode_filter = {int(x) for x in _ep_filter_env.split(",") if x.strip() != ""}
+            print(f"[episode filter] Restricting to indices: {sorted(episode_filter)}")
+        else:
+            episode_filter = None
 
-                # save using BaseWorkspace.save()
-                result_paths = self.save(ep_save_path)
-                print(f"Saved results to: {result_paths}")
-            except:
-                result_paths = self.save(ep_save_path)
-                print(f"Error in episode {self.task_manager.current_ep_name}, skipping to next episode.")
+        for ep_idx, ep in enumerate(self.task_manager.episodes):
+            if episode_filter is not None and ep_idx not in episode_filter:
                 continue
+            self.env_interface.reset(idx=ep_idx)
+            self.agent.reset()
+            print(f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: {self.task_manager.current_ep_name}")
+            max_steps = self.task_manager.num_steps
+            current_ep_name = self.task_manager.current_ep_name
+            ep_save_path = os.path.join(save_path, current_ep_name) if save_path else None
+            if ep_save_path:
+                os.makedirs(ep_save_path, exist_ok=True)
+            step = 0
+            done = False
+            while (step < max_steps) and (not done):
+                step += 1
+                self.agent.observe()
+                # ## DEBUG
+                # if not self.task_manager.done:
+                #     continue
+                self.agent.imagine()
+                self.agent.calculate_metrics()
+                self.agent.save_step()
+                done = self.task_manager.is_done()
+                print(f"Step {step}/{max_steps}, Done: {done}")
+
+            # save using BaseWorkspace.save()
+            result_paths = self.save(ep_save_path)
+            print(f"Saved results to: {result_paths}")
 
 
 @hydra.main(

@@ -41,7 +41,6 @@ from wm_baselines.world_model.base_world_model import BaseWorldModel
 from wm_baselines.utils.vision_utils import (
     pose_lh2rh, pose_gl_world2cam_to_open3d_world2cam, points_gl_to_open3d, plot_two_poses, flip_yaw_in_Twc
 )
-from wm_baselines.utils.planning_utils import rotation_angle
 
 class Belief3DModel(BaseWorldModel):
     """3D belief world model maintaining both observation and belief occupancy maps.
@@ -67,6 +66,13 @@ class Belief3DModel(BaseWorldModel):
         obs_depth_min: float = 0.1,
         obs_depth_max: float = 10.0,
         disable_imagination: bool = False,
+        occupancy_min_opacity: float = 0.1,
+        occupancy_max_scale_m: float = 0.3,
+        occupancy_max_range_m: float = 4.0,
+        occupancy_border_px: int = 2,
+        occlusion_filter_enabled: bool = True,
+        occlusion_target_buffer_cells: int = 3,
+        inc_pcd_flip_y: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -104,6 +110,21 @@ class Belief3DModel(BaseWorldModel):
         self.obs_filter_border_gaussians = obs_filter_border_gaussians
         self.obs_depth_min = obs_depth_min
         self.obs_depth_max = obs_depth_max
+        # inc_scene -> occupancy filtering knobs
+        self.occupancy_min_opacity = float(occupancy_min_opacity)
+        self.occupancy_max_scale_m = float(occupancy_max_scale_m)
+        self.occupancy_max_range_m = float(occupancy_max_range_m)
+        self.occupancy_border_px = int(occupancy_border_px)
+        # When True, drop incremental gaussians whose ray from the sensor crosses an
+        # already-known obstacle cell in self.obs_occupancy (kills through-wall imagination).
+        self.occlusion_filter_enabled = bool(occlusion_filter_enabled)
+        # Stop the ray-occlusion check this many cells before the target so we don't
+        # reject neighbour points on the same wall (curtain self-rejection).
+        self.occlusion_target_buffer_cells = int(occlusion_target_buffer_cells)
+        # If True, negate Y of the incremental pcd before handing it to
+        # OccupancyMap (legacy behavior). Set False to test whether the
+        # ceiling/obstacle thresholds were tuned against the *unflipped* frame.
+        self.inc_pcd_flip_y = bool(inc_pcd_flip_y)
     
     @property
     def augmented_scene(self) -> Gaussians:
@@ -118,12 +139,28 @@ class Belief3DModel(BaseWorldModel):
 
     def reset(self):
         """Reset the occupancy maps."""
-        resolution = self.obs_occupancy.resolution
-        obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
-        resolution = self.belief_occupancy.resolution
-        obstacle_height_thresh = self.belief_occupancy.obstacle_height_thresh
-        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+        self.obs_occupancy = OccupancyMap(
+            resolution=self.obs_occupancy.resolution,
+            obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+            ceiling_height=self.obs_occupancy.ceiling_height,
+            max_range=self.obs_occupancy.max_range,
+            free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+            seed=self._seed,
+            agent_free_radius=self.obs_occupancy.agent_free_radius,
+            flip_y=self.obs_occupancy.flip_y,
+            debug=self.obs_occupancy.debug,
+        )
+        self.belief_occupancy = OccupancyMap(
+            resolution=self.belief_occupancy.resolution,
+            obstacle_height_thresh=self.belief_occupancy.obstacle_height_thresh,
+            ceiling_height=self.belief_occupancy.ceiling_height,
+            max_range=self.belief_occupancy.max_range,
+            free_overrides_occupied=self.belief_occupancy.free_overrides_occupied,
+            seed=self._seed,
+            agent_free_radius=self.belief_occupancy.agent_free_radius,
+            flip_y=self.belief_occupancy.flip_y,
+            debug=self.belief_occupancy.debug,
+        )
 
         self.model.model.model.reset_timestep()
         self.model.ema.ema_model.model.reset_timestep()
@@ -163,7 +200,6 @@ class Belief3DModel(BaseWorldModel):
         
         if self.initial_location.get('pose') is not None:
             pose_map = np.linalg.inv(self.initial_location['pose']) @ pose
-            # pose_map = self._project_pose_to_initial_ground(pose_map)
 
         self._update_resample_pcd(pose_map, force=force_update)
 
@@ -206,11 +242,14 @@ class Belief3DModel(BaseWorldModel):
             imagine_pose = torch.tensor(imagine_pose, dtype=torch.float32)
             _, exe_time = self._update_belief(rgb_normalized, obs_pose, imagine_pose, depth=depth)
             self._metrics["model_inference_time_obs"] += exe_time
-            # pose_map = self._project_pose_to_initial_ground(pose_map)
             position = pose_map[:3, 3]
             rotation = pose_map[:3, :3]
-            _, exe_time = self.obs_occupancy.integrate(self._extract_inc_pcd(), position, rotation, intrinsics=self.camera.intrinsics)
-            self._metrics["update_occupancy_time"] += exe_time
+            inc_pcd = self._extract_inc_pcd(position=position, rotation=rotation)
+            if inc_pcd.shape[0] > 0:
+                _, exe_time = self.obs_occupancy.integrate(
+                    inc_pcd, position, rotation, intrinsics=self.camera.intrinsics,
+                )
+                self._metrics["update_occupancy_time"] += exe_time
             pcd = self._extract_obs_colored_pcd()
         
         assets = {
@@ -239,6 +278,8 @@ class Belief3DModel(BaseWorldModel):
         # ensure float
         images = []
         semantics = []
+        depths = []
+        poses = []
         for goal, forward in zip(goals, forwards):
             goal = np.asarray(goal, dtype=np.float64).reshape(3)
             forward = BaseWorldModel.normalize(np.asarray(forward, dtype=np.float64).reshape(3))
@@ -254,15 +295,19 @@ class Belief3DModel(BaseWorldModel):
             T_cam2world = np.eye(4, dtype=np.float64)
             T_cam2world[:3, :3] = R
             T_cam2world[:3, 3:4] = t
-            
+
             # T_cam2world = pose_gl_world2cam_to_open3d_world2cam(T_cam2world)
             (key_output, _, _), exe_time = self._imagine_in_place(T_cam2world, query_label=query_label)
             select = len(key_output.rgb) // 4
             images.append(key_output.rgb[select])  # (H, W, 3)
             if key_output.semantic is not None and len(key_output.semantic) > 0:
                 semantics.append(key_output.semantic[select])
+            if key_output.depth is not None and len(key_output.depth) > 0:
+                depths.append(key_output.depth[select])
+            if key_output.pose is not None and len(key_output.pose) > 0:
+                poses.append(key_output.pose[select])
             self._metrics["model_inference_time_imagine"] += exe_time
-        render_output = RenderOutput(rgb=images, semantic=semantics)
+        render_output = RenderOutput(rgb=images, semantic=semantics, depth=depths, pose=poses)
 
         return render_output
 
@@ -378,12 +423,78 @@ class Belief3DModel(BaseWorldModel):
         # Save a deep copy of the model for imagination
         self.imagination_model = copy.deepcopy(self.model.ema.ema_model)
         # Run inference
-        # self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=self.obs_filter_border_gaussians, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max, ref_depth=depth)
-        self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=self.obs_filter_border_gaussians, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max)
+        # NOTE: filter_border_gaussians is NOT passed to .sample() because that would zero out
+        # border-pixel gaussians and degrade rendering quality. Border filtering for occupancy
+        # ingestion is applied later in _extract_inc_pcd via self.obs_filter_border_gaussians.
+        self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=False, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max)
         self.obs_scene = self.model.ema.ema_model.model.history_gaussians.clone()
         self.inc_scene = self.model.ema.ema_model.model.incremental_gaussians.clone()
         self.belief_scene = self.model.ema.ema_model.model.belief_gaussians.clone()
         self.state_step += 1
+
+    def _pose_delta(self, pose_a: Union[Tensor, np.ndarray], pose_b: Union[Tensor, np.ndarray]) -> tuple[float, float]:
+        """Return translation distance and forward-vector angle between two camera poses."""
+        if not torch.is_tensor(pose_a):
+            pose_a = torch.as_tensor(pose_a)
+        if not torch.is_tensor(pose_b):
+            pose_b = torch.as_tensor(pose_b)
+        pose_a = pose_a.detach().float()
+        pose_b = pose_b.detach().float()
+
+        z_a = pose_a[:3, 2]
+        z_b = pose_b[:3, 2]
+        denom = torch.linalg.norm(z_a) * torch.linalg.norm(z_b)
+        if float(denom.item()) <= 1e-9:
+            angle = 0.0
+        else:
+            cos_angle = torch.clamp(torch.dot(z_a, z_b) / denom, -1.0, 1.0)
+            angle = float(torch.arccos(cos_angle).item())
+        distance = float(torch.linalg.norm(pose_b[:3, 3] - pose_a[:3, 3]).item())
+        return distance, angle
+
+    def _select_adjacent_bounded_key_frame_indices(
+        self,
+        render_poses: List[Union[Tensor, np.ndarray]],
+    ) -> List[int]:
+        """Select keyframes while keeping consecutive target deltas in-distribution.
+
+        The old selector appended the first pose *after* a distance/angle threshold
+        was crossed, so target pairs could be 1 raw step beyond the configured
+        adjacent envelope. Here we commit the last pose before crossing whenever
+        possible, and still include the final pose for metric/video coverage.
+        """
+        num_frames = len(render_poses)
+        if num_frames == 0:
+            return []
+        if num_frames == 1:
+            return [0]
+
+        key_frame_indices: List[int] = []
+        anchor_idx = 0
+        idx = 1
+        while idx < num_frames:
+            distance, angle = self._pose_delta(render_poses[anchor_idx], render_poses[idx])
+            exceeds_adjacent = (
+                angle > self.adjacent_angle
+                or distance > self.adjacent_distance
+            )
+            if exceeds_adjacent:
+                candidate_idx = idx - 1
+                # If a single raw adjacent step is already too large, keep the
+                # current pose so the sequence still advances and remains complete.
+                if candidate_idx <= anchor_idx:
+                    candidate_idx = idx
+                if not key_frame_indices or key_frame_indices[-1] != candidate_idx:
+                    key_frame_indices.append(candidate_idx)
+                anchor_idx = candidate_idx
+                idx = anchor_idx + 1
+                continue
+
+            if idx == num_frames - 1 and idx != anchor_idx:
+                key_frame_indices.append(idx)
+            idx += 1
+
+        return key_frame_indices
     
     @with_timing
     def _imagine_in_place(
@@ -408,24 +519,11 @@ class Belief3DModel(BaseWorldModel):
             "far": torch.tensor(self.camera.far),
         }
         render_poses = imagine_model.model.compute_poses("interpolation", inp, n=50)
-        key_frame_indices = []
-        z_start = render_poses[0][:, 2][:3]
-        t_start = render_poses[0][:, 3][:3]
-        z_previous = z_start
-        t_previous = t_start
         num_frames = len(render_poses)
-        for idx in range(1, num_frames):
-            current_pose = render_poses[idx]
-            z_idx = current_pose[:, 2][:3]  # current forward vector
-            t_idx = current_pose[:, 3][:3]  # current translation
-            angle = rotation_angle(z_previous, z_idx)
-            distance = torch.norm(t_idx - t_previous)
-            if angle > self.adjacent_angle or distance > self.adjacent_distance or idx==num_frames-1: # must include the last
-                key_frame_indices.append(idx)
-                z_previous = z_idx
-                t_previous = t_idx
+        key_frame_indices = self._select_adjacent_bounded_key_frame_indices(render_poses)
+        video_pose_indices = [0] + [idx for idx in key_frame_indices if idx != 0]
         video_poses = torch.stack(
-            [render_poses[0]] + [render_poses[idx] for idx in key_frame_indices], 0
+            [render_poses[idx] for idx in video_pose_indices], 0
         )
         # select the first k key frames for imagination
         key_frame_indices = key_frame_indices[:num_key_frames]
@@ -500,27 +598,12 @@ class Belief3DModel(BaseWorldModel):
         imagine_model = copy.deepcopy(self.imagination_model)
         # interpolate imagine poses
         render_poses = imagine_poses
-        key_frame_indices = []
-        z_start = render_poses[0][:, 2][:3]
-        t_start = render_poses[0][:, 3][:3]
-        z_previous = z_start
-        t_previous = t_start
         num_frames = len(render_poses)
-        for idx in range(1, num_frames):
-            current_pose = render_poses[idx]
-            z_idx = current_pose[:, 2][:3]  # current forward vector
-            t_idx = current_pose[:, 3][:3]  # current translation
-            angle = rotation_angle(z_previous, z_idx)
-            distance = torch.norm(t_idx - t_previous)
-            if angle > self.adjacent_angle or distance > self.adjacent_distance or idx==num_frames-1: # must include the last
-                key_frame_indices.append(idx)
-                z_previous = z_idx
-                t_previous = t_idx
+        key_frame_indices = self._select_adjacent_bounded_key_frame_indices(render_poses)
+        video_pose_indices = [0] + [idx for idx in key_frame_indices if idx != 0]
         video_poses = torch.stack(
-            [render_poses[0]] + [render_poses[idx] for idx in key_frame_indices], 0
+            [render_poses[idx] for idx in video_pose_indices], 0
         )
-        if len(key_frame_indices) == 0 and len(render_poses) == 1:
-            key_frame_indices = [0]
         # run inference
         state_step = self.state_step - 1
         inp = {}
@@ -583,14 +666,114 @@ class Belief3DModel(BaseWorldModel):
 
         return key_output, full_output, colored_pcd
     
-    def _extract_inc_pcd(self):
+    def _extract_inc_pcd(self, position=None, rotation=None):
+        """Extract a denoised point cloud from `self.inc_scene` for occupancy ingestion.
+
+        Filters applied (in order, all configurable via ctor):
+          1. Opacity >= `occupancy_min_opacity` -- drops low-confidence diffusion gaussians.
+          2. Largest axis length (sqrt of max covariance eigenvalue) <= `occupancy_max_scale_m`
+             -- drops oversize "uncertainty blob" gaussians.
+          3. If `position`/`rotation` provided: keep only points whose distance to the camera
+             is in [obs_depth_min, occupancy_max_range_m] AND whose projection lies within the
+             current camera frustum -- drops radial streaks behind/outside the viewing cone.
+        """
         gaussians = self.inc_scene.float()
-        pcd = gaussians.means.squeeze(0).detach().cpu().numpy().astype(np.float32)  # (N, 3)
-        # flip y axis for real robot
+        means = gaussians.means.squeeze(0).detach()                # (N, 3) torch
+        opacities = gaussians.opacities.squeeze(0).detach()        # (N,)   torch
+        covariances = gaussians.covariances.squeeze(0).detach()    # (N,3,3) torch
+
+        keep = opacities >= self.occupancy_min_opacity
+        if keep.any():
+            # Largest eigenvalue of 3x3 symmetric covariance == squared max-axis length.
+            try:
+                eig_max = torch.linalg.eigvalsh(covariances[keep])[..., -1]
+                max_axis = torch.sqrt(eig_max.clamp_min(0))
+                axis_keep = max_axis <= self.occupancy_max_scale_m
+                # write back into the master mask
+                idx = torch.nonzero(keep, as_tuple=True)[0]
+                drop = idx[~axis_keep]
+                keep[drop] = False
+            except Exception:
+                # eigvalsh failure shouldn't block ingestion; fall back to no-scale-filter.
+                pass
+
+        if position is not None and rotation is not None and keep.any():
+            pos_t = torch.as_tensor(np.asarray(position, dtype=np.float32),
+                                    device=means.device, dtype=means.dtype)
+            rot_t = torch.as_tensor(np.asarray(rotation, dtype=np.float32),
+                                    device=means.device, dtype=means.dtype)
+            # World -> camera (camera looks +Z, consistent with OccupancyMap.integrate yaw).
+            cam_pts = (means - pos_t) @ rot_t   # equivalent to R^T @ (p - t)
+            z_cam = cam_pts[:, 2]
+            in_range = (z_cam >= self.obs_depth_min) & (z_cam <= self.occupancy_max_range_m)
+            # Frustum check using normalized intrinsics (fx,fy in [0,1] image units, cx=cy=0.5).
+            fx, fy = float(self.camera.fx), float(self.camera.fy)
+            cx, cy = float(self.camera.cx), float(self.camera.cy)
+            safe_z = torch.where(z_cam.abs() > 1e-6, z_cam, torch.ones_like(z_cam))
+            u = fx * cam_pts[:, 0] / safe_z + cx
+            v = fy * cam_pts[:, 1] / safe_z + cy
+            # Occupancy-only border shrink: when obs_filter_border_gaussians is True, exclude
+            # gaussians originating from the outermost `occupancy_border_px` pixels, where
+            # depth predictions are least reliable and produce radial streaks.
+            if self.obs_filter_border_gaussians and self.occupancy_border_px > 0:
+                w_img, h_img = int(self.camera.w), int(self.camera.h)
+                bu = float(self.occupancy_border_px) / max(w_img, 1)
+                bv = float(self.occupancy_border_px) / max(h_img, 1)
+            else:
+                bu = bv = 0.0
+            in_fov = (u >= bu) & (u <= 1.0 - bu) & (v >= bv) & (v <= 1.0 - bv)
+            keep = keep & in_range & in_fov
+
+        pcd = means[keep].cpu().numpy().astype(np.float32)
         # pcd[:, 1] = -pcd[:, 1]
-        ones = np.ones((pcd.shape[0], 1), dtype=np.float32)
-        pts_h = np.concatenate([pcd, ones], axis=1)                                 # (N, 4)
-        return pts_h[:, :3]  # (N, 3)
+
+        # Occlusion-aware filter: drop diffusion-imagined gaussians that lie BEHIND an
+        # already-known obstacle (cell-wise raycast on the existing X-Z occupancy grid).
+        # Without this, the diffusion model's hallucinated through-wall content gets
+        # stamped as obstacle in regions the agent can never raycast-clear.
+        if (
+            self.occlusion_filter_enabled
+            and position is not None
+            and pcd.shape[0] > 0
+            and self.obs_occupancy is not None
+            and self.obs_occupancy.occupancy is not None
+        ):
+            occ_grid = self.obs_occupancy.occupancy  # (nz, nx); 1=obstacle
+            res = float(self.obs_occupancy.resolution)
+            x_min = float(self.obs_occupancy.x_min)
+            z_min = float(self.obs_occupancy.z_min)
+            nx = int(self.obs_occupancy.nx)
+            nz = int(self.obs_occupancy.nz)
+            ox, _, oz = float(position[0]), float(position[1]), float(position[2])
+            sc = int(np.clip(np.floor((ox - x_min) / res), 0, nx - 1))
+            sr = int(np.clip(np.floor((oz - z_min) / res), 0, nz - 1))
+            keep_mask = np.ones(pcd.shape[0], dtype=bool)
+            buf = int(getattr(self, "occlusion_target_buffer_cells", 3))
+            for i in range(pcd.shape[0]):
+                tc = int(np.clip(np.floor((pcd[i, 0] - x_min) / res), 0, nx - 1))
+                tr = int(np.clip(np.floor((pcd[i, 2] - z_min) / res), 0, nz - 1))
+                # DDA / Bresenham over (col, row); check intermediate cells (exclude endpoints).
+                dr = tr - sr
+                dc = tc - sc
+                steps = max(abs(dr), abs(dc))
+                if steps <= 1 + buf:
+                    continue
+                blocked = False
+                # stop `buf` cells short of the target so we don't reject points
+                # belonging to the same wall surface as already-stamped obstacle
+                # cells (curtain self-rejection).
+                for s in range(1, steps - buf):
+                    rr = sr + int(round(dr * s / steps))
+                    cc = sc + int(round(dc * s / steps))
+                    if 0 <= rr < nz and 0 <= cc < nx and occ_grid[rr, cc] == 1:
+                        blocked = True
+                        break
+                if blocked:
+                    keep_mask[i] = False
+            pcd = pcd[keep_mask]
+        # if self.inc_pcd_flip_y:
+        #     pcd[:, 1] = -pcd[:, 1]
+        return pcd  # (N, 3)
 
     def _extract_obs_colored_pcd(self):
         gaussians = self.obs_scene.float()
@@ -664,41 +847,6 @@ class Belief3DModel(BaseWorldModel):
         pcd.points = o3d.utility.Vector3dVector(pts.detach().cpu().to(torch.float64).numpy())
         pcd.colors = o3d.utility.Vector3dVector(cols.detach().cpu().to(torch.float64).numpy())
         return pcd
-
-    def _project_pose_to_initial_ground(self, pose_map: np.ndarray) -> np.ndarray:
-        """
-        pose_map: 4x4 (initial^-1 @ current), i.e. current pose expressed in initial frame.
-        Returns a pose_map' whose:
-        - translation has zero Y (stays at initial height)
-        - rotation keeps only yaw around initial-frame up axis (removes roll/pitch)
-        Assumes initial-frame Y is the 'up' axis.
-        """
-        T = pose_map.copy()
-        R = T[:3, :3]
-        t = T[:3, 3]
-
-        # --- translation: kill height drift in initial frame
-        t[1] = 0.0
-
-        # --- rotation: yaw-only in initial frame
-        # forward axis is +Z in convention
-        fwd = R @ np.array([0.0, 0.0, 1.0], dtype=float)
-        fwd[1] = 0.0  # project forward onto ground plane
-        n = np.linalg.norm(fwd)
-        if n < 1e-8:
-            # degenerate: keep identity yaw
-            R_yaw = np.eye(3)
-        else:
-            fwd /= n
-            yaw = np.arctan2(fwd[0], fwd[2])  # yaw around +Y
-            cy, sy = np.cos(yaw), np.sin(yaw)
-            R_yaw = np.array([[ cy, 0.0, sy],
-                            [0.0, 1.0, 0.0],
-                            [-sy, 0.0, cy]], dtype=float)
-
-        T[:3, :3] = R_yaw
-        T[:3, 3] = t
-        return T
 
     def render_image(
         self,
@@ -819,12 +967,91 @@ class Belief3DModel(BaseWorldModel):
                 semantics.append(semantic)
         return rgb_frames, depth_frames, semantics
     
-    def export_scene(self, path: Path, extrinsics: Tensor):
-        gaussians = self.augmented_scene
-        gaussians = gaussians.float()
+    def export_scene(
+        self,
+        path: Path,
+        extrinsics: Tensor,
+        *,
+        opacity_thresh: float = 0.1,
+        max_scale_m: float = 0.15,
+        knn_k: int = 8,
+        knn_radius_m: float = 0.25,
+    ):
+        """Export the augmented gaussian scene to a 3DGS-compatible PLY.
+
+        Filters out floating / spurious gaussians before writing:
+          - low opacity   (< ``opacity_thresh``)
+          - oversized     (max eigenvalue of covariance > ``max_scale_m``^2)
+          - isolated      (k-th nearest neighbour distance > ``knn_radius_m``)
+
+        Set ``knn_k <= 0`` or ``knn_radius_m <= 0`` to skip the isolation filter.
+        """
+        gaussians = self.augmented_scene.float()
+        means = gaussians.means          # (B, N, 3)
+        covs = gaussians.covariances     # (B, N, 3, 3)
+        harmonics = gaussians.harmonics  # (B, N, 3, d_sh)
+        opacities = gaussians.opacities  # (B, N)
+
+        if means.numel() == 0 or means.shape[1] == 0:
+            return
+
+        keep = opacities >= opacity_thresh  # (B, N)
+        # Drop any NaN/Inf gaussians up front so downstream linalg is well-defined.
+        finite_mask = (
+            torch.isfinite(means).all(dim=-1)
+            & torch.isfinite(covs).reshape(*covs.shape[:2], -1).all(dim=-1)
+            & torch.isfinite(opacities)
+        )
+        keep = keep & finite_mask
+
+        # Filter oversized gaussians (use largest eigenvalue of covariance).
+        if max_scale_m is not None and max_scale_m > 0 and keep.any():
+            # Symmetrize and run on CPU to avoid flaky cusolver batched eigvalsh.
+            covs_sym = 0.5 * (covs + covs.transpose(-1, -2))
+            try:
+                evals = torch.linalg.eigvalsh(covs_sym)
+            except Exception:
+                evals = torch.linalg.eigvalsh(covs_sym.detach().cpu()).to(covs.device)
+            max_var = evals.clamp_min(0).max(dim=-1).values  # (B, N)
+            keep = keep & (max_var <= float(max_scale_m) ** 2)
+
+        # Per-batch isolation filter.
+        if knn_k and knn_k > 0 and knn_radius_m and knn_radius_m > 0:
+            B = means.shape[0]
+            iso_mask = torch.zeros_like(keep)
+            for b in range(B):
+                m = means[b][keep[b]]  # (M, 3)
+                if m.shape[0] <= knn_k:
+                    iso_mask[b][keep[b]] = True
+                    continue
+                # pairwise distances; use chunks to avoid huge memory
+                d = torch.cdist(m, m)  # (M, M)
+                topk = d.topk(knn_k + 1, largest=False).values[:, 1:]  # exclude self
+                kth = topk[:, -1]
+                local_keep = kth <= float(knn_radius_m)
+                idx = torch.nonzero(keep[b], as_tuple=False).squeeze(-1)
+                iso_mask[b, idx[local_keep]] = True
+            keep = iso_mask
+
+        if not keep.any():
+            return
+
+        # Filter to a per-batch list (export_gaussians_to_ply expects (B, N, ...) with
+        # equal N across the batch; for B=1 we just slice).
+        B = means.shape[0]
+        assert B == 1, "export_scene currently assumes batch size 1"
+        m = keep[0]
+        filtered = Gaussians(
+            means=means[:, m].contiguous(),
+            covariances=covs[:, m].contiguous(),
+            harmonics=harmonics[:, m].contiguous(),
+            opacities=opacities[:, m].contiguous(),
+            features=None,
+        )
+
         export_gaussians_to_ply(
-            gaussians,
+            filtered,
             extrinsics.to("cuda"),
-            path
+            path,
         )
     

@@ -10,3 +10,13 @@ path_planning_algorithm: astar
 action_name: nav_to
 adjacent_angle: 1.57  # 90 degrees
 adjacent_distance: 3.0  # meters
+# Strategy for picking a navigation goal from per-candidate semantic renders:
+#   max_camera_score             : goal = candidate camera with highest score.
+#   max_pixel_3d                 : goal = back-projected hotspot pixel from the
+#                                  best-scoring view (snapped to nearest
+#                                  reachable cell).
+#   closest_camera_to_max_pixel  : back-project the hotspot, then pick the
+#                                  candidate camera position geographically
+#                                  closest to it (always navigable; biased
+#                                  toward the hotspot location).
+goal_selection_strategy: closest_camera_to_max_pixel

@@ -69,6 +69,9 @@ class SPOCDataset(Dataset):
         adjacent_angle: Optional[float] = np.pi / 4,
         adjacent_distance: Optional[float] = 1.0,
         use_depth_supervision: bool = True,
+        load_class_maps: bool = False,
+        class_name_to_id: Optional[dict] = None,
+        class_color_tolerance: float = 25.0,
     ) -> None:
         super().__init__()
         self.overfit_to_index = overfit_to_index
@@ -82,6 +85,11 @@ class SPOCDataset(Dataset):
         self.image_size = image_size
         self.intermediate = intermediate
         self.num_intermediate = num_intermediate
+
+        self.load_class_maps = load_class_maps
+        self.class_name_to_id = class_name_to_id or {}
+        self.class_color_tolerance = float(class_color_tolerance)
+        self._scene_meta_cache = {}  # scene_path -> list[frame meta dict]
         sub_dir = {"train": "train", "test": "test", "unit": "unit"}[stage]
         image_root = Path(root) / sub_dir
         scene_path_list = sorted([p for p in Path(image_root).glob("*/") if p.is_dir()])
@@ -173,6 +181,82 @@ class SPOCDataset(Dataset):
         cam_param = Camera(extrinsics)
 
         return rgb, depth, depth_mask, cam_param
+
+    def _scene_meta(self, scene_path):
+        key = str(scene_path)
+        if key in self._scene_meta_cache:
+            return self._scene_meta_cache[key]
+        meta_path = scene_path / "all_semantic_meta.json"
+        if not meta_path.exists():
+            self._scene_meta_cache[key] = None
+            return None
+        import json as _json
+        with open(meta_path) as f:
+            meta = _json.load(f)
+        self._scene_meta_cache[key] = meta
+        return meta
+
+    def _read_class_map(self, scene_path, frame_id):
+        """Build a per-pixel class-id map for one frame.
+
+        Reads the lossy semantic_trajectory.mp4 frame, finds the closest GT
+        instance color (within tolerance) per pixel, maps that instance's
+        `name` field through `class_name_to_id`, and returns an int64 tensor
+        of shape (image_size, image_size). Pixels with no matching color or
+        with name not in the vocabulary become 0 (= ignore).
+        """
+        meta = self._scene_meta(scene_path)
+        if meta is None or frame_id >= len(meta):
+            return torch.zeros((self.image_size, self.image_size), dtype=torch.long)
+
+        sem_path = scene_path / "semantic_trajectory.mp4"
+        if not sem_path.exists():
+            return torch.zeros((self.image_size, self.image_size), dtype=torch.long)
+
+        cap = cv2.VideoCapture(str(sem_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            return torch.zeros((self.image_size, self.image_size), dtype=torch.long)
+        sem_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # (H, W, 3) uint8
+        H, W, _ = sem_rgb.shape
+
+        objects = meta[int(frame_id)].get("objects", {})
+        if not objects:
+            return torch.zeros((self.image_size, self.image_size), dtype=torch.long)
+
+        # Build per-instance (color, class_id) only for known classes.
+        colors, class_ids = [], []
+        for inst_id, info in objects.items():
+            name = info.get("name", "Unknown")
+            cid = self.class_name_to_id.get(name, 0)
+            if cid == 0:
+                continue
+            colors.append(info["color"])
+            class_ids.append(cid)
+        if not colors:
+            cmap = np.zeros((H, W), dtype=np.int64)
+        else:
+            colors_np = np.asarray(colors, dtype=np.int16)             # (K, 3)
+            class_ids_np = np.asarray(class_ids, dtype=np.int64)        # (K,)
+            # For each pixel, find nearest known color; mark ignore if it's
+            # farther than `class_color_tolerance`.
+            sem_int = sem_rgb.astype(np.int16)
+            # Distance tensor (H, W, K)
+            diff = sem_int[:, :, None, :] - colors_np[None, None, :, :]
+            d2 = (diff.astype(np.int32) ** 2).sum(axis=-1)
+            nearest = d2.argmin(axis=-1)
+            min_d2 = np.take_along_axis(d2, nearest[..., None], axis=-1).squeeze(-1)
+            tol2 = self.class_color_tolerance ** 2
+            cmap = np.where(min_d2 <= tol2, class_ids_np[nearest], 0).astype(np.int64)
+
+        # Resize to image_size with nearest-neighbor preservation.
+        if (H, W) != (self.image_size, self.image_size):
+            cmap = cv2.resize(
+                cmap, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST
+            ).astype(np.int64)
+        return torch.from_numpy(cmap)
 
     def __len__(self) -> int:
         return len(self.scene_path_list)
@@ -326,6 +410,15 @@ class SPOCDataset(Dataset):
                 "ctxt_depth_mask": ctxt_depth_mask,
                 "trgt_depth_mask": trgt_depth_mask,
             })
+        if self.load_class_maps:
+            ret_dict.update({
+                "ctxt_class_map": torch.stack(
+                    [self._read_class_map(scene_path, fid) for fid in ctxt_idx], dim=0
+                ),
+                "trgt_class_map": torch.stack(
+                    [self._read_class_map(scene_path, fid) for fid in trgt_idx], dim=0
+                ),
+            })
         if self.intermediate and (intm_idx is not None):
             ret_dict.update({
                 "intm_c2w": torch.einsum(
@@ -334,6 +427,10 @@ class SPOCDataset(Dataset):
                 "intm_rgb": self.normalize(intm_rgb),
                 "intm_abs_camera_poses": intm_c2w,
             })
+            if self.load_class_maps:
+                ret_dict["intm_class_map"] = torch.stack(
+                    [self._read_class_map(scene_path, int(fid)) for fid in intm_idx], dim=0
+                )
             if self.use_depth_supervision:
                 ret_dict.update({
                     "intm_depth": intm_depth,

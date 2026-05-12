@@ -52,9 +52,19 @@ class SpocObjCompletionDFoTVGGTWorkspace(BaseWorkspace):
         print(f"Loaded {len(self.task_manager.episodes)} episodes from {self.task_manager.episode_root}")
         self.task_manager.set_camera(self.agent.camera)
 
+        # Optional episode filtering via env var, e.g. WM_BASELINES_EPISODE_INDICES="32,142"
+        _ep_filter_env = os.environ.get("WM_BASELINES_EPISODE_INDICES", "").strip()
+        if _ep_filter_env:
+            episode_filter = {int(x) for x in _ep_filter_env.split(",") if x.strip() != ""}
+            print(f"[episode filter] Restricting to indices: {sorted(episode_filter)}")
+        else:
+            episode_filter = None
+
         for ep_idx, ep in enumerate(self.task_manager.episodes):
+            if episode_filter is not None and ep_idx not in episode_filter:
+                continue
             try:
-                self.env_interface.reset()
+                self.env_interface.reset(idx=ep_idx)
                 self.agent.reset()
                 print(f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: {self.task_manager.current_ep_name}")
                 max_steps = self.task_manager.num_steps

@@ -184,12 +184,22 @@ class NWMVGGTModel(BaseWorldModel):
         self.current_pose: Tensor = None
 
     def reset(self):
-        resolution = self.obs_occupancy.resolution
-        obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-        self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
-        resolution = self.belief_occupancy.resolution
-        obstacle_height_thresh = self.belief_occupancy.obstacle_height_thresh
-        self.belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+        self.obs_occupancy = OccupancyMap(
+            resolution=self.obs_occupancy.resolution,
+            obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+            ceiling_height=self.obs_occupancy.ceiling_height,
+            max_range=self.obs_occupancy.max_range,
+            free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+            seed=self._seed,
+        )
+        self.belief_occupancy = OccupancyMap(
+            resolution=self.belief_occupancy.resolution,
+            obstacle_height_thresh=self.belief_occupancy.obstacle_height_thresh,
+            ceiling_height=self.belief_occupancy.ceiling_height,
+            max_range=self.belief_occupancy.max_range,
+            free_overrides_occupied=self.belief_occupancy.free_overrides_occupied,
+            seed=self._seed,
+        )
         self.initial_location = {}
         self.step = -1
         self._metrics = {
@@ -291,9 +301,14 @@ class NWMVGGTModel(BaseWorldModel):
 
             self._metrics["model_inference_time"] += exe_time
             previous_map = deepcopy(self.obs_occupancy) if self.step > 0 else None
-            resolution = self.obs_occupancy.resolution
-            obstacle_height_thresh = self.obs_occupancy.obstacle_height_thresh
-            self.obs_occupancy = OccupancyMap(resolution, obstacle_height_thresh, seed=self._seed)
+            self.obs_occupancy = OccupancyMap(
+                resolution=self.obs_occupancy.resolution,
+                obstacle_height_thresh=self.obs_occupancy.obstacle_height_thresh,
+                ceiling_height=self.obs_occupancy.ceiling_height,
+                max_range=self.obs_occupancy.max_range,
+                free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
+                seed=self._seed,
+            )
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
                 position, 

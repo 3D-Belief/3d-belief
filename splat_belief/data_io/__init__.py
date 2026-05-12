@@ -1,18 +1,7 @@
 import copy
 
 from omegaconf import OmegaConf, DictConfig
-from torch.utils.data import Dataset
-from splat_belief.splat.layers import T5Encoder
-
-from data_io.composite import CompositeDataset
-
-from data_io.realestate import RealEstate10kDatasetOM
-from data_io.realestate_seq import RealEstate10kDatasetSeq
-from data_io.hm3d import HM3DDataset
-from data_io.hm3d_seq import HM3DDatasetSeq
-from data_io.spoc import SPOCDataset
-from data_io.spoc_seq import SPOCDatasetSeq
-from data_io.dl3dv import DL3DVDataset
+from typing import Any
 
 def _clone_cfg(cfg: DictConfig) -> DictConfig:
     return OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
@@ -22,29 +11,25 @@ def get_path(dataset_name: str) -> str:
         return ""
     if dataset_name == "realestate_seq":
         return ""
-    elif dataset_name == "hm3d":
-        return ""
-    elif dataset_name == "hm3d_seq":
-        return ""
     elif dataset_name == "spoc":
         return ""
     elif dataset_name == "spoc_seq":
         return ""
-    elif dataset_name == "dl3dv":
-        return ""
     raise NotImplementedError(f'Dataset "{dataset_name}" not supported.')
 
-def get_dataset(config: DictConfig) -> Dataset:
+def get_dataset(config: DictConfig) -> Any:
     name = config.dataset.name  # <-- do NOT delete it anymore
 
     # -----------------------------
     # composite dataset branch
     # -----------------------------
     if name == "composite":
+        from data_io.composite import CompositeDataset
+        from splat_belief.splat.layers import T5Encoder
+
         # Expect:
         # config.dataset.datasets = [
-        #   {name: "spoc", weight: 0.7, root_dir: "...", <optional overrides>...},
-        #   {name: "dl3dv", weight: 0.3, root_dir: "...", <optional overrides>...},
+        #   {name: "spoc", weight: 1.0, root_dir: "...", <optional overrides>...},
         # ]
         specs = list(config.dataset.datasets)
         assert len(specs) > 0, "dataset.datasets must be a non-empty list for composite."
@@ -96,14 +81,18 @@ def get_dataset(config: DictConfig) -> Dataset:
     # -----------------------------
     return _get_single_dataset(config, language_encoder=None)
 
-def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
+def _get_single_dataset(config: DictConfig, language_encoder=None) -> Any:
     
     name = config.dataset.name
 
     def _get_lang():
+        from splat_belief.splat.layers import T5Encoder
+
         return language_encoder if language_encoder is not None else T5Encoder()
 
     if name == "realestate":
+        from data_io.realestate import RealEstate10kDatasetOM
+
         paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
         ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
         ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
@@ -126,6 +115,8 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             use_depth_supervision=config.use_depth_supervision,
         )
     elif name == "realestate_seq":
+        from data_io.realestate_seq import RealEstate10kDatasetSeq
+
         paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
         ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
         ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
@@ -146,58 +137,27 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             num_intermediate=config.num_intermediate,
             use_depth_supervision=config.use_depth_supervision,
         )
-    elif name == "hm3d":
-        paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
-        ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
-        ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
-        le = _get_lang()
-        return HM3DDataset(
-            root=paths,
-            num_context=config.num_context,
-            num_target=config.num_target,
-            context_min_distance=config.ctxt_min,
-            context_max_distance=config.ctxt_max,
-            max_scenes=config.max_scenes,
-            stage=config.stage,
-            image_size=config.image_size,
-            language_encoder=le,
-            use_first_frame_prob=config.clevr_first_frame_prob,
-            start_frame_id=config.clevr_start_frame_id,
-            raw_dataset_dir=config.dataset.raw_dataset_dir,
-            semantic_config=config.semantic_config,
-            adjacent_angle=config.adjacent_angle,
-            intermediate=config.intermediate,
-            num_intermediate=config.num_intermediate,
-            use_depth_supervision=config.use_depth_supervision,
-        )
-    elif name == "hm3d_seq":
-        paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
-        ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
-        ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
-        le = _get_lang()
-        return HM3DDatasetSeq(
-            root=paths,
-            num_context=config.num_context,
-            num_target=config.num_target,
-            context_min_distance=config.ctxt_min,
-            context_max_distance=config.ctxt_max,
-            max_scenes=config.max_scenes,
-            stage=config.stage,
-            image_size=config.image_size,
-            language_encoder=le,
-            use_first_frame_prob=config.clevr_first_frame_prob,
-            start_frame_id=config.clevr_start_frame_id,
-            raw_dataset_dir=config.dataset.raw_dataset_dir,
-            semantic_config=config.semantic_config,
-            adjacent_angle=config.adjacent_angle,
-            adjacent_distance=config.adjacent_distance,
-            num_intermediate=config.num_intermediate,
-        )
     elif name == "spoc":
+        from data_io.spoc import SPOCDataset
+
         paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
         ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
         ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
         le = _get_lang()
+        # Class-id maps are needed when supervision uses class-text targets.
+        load_class_maps = False
+        class_name_to_id = None
+        try:
+            mode = config.semantic_supervision_mode
+            if mode in ("class_text_only", "class_text_image"):
+                load_class_maps = True
+                tt = config.get("class_text_table_path", None)
+                if tt:
+                    import torch as _torch
+                    payload = _torch.load(tt, map_location="cpu", weights_only=False)
+                    class_name_to_id = payload["name_to_id"]
+        except Exception:
+            pass
         return SPOCDataset(
             root=paths,
             num_context=config.num_context,
@@ -214,12 +174,16 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             adjacent_distance=config.adjacent_distance,
             overfit_to_index=config.overfit_to_index,
             use_depth_supervision=config.use_depth_supervision,
+            load_class_maps=load_class_maps,
+            class_name_to_id=class_name_to_id,
         )
     elif name == "spoc_seq":
+        from data_io.spoc_seq import SPOCDatasetSeq
+
         paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
         ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
         ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
-        le = _get_lang()
+        le = language_encoder
         return SPOCDatasetSeq(
             root=paths,
             num_context=config.num_context,
@@ -234,25 +198,5 @@ def _get_single_dataset(config: DictConfig, language_encoder=None) -> Dataset:
             adjacent_angle=config.adjacent_angle,
             adjacent_distance=config.adjacent_distance,
             num_intermediate=config.num_intermediate,
-        )
-    elif name == "dl3dv":
-        paths = config.dataset.root_dir if config.dataset.root_dir!="" else get_path(name)
-        ctxt_min = config.dataset.ctxt_min if hasattr(config.dataset, "ctxt_min") else config.ctxt_min
-        ctxt_max = config.dataset.ctxt_max if hasattr(config.dataset, "ctxt_max") else config.ctxt_max
-        le = _get_lang()
-        return DL3DVDataset(
-            root=paths,
-            num_context=config.num_context,
-            num_target=config.num_target,
-            context_min_distance=config.ctxt_min,
-            context_max_distance=config.ctxt_max,
-            max_scenes=config.max_scenes,
-            stage=config.stage,
-            image_size=config.image_size,
-            language_encoder=le,
-            intermediate=config.intermediate,
-            num_intermediate=config.num_intermediate,
-            adjacent_angle=config.adjacent_angle,
-            use_depth_supervision=config.use_depth_supervision,
         )
     raise NotImplementedError(f'Dataset "{name}" not supported.')

@@ -2,12 +2,11 @@ import os
 import gzip
 import json
 import jsonlines
+import random
 import time
 import numpy as np
-from typing import Any, Dict, Tuple
-import open3d as o3d
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 import cv2
-import torch
 from omegaconf import DictConfig, OmegaConf
 from environment.stretch_controller import StretchController
 from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
@@ -28,11 +27,24 @@ from wm_baselines.task_manager.base_task_manager import BaseTaskManager
 from wm_baselines.agent.perception.metrics import Box3D, box3d_from_aabb
 from wm_baselines.agent.perception.camera import Camera
 from wm_baselines.utils.planning_utils import rotation_angle
-from wm_baselines.agent.vlm.vlm import VLM
 from wm_baselines.agent.perception.occupancy import OccupancyMap
 from wm_baselines.world_model.oracle_depth_model import OracleDepthModel
 
+if TYPE_CHECKING:
+    from wm_baselines.agent.vlm.vlm import VLM
+
 class SpocObjPermanenceTaskManager(BaseTaskManager):
+    """Object permanence manager for a 180-degree turn followed by return.
+
+    The source SPOC permanence data is a fixed-position rotation sequence. The
+    task now keeps only episodes where a 180-degree turnaround frame can be
+    identified, then reorders each episode from:
+
+        start -> 180 degrees -> start
+
+    while preserving the exact first frame as the final frame.
+    """
+
     def __init__(self, embodied_config: DictConfig, stretch_controller: StretchController, **kwargs):
         super().__init__(embodied_config)
         self.episode_root = embodied_config.episode_root
@@ -42,9 +54,38 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
         self.occupancy_obstacle_height_thresh = embodied_config.occupancy_obstacle_height_thresh
         self.num_steps = None  # to be set during reset
         self.stretch_controller = stretch_controller
+        self.turnaround_degrees = float(embodied_config.get("turnaround_degrees", 180.0))
+        self.turnaround_tolerance_degrees = float(
+            embodied_config.get("turnaround_tolerance_degrees", 3.25)
+        )
+        self.episode_sample_count = int(embodied_config.get("episode_sample_count", 200))
+        self.episode_sample_seed = int(
+            embodied_config.get("episode_sample_seed", os.environ.get("SEED", 42))
+        )
 
         self.episode_list = sorted([p for p in Path(self.episode_root).glob("*/") if p.is_dir()])
         self.episodes = [self._load_episode(p) for p in self.episode_list]
+        eligible_episodes = [
+            episode for episode in self.episodes if episode.get("return_180_eligible", False)
+        ]
+        skipped = len(self.episodes) - len(eligible_episodes)
+        if self.episode_sample_count > 0 and len(eligible_episodes) > self.episode_sample_count:
+            rng = random.Random(self.episode_sample_seed)
+            eligible_episodes = rng.sample(eligible_episodes, self.episode_sample_count)
+        self.episodes = eligible_episodes
+        self.episode_list = [Path(episode["episode_path"]) for episode in self.episodes]
+
+        if len(self.episodes) < self.episode_sample_count:
+            print(
+                "[WARN] Requested "
+                f"{self.episode_sample_count} object permanence episodes but found "
+                f"{len(self.episodes)} eligible 180-return episodes."
+            )
+        print(
+            "Prepared "
+            f"{len(self.episodes)} object permanence episodes "
+            f"(180-return trajectory; skipped {skipped}, seed {self.episode_sample_seed})."
+        )
         self.observations = None
         self.imagination_poses = None
         self.imagination_key_poses = None
@@ -60,13 +101,16 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
     
     @property
     def current_ep_name(self):
-        # get a random string for the current episode name
-        return f"{self.current_episode_index}_{self.episodes[self.current_episode_index]['house_index']}_{time.time():.0f}"
+        episode = self.episodes[self.current_episode_index]
+        return (
+            f"{self.current_episode_index}_{episode['house_index']}_"
+            f"{episode['source_episode_name']}"
+        )
 
     def set_camera(self, camera: Camera):
         self.camera = camera
     
-    def set_vlm(self, vlm: VLM):
+    def set_vlm(self, vlm: "VLM"):
         self.vlm = vlm
 
     def get_observation(self):
@@ -149,6 +193,15 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
         }
         if metrics is not None:
             final_log.update(metrics)
+        final_log.update(
+            {
+                "trajectory_mode": "turn_180_return",
+                "source_episode_name": episode["source_episode_name"],
+                "source_oracle_length": episode["source_oracle_length"],
+                "turnaround_frame_index": episode["turnaround_frame_index"],
+                "turnaround_degrees": episode["turnaround_degrees"],
+            }
+        )
         return final_log
     
     def fix_object_name(self, object_name: str) -> str:
@@ -165,16 +218,67 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
         return object_name
 
     def _load_episode(self, episode_path: Path):
-        """Load episode info from the given path."""
+        """Load metadata and attach the 0 -> 180 -> 0 frame order."""
         metadata_path = episode_path / "trajectory_metadata.json"
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
+
+        source_oracle_length = int(metadata["frames"])
+        relative_yaws = metadata.get("relative_yaw_degrees", [])
+        deg_step = float(metadata.get("deg_step", 0.0) or 0.0)
+        turnaround_frame_index = self._find_turnaround_frame_index(
+            relative_yaws=relative_yaws,
+            source_oracle_length=source_oracle_length,
+            deg_step=deg_step,
+        )
+        return_180_eligible = turnaround_frame_index is not None
+        frame_order = []
+        if return_180_eligible:
+            frame_order = list(range(turnaround_frame_index + 1))
+            frame_order.extend(range(turnaround_frame_index - 1, -1, -1))
+
         episode = {
             "episode_path": str(episode_path),
             "house_index": int(metadata["house_id"].split("_")[-1]),
-            "oracle_length": metadata["frames"],
+            "oracle_length": len(frame_order) if frame_order else source_oracle_length,
+            "source_oracle_length": source_oracle_length,
+            "frame_order": frame_order,
+            "turnaround_frame_index": turnaround_frame_index,
+            "turnaround_degrees": self.turnaround_degrees,
+            "return_180_eligible": return_180_eligible,
+            "source_episode_name": episode_path.name,
         }
         return episode
+
+    def _find_turnaround_frame_index(
+        self,
+        relative_yaws: list,
+        source_oracle_length: int,
+        deg_step: float,
+    ) -> Optional[int]:
+        if source_oracle_length <= 1:
+            return None
+
+        if relative_yaws:
+            distances = [
+                self._circular_degrees_distance(float(yaw), self.turnaround_degrees)
+                for yaw in relative_yaws
+            ]
+            closest_idx = int(min(range(len(distances)), key=distances.__getitem__))
+            tolerance = max(self.turnaround_tolerance_degrees, abs(deg_step) / 2.0 + 0.25)
+            if distances[closest_idx] <= tolerance and closest_idx > 0:
+                return closest_idx
+
+        if deg_step > 0:
+            fallback_idx = int(round(self.turnaround_degrees / deg_step))
+            if 0 < fallback_idx < source_oracle_length:
+                return fallback_idx
+
+        return None
+
+    @staticmethod
+    def _circular_degrees_distance(a: float, b: float) -> float:
+        return abs((a - b + 180.0) % 360.0 - 180.0)
     
     def _load_observation(self):
         """Load observation of the current episode."""
@@ -215,6 +319,17 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
                 "semantic": semantics[i],
             }
             observations.append(obs)
+
+        frame_order = episode.get("frame_order", [])
+        if frame_order:
+            max_idx = max(frame_order)
+            if max_idx >= len(observations):
+                raise IndexError(
+                    f"Frame order for {episode['source_episode_name']} references frame "
+                    f"{max_idx}, but only {len(observations)} observations were loaded."
+                )
+            observations = [observations[idx] for idx in frame_order]
+            episode["oracle_length"] = len(observations)
         self.observations = observations
 
     def _convert_pose(self, pose: np.ndarray) -> np.ndarray:
@@ -317,6 +432,8 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
 
             obs_occupancy.integrate(np.array(pcd.points), np.array([0,0,0]), np.eye(3), intrinsics=self.camera.intrinsics)
 
+        # ## DEBUG
+        # obs_occupancy.save_occupancy_map("wm_baselines/output/debug/obs_occupancy.png")
         ret = {
             "gt_occupancy": obs_occupancy,
         }
@@ -331,7 +448,9 @@ class SpocObjPermanenceTaskManager(BaseTaskManager):
         belief_occupancy = OccupancyMap(resolution, obstacle_height_thresh)
         belief_occupancy.integrate(np.array(colored_pcd.points), np.array([0,0,0]), np.eye(3), intrinsics=self.camera.intrinsics)
         rgb = assets["imagine_rgb"][-1]
-
+        
+        # ## DEBUG
+        # belief_occupancy.save_occupancy_map("wm_baselines/output/debug/belief_occupancy.png")
         ret = {
             "belief_occupancy": belief_occupancy,
         }

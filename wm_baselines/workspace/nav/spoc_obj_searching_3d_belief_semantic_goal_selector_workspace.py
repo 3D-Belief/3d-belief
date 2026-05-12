@@ -2,6 +2,7 @@ import sys
 import os
 import random
 import pathlib
+import traceback
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -45,18 +46,24 @@ class SpocObjSearching3DBeliefSemanticGoalSelectorWorkspace(BaseWorkspace):
         save_path = self.embodied_config.trajectory.save_path
         timeout = self.embodied_config.timeout
         self.agent.planner.set_world_model(self.agent.world_model)
-        print(f"Loaded {len(self.task_manager.episodes)} episodes from {self.task_manager.episode_root}")
+        n_eps = len(self.task_manager.episodes)
+        print(f"Loaded {n_eps} episodes from {self.task_manager.episode_root}")
         print(f"Max steps per episode: {self.task_manager.max_steps}")
+        # Optional env-var slicing for smoke tests, e.g. WM_BASELINES_START_EP=6 WM_BASELINES_END_EP=7
+        start_ep = int(os.environ.get("WM_BASELINES_START_EP", "0"))
+        end_ep = int(os.environ.get("WM_BASELINES_END_EP", str(n_eps)))
+        # When set, surface per-episode exceptions instead of swallowing them.
+        raise_on_error = bool(int(os.environ.get("WM_BASELINES_RAISE", "0")))
         ep_save_path = None
 
-        for ep_idx, ep in enumerate(self.task_manager.episodes):
+        for ep_idx in range(start_ep, min(end_ep, n_eps)):
             try:
-                print(f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: {self.task_manager.current_ep_name}")
                 if self.seed is not None:
                     self._set_seed(self.seed + ep_idx)
-                self.env_interface.reset()
+                self.env_interface.reset(idx=ep_idx)
                 self.agent.reset()
                 current_ep_name = self.task_manager.current_ep_name
+                print(f"Starting episode {ep_idx}/{n_eps}: {current_ep_name}")
                 ep_save_path = os.path.join(save_path, current_ep_name) if save_path else None
                 if ep_save_path:
                     os.makedirs(ep_save_path, exist_ok=True)
@@ -77,8 +84,14 @@ class SpocObjSearching3DBeliefSemanticGoalSelectorWorkspace(BaseWorkspace):
                 # save using BaseWorkspace.save()
                 result_paths = self.save(ep_save_path)
                 print(f"Saved results to: {result_paths}")
-            except:
-                result_paths = self.save(ep_save_path)
+            except Exception:
+                traceback.print_exc()
+                if raise_on_error:
+                    raise
+                try:
+                    result_paths = self.save(ep_save_path)
+                except Exception:
+                    traceback.print_exc()
                 print(f"Error in episode {self.task_manager.current_ep_name}, skipping to next episode.")
                 continue
 

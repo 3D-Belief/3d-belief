@@ -4,7 +4,6 @@ from torch.optim import Optimizer
 from typing import Optional, Callable, Any
 import matplotlib.pyplot as plt
 from PIL import Image
-from sklearn.decomposition import PCA
 import torch
 import copy
 import json
@@ -297,8 +296,13 @@ def to_gpu(ob, device):
 
 
 from jaxtyping import Float
-from scipy.spatial.transform import Rotation as R
 from torch import Tensor
+
+
+def _rotation_cls():
+    from scipy.spatial.transform import Rotation
+
+    return Rotation
 
 
 @torch.no_grad()
@@ -312,8 +316,9 @@ def interpolate_pose(
     r_relative = r_relative.float()
 
     # Convert it to axis-angle to interpolate it.
-    r_relative = R.from_matrix(r_relative.cpu().numpy()).as_rotvec()
-    r_relative = R.from_rotvec(r_relative * t).as_matrix()
+    rotation = _rotation_cls()
+    r_relative = rotation.from_matrix(r_relative.cpu().numpy()).as_rotvec()
+    r_relative = rotation.from_rotvec(r_relative * t).as_matrix()
     r_relative = torch.tensor(r_relative, dtype=final.dtype, device=final.device)
     r_interpolated = r_relative @ r_initial
 
@@ -352,8 +357,9 @@ def interpolate_pose_wobble(
     r_relative = r_relative.float()
 
     # Convert it to axis-angle to interpolate it.
-    r_relative = R.from_matrix(r_relative.cpu().numpy()).as_rotvec()
-    r_relative = R.from_rotvec(r_relative * t).as_matrix()
+    rotation = _rotation_cls()
+    r_relative = rotation.from_matrix(r_relative.cpu().numpy()).as_rotvec()
+    r_relative = rotation.from_rotvec(r_relative * t).as_matrix()
     r_relative = torch.tensor(r_relative, dtype=final.dtype, device=final.device)
     r_interpolated = r_relative @ r_initial
 
@@ -617,6 +623,8 @@ def semantic_to_color(
         return palette[mask_clipped]
 
 def viz_feat(feat):
+    from sklearn.decomposition import PCA
+
     _, _, h, w = feat.shape
     feat = feat.squeeze(0).permute((1,2,0))
     projected_featmap = feat.reshape(-1, feat.shape[-1]).cpu()

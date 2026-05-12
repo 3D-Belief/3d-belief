@@ -16,6 +16,10 @@ huggingface/
 output/
 
 .envrc
+.env
+.env.*
+!.env.example
+.api.json
 .python-version
 .idea
 .venv/

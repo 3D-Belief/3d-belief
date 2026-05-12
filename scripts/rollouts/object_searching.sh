@@ -24,6 +24,7 @@ EPISODE_ROOT="data/spoc_trajectories_val"
 CONDA_ENV="3d-belief"
 # Environment variables
 export XFORMERS_DISABLED=1
+export PYTHONNOUSERSITE=1
 export OBJAVERSE_DATA_DIR="data/2023_07_28"
 export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 
@@ -50,7 +51,7 @@ get_agent_config() {
     case "${agent}" in
         3d_belief_semantic_goal_selector)
             SCRIPT_FILE="spoc_obj_searching_3d_belief_semantic_goal_selector_workspace.py"
-            SAVE_NAME="spoc_obj_searching_3d_belief_semantic_goal_selector_previous_weight"
+            SAVE_NAME="spoc_obj_searching_3d_belief_semantic_goal_selector"
             ;;
         gpt_vlm_agent)
             SCRIPT_FILE="spoc_obj_searching_gpt_vlm_agent_workspace.py"

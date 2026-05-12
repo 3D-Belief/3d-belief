@@ -562,16 +562,16 @@ def sample_frontier_goals_balanced_turns(
     k: int = 3,
     min_clearance_m: float = 0.25,
     min_goal_dist_m: float = 0.25,
-    max_goal_dist_m: float = 5.0,
-    fallback_max_goal_dist_m: Optional[float] = None,
+    max_goal_dist_m: float = 8.0,
+    fallback_max_goal_dist_m: Optional[float] = 12.0,
     edge_margin_m: float = 0.2,
     nms_radius_m: float = 0.4,
     sector_half_span_rad: float = np.pi / 2,
     forward_half_width_rad: float = np.deg2rad(15.0),
-    min_unknown_component_cells: int = 50,
+    min_unknown_component_cells: int = 15,
     unknown_connectivity: int = 8,
     rng: Optional[np.random.Generator] = None,
-    forward_fraction: float = 1.0,      # 0..1: fraction of selected goals that should be in the FWD bin
+    forward_fraction: float = 0.5,      # 0..1: fraction of selected goals that should be in the FWD bin
     front_score_power: float = 2.0,     # >=1: higher => stronger preference for straight-ahead over side/back
 ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
@@ -590,10 +590,11 @@ def sample_frontier_goals_balanced_turns(
     nz, nx = occ_grid.shape
     res = float(occ.resolution)
 
-    # robot world position and heading (assume +X of robot frame is "forward")
+    # robot world position and heading. The SPOC navigation stack uses the
+    # camera/agent +Z column as the current forward direction.
     rx, rz = float(robot_T[0, 3]), float(robot_T[2, 3])
     rr0, cc0 = occ._world_to_grid((rx, rz))
-    rfx, rfz = float(robot_T[0, 0]), float(robot_T[2, 0])  # forward axis projected to xz
+    rfx, rfz = float(robot_T[0, 2]), float(robot_T[2, 2])  # forward axis projected to xz
     rfn = math.hypot(rfx, rfz) or 1.0
     rfx /= rfn
     rfz /= rfn
@@ -652,6 +653,7 @@ def sample_frontier_goals_balanced_turns(
     rc_list: List[Tuple[int, int]] = []
     dists: List[float] = []
     front_scores: List[float] = []   # NEW
+    in_sector_flags: List[bool] = []  # Phase 4: track sector membership instead of dropping
 
     span = float(sector_half_span_rad)
 
@@ -675,9 +677,10 @@ def sample_frontier_goals_balanced_turns(
         theta = goal_yaw - robot_yaw
         theta = (theta + math.pi) % (2.0 * math.pi) - math.pi
 
-        # keep only within requested span
-        if abs(theta) > span:
-            continue
+        # Phase 4: keep all candidates; flag whether they're inside the requested span.
+        # The sector filter is applied later so we can widen / fall back gracefully
+        # when no in-sector frontier exists (e.g. unexplored room behind the agent).
+        in_sector = abs(theta) <= span
 
         # outward-normal forward dir at the cell
         vx = -float(gx[r, c])
@@ -701,26 +704,49 @@ def sample_frontier_goals_balanced_turns(
         bearings.append(theta)
         dists.append(d)
         front_scores.append(fs)
+        in_sector_flags.append(in_sector)
 
     if not goals:
-        return [], []
+        # Phase 4 fallback: rotate-in-place to expose new viewpoints.
+        spin_pos = np.array([rx, 0.0, rz], dtype=np.float32)
+        spin_fwd = np.array([-rfx, 0.0, -rfz], dtype=np.float32)
+        return [spin_pos], [spin_fwd]
 
     dists_arr = np.asarray(dists, dtype=float)
+    in_sector_arr = np.asarray(in_sector_flags, dtype=bool)
+
+    # Phase 4: if any in-sector candidates exist, restrict to them; otherwise widen to 2*pi.
+    sector_idx_pool = np.nonzero(in_sector_arr)[0]
+    widened = False
+    if sector_idx_pool.size == 0:
+        sector_idx_pool = np.arange(len(goals), dtype=int)
+        widened = True
 
     # Pass 1 (strict)
-    strict_idx = np.nonzero(dists_arr <= float(max_goal_dist_m))[0].tolist()
+    strict_idx = [int(i) for i in sector_idx_pool if dists_arr[i] <= float(max_goal_dist_m)]
 
     # Pass 2 (relaxed) if strict yields none
     if not strict_idx:
         if fallback_max_goal_dist_m is None:
-            candidate_idx = list(range(len(goals)))
+            candidate_idx = sector_idx_pool.tolist()
         else:
-            candidate_idx = np.nonzero(dists_arr <= float(fallback_max_goal_dist_m))[0].tolist()
+            candidate_idx = [int(i) for i in sector_idx_pool
+                             if dists_arr[i] <= float(fallback_max_goal_dist_m)]
     else:
         candidate_idx = strict_idx
 
     if not candidate_idx:
-        return [], []
+        # Phase 4 fallback: rotate-in-place if no candidate at any range.
+        spin_pos = np.array([rx, 0.0, rz], dtype=np.float32)
+        spin_fwd = np.array([-rfx, 0.0, -rfz], dtype=np.float32)
+        return [spin_pos], [spin_fwd]
+
+    # Phase 4: when no in-sector frontier exists, bias toward farther goals so the agent
+    # walks toward a previously-unobserved region instead of cycling near already-explored space.
+    if widened and len(dists_arr) > 0:
+        d_max = float(dists_arr.max()) + 1e-6
+        front_scores = [float(fs + 0.5 * (dists_arr[i] / d_max))
+                        for i, fs in enumerate(front_scores)]
 
     kept_idx = candidate_idx
 
@@ -759,7 +785,10 @@ def sample_frontier_goals_balanced_turns(
         kept_idx = [kept_idx[li] for li in new_kept_local]
 
     if not kept_idx:
-        return [], []
+        # Phase 4 fallback: rotate-in-place if NMS dropped everything.
+        spin_pos = np.array([rx, 0.0, rz], dtype=np.float32)
+        spin_fwd = np.array([-rfx, 0.0, -rfz], dtype=np.float32)
+        return [spin_pos], [spin_fwd]
 
     # ---- Prefer FRONT while balancing LEFT / FORWARD / RIGHT ----
     fw = float(forward_half_width_rad)

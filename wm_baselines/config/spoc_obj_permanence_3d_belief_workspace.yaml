@@ -8,13 +8,17 @@ defaults:
 embodied_task:
   name: spoc_obj_permanence_3d_belief
   episode_root: ${paths.episode_roots.obj_permanence}
+  episode_sample_count: 200
+  episode_sample_seed: ${oc.env:SEED,42}
+  turnaround_degrees: 180.0
+  turnaround_tolerance_degrees: 3.25
   adjacent_angle: 0.785  # 45 degrees
   adjacent_distance: 1.0  # meters
   occupancy_resolution: 0.1  # meters
   occupancy_obstacle_height_thresh: -0.12  # meters
   rotation_step: 10
   move_step: 0.3
-  vlm_model_name: "gpt-5-mini"
+  vlm_model_name: null
   trajectory:
     save: True
     save_path: ${paths.output_root}/obj_permanence_3d_belief
@@ -49,19 +53,37 @@ agent:
       w: 128
       near: 0.1
       far: 10.0
-    fast_sampling: true
+    fast_sampling: false
     model:
       diffusion_model:
+        sampling_steps: 15
         model:
           use_semantic: true
+          # Object-permanence guidance: "none" | "opacity" | "dps".
+          # - none:    standard sampling, no constraint.
+          # - opacity: zero opacity of belief gaussians whose projected pixel
+          #            in the target view falls inside history-covered area.
+          # - dps:     diffusion-posterior-sampling guidance through gaussian
+          #            mean/opacity targets derived from history.
+          obj_permanence_mode: "none"
+          obj_permanence_state_t_min: 1
+          obj_permanence_mask_blur: 5
+          obj_permanence_mask_threshold: 0.5
+          obj_permanence_erode_kernel: 0
+          dps_guidance_scale: 1.0
+          dps_pos_weight: 1.0
+          dps_opacity_weight: 0.5
           encoder_visual_pair:
             cfg:
               use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
               use_reg_model: true
+              reg_model_name: dinov3_base
+              reg_model_weights: checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth
+              d_semantic_reg: 768
           semantic:
             _target_: wm_baselines.utils.model_factories.build_semantic_bundle
             use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
-            semantic_mode: "embed"        # "embed" | "class" | ...
+            semantic_mode: "embed"
             semantic_viz: "query"
             semantic_config: "${paths.semantic_config}"
             clip:
@@ -71,7 +93,8 @@ agent:
               device: "cuda"
             reg_model:
               enabled: true
-              name: "dinov2_reg_small"
+              name: dinov3_base
+              weights_path: checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth
               device: "cuda"
       checkpoint_path: ${paths.checkpoints.belief_3d_semantic}
   planner:

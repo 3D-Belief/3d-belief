@@ -58,6 +58,14 @@ class SplatBeliefState(nn.Module):
         feature_patch_num_samples: int = 15,
         use_depth_mask: bool = False,
         refiner_cfg: Optional[GaussianRefinerCfg] = None,
+        obj_permanence_mode: str = "none",
+        obj_permanence_state_t_min: int = 1,
+        obj_permanence_mask_blur: int = 5,
+        obj_permanence_mask_threshold: float = 0.5,
+        obj_permanence_erode_kernel: int = 0,
+        dps_guidance_scale: float = 1.0,
+        dps_pos_weight: float = 1.0,
+        dps_opacity_weight: float = 0.5,
     ) -> None:
         super().__init__()
 
@@ -104,6 +112,25 @@ class SplatBeliefState(nn.Module):
         self.history_rgb = None
         self.history_pose = None
         self.first_ctxt_shift = None
+
+        # Object permanence guidance configuration. See docs/object_permanence_guidance.md.
+        # mode: "none" | "opacity" | "dps"
+        assert obj_permanence_mode in ("none", "opacity", "dps"), \
+            f"unknown obj_permanence_mode: {obj_permanence_mode!r}"
+        self.obj_permanence_mode = obj_permanence_mode
+        self.obj_permanence_state_t_min = int(obj_permanence_state_t_min)
+        self.obj_permanence_mask_blur = int(obj_permanence_mask_blur)
+        self.obj_permanence_mask_threshold = float(obj_permanence_mask_threshold)
+        # When > 0, the binary depth-validity mask is eroded by this kernel
+        # size (odd) before being blurred. This shifts the "fully suppress
+        # belief" core inward and frees the silhouette band to receive both
+        # history (sparse-edge) and partial belief, smoothing 3D seams.
+        self.obj_permanence_erode_kernel = int(obj_permanence_erode_kernel)
+        self.dps_guidance_scale = float(dps_guidance_scale)
+        self.dps_pos_weight = float(dps_pos_weight)
+        self.dps_opacity_weight = float(dps_opacity_weight)
+        # Cache from the most recent forward(): used by samplers (e.g. DPS).
+        self._last_history_render = None  # dict with rgb, depth, mask, mask_per_g, P_ref
     
     @property
     def augmented_gaussians(self):
@@ -115,6 +142,175 @@ class SplatBeliefState(nn.Module):
         if self.history_gaussians is not None:
             return self.history_gaussians
         return None
+
+    def _obj_permanence_active(self, state_t):
+        """Whether the object-permanence constraint should run for this step."""
+        if self.obj_permanence_mode == "none":
+            return False
+        if self.history_gaussians is None:
+            return False
+        if state_t is None:
+            return False
+        if int(state_t) < self.obj_permanence_state_t_min:
+            return False
+        return True
+
+    def _render_history_only(self, model_input, h, w):
+        """Render history_gaussians alone at trgt pose. Returns (rgb [B,3,H,W],
+        depth [B,1,H,W], mask [B,1,H,W] in [0,1]). Mask is 1 where history covers."""
+        if self.history_gaussians is None:
+            return None
+        out = self.decoder.forward(
+            self.history_gaussians.float(),
+            model_input["trgt_c2w"],
+            model_input["intrinsics"].unsqueeze(1),
+            model_input["near"].float().unsqueeze(1),
+            model_input["far"].float().unsqueeze(1),
+            (h, w),
+            depth_mode=self.depth_mode,
+        )
+        rgb = torch.clamp(out.color[:, 0], 0.0, 1.0)         # [B, 3, H, W]
+        depth = out.depth[:, 0].unsqueeze(1)                  # [B, 1, H, W]
+        b = rgb.shape[0]
+        near = model_input["near"].float().view(b, 1, 1, 1)
+        far = model_input["far"].float().view(b, 1, 1, 1)
+        valid = (depth > (near + 1e-3)) & (depth < (far - 1e-3))
+        mask = valid.float()
+        # Optional binary erosion of the depth-validity mask. Shrinks the
+        # "fully covered" core inward so the silhouette band has both history
+        # (sparse-edge) and belief (with partial opacity) compositing
+        # together — eliminates the thin seam that appears when both are
+        # being suppressed near the boundary.
+        if self.obj_permanence_erode_kernel and self.obj_permanence_erode_kernel > 1:
+            ek = int(self.obj_permanence_erode_kernel)
+            if ek % 2 == 0:
+                ek += 1
+            # Erosion of a [0,1] mask = -max_pool(-mask) over a KxK window.
+            mask = -torch.nn.functional.max_pool2d(
+                -mask, kernel_size=ek, stride=1, padding=ek // 2,
+            )
+            mask = mask.clamp(0.0, 1.0)
+        if self.obj_permanence_mask_blur and self.obj_permanence_mask_blur > 1:
+            k = int(self.obj_permanence_mask_blur)
+            if k % 2 == 0:
+                k += 1
+            mask = torchvision.transforms.functional.gaussian_blur(mask, k)
+        mask = mask.clamp(0.0, 1.0)
+        return {"rgb": rgb, "depth": depth, "mask": mask}
+
+    def _build_per_gaussian_mask(self, mask_pix, num_gaussians, h, w):
+        """Expand a per-pixel mask [B, 1, H, W] into a per-gaussian mask [B, G]
+        matching the order produced by the encoder: V * (H*W) * srf * spp.
+        Assumes V == 1 (single target view), which is the case in this stack."""
+        b = mask_pix.shape[0]
+        per_pixel = num_gaussians // (h * w)  # = srf * spp (assuming V==1)
+        if per_pixel * h * w != num_gaussians:
+            return None  # layout doesn't match expectation; bail out
+        m = mask_pix.view(b, h * w, 1).expand(-1, -1, per_pixel).reshape(b, -1)
+        return m
+
+    def _project_gaussians_to_trgt(self, means_world, model_input, h, w):
+        """Project gaussian world means [B, G, 3] into the target camera.
+        Returns:
+          uv_norm: [B, G, 2] in pixel coords ([0, w], [0, h])
+          z_cam:  [B, G] depth in camera frame (>0 = in front of camera)
+        Intrinsics here are in normalised image coords (fx is (focal/W)).
+        """
+        b, G, _ = means_world.shape
+        device = means_world.device
+        c2w = model_input["trgt_c2w"][:, 0].to(torch.float32)             # [B, 4, 4]
+        # invert (single-target view)
+        w2c = torch.linalg.inv(c2w)                                       # [B, 4, 4]
+        ones = torch.ones((b, G, 1), device=device, dtype=torch.float32)
+        means_h = torch.cat([means_world.float(), ones], dim=-1)          # [B, G, 4]
+        cam_h = torch.einsum("bij,bnj->bni", w2c, means_h)
+        cam = cam_h[..., :3] / cam_h[..., 3:].clamp(min=1e-8)             # [B, G, 3]
+        intr = model_input["intrinsics"].float()                          # [B, 3, 3]
+        fx = intr[:, 0, 0].view(b, 1)
+        fy = intr[:, 1, 1].view(b, 1)
+        cx = intr[:, 0, 2].view(b, 1)
+        cy = intr[:, 1, 2].view(b, 1)
+        z = cam[..., 2].clamp(min=1e-6)
+        u_norm = fx * cam[..., 0] / z + cx
+        v_norm = fy * cam[..., 1] / z + cy
+        u_pix = u_norm * w
+        v_pix = v_norm * h
+        uv = torch.stack([u_pix, v_pix], dim=-1)                          # [B, G, 2]
+        return uv, cam[..., 2]
+
+    def _sample_mask_at_gaussians(self, mask_pix, uv_pix, z_cam, h, w):
+        """Bilinear sample mask_pix [B,1,H,W] at projected gaussian pixel
+        coordinates uv_pix [B, G, 2]. Out-of-frame / behind-camera gaussians
+        get mask 0 (treated as not covered). Returns [B, G]."""
+        b, G, _ = uv_pix.shape
+        # Convert to grid_sample coords in [-1, 1] with align_corners=False
+        # (matching pixel-center convention used in _build_3d_position_refs).
+        u_n = (uv_pix[..., 0] / w) * 2.0 - 1.0
+        v_n = (uv_pix[..., 1] / h) * 2.0 - 1.0
+        in_frame = (u_n.abs() <= 1.0) & (v_n.abs() <= 1.0) & (z_cam > 0)
+        grid = torch.stack([u_n, v_n], dim=-1).view(b, G, 1, 2)           # [B, G, 1, 2]
+        sampled = torch.nn.functional.grid_sample(
+            mask_pix, grid, mode="bilinear", padding_mode="zeros", align_corners=False,
+        )                                                                  # [B, 1, G, 1]
+        sampled = sampled.view(b, G)
+        sampled = sampled * in_frame.float()
+        return sampled.clamp(0.0, 1.0)
+
+    def _build_3d_position_refs(self, hist_render, model_input, h, w):
+        """Backproject the history depth at trgt_c2w into 3D points (one per pixel),
+        used as DPS-style position targets. Returns [B, H*W, 3] in world frame."""
+        depth = hist_render["depth"].squeeze(1)               # [B, H, W]
+        b = depth.shape[0]
+        device = depth.device
+        intr = model_input["intrinsics"].float()              # [B, 3, 3]
+        c2w = model_input["trgt_c2w"][:, 0].float()           # [B, 4, 4]
+
+        ys, xs = torch.meshgrid(
+            torch.arange(h, device=device, dtype=torch.float32),
+            torch.arange(w, device=device, dtype=torch.float32),
+            indexing="ij",
+        )
+        # The decoder treats intrinsics as normalised coordinates ([0,1]); rays
+        # are produced from the (h, w) grid via xy = (x+.5)/w, (y+.5)/h.  We
+        # mirror that convention here so the back-projected points line up with
+        # what the renderer projected.
+        u = (xs + 0.5) / w                                    # [H, W]
+        v = (ys + 0.5) / h
+        # Pinhole back-projection in normalised coords.
+        fx = intr[:, 0, 0].view(b, 1, 1)
+        fy = intr[:, 1, 1].view(b, 1, 1)
+        cx = intr[:, 0, 2].view(b, 1, 1)
+        cy = intr[:, 1, 2].view(b, 1, 1)
+        x_cam = (u.unsqueeze(0) - cx) / fx                    # [B, H, W]
+        y_cam = (v.unsqueeze(0) - cy) / fy
+        z_cam = depth                                          # [B, H, W]
+        cam_pts = torch.stack([x_cam * z_cam, y_cam * z_cam, z_cam], dim=-1)  # [B, H, W, 3]
+        cam_pts = cam_pts.view(b, h * w, 3)
+        # Convert to homogeneous and apply c2w.
+        ones = torch.ones((b, h * w, 1), device=device, dtype=cam_pts.dtype)
+        cam_h = torch.cat([cam_pts, ones], dim=-1)            # [B, HW, 4]
+        world = torch.einsum("bij,bnj->bni", c2w, cam_h)
+        world = world[..., :3] / world[..., 3:].clamp(min=1e-8)
+        return world                                          # [B, H*W, 3]
+
+    def _apply_opacity_constraint(self, belief, model_input, h, w, hist_render=None):
+        """Zero opacity of `belief` gaussians whose projected location in the
+        target view falls inside the history-covered region. Returns
+        (constrained_belief, hist_render_dict). Uses projection so it works
+        regardless of inference_mode pre-filtering of gaussians."""
+        if hist_render is None:
+            hist_render = self._render_history_only(model_input, h, w)
+        if hist_render is None:
+            return belief, None
+        mask_pix = hist_render["mask"]                                 # [B,1,H,W]
+        with torch.no_grad():
+            uv, z = self._project_gaussians_to_trgt(belief.means.detach(), model_input, h, w)
+            mask_per_g = self._sample_mask_at_gaussians(mask_pix, uv, z, h, w)
+        # Soft scaling: in fully covered regions belief contributes 0; in
+        # partially covered regions it contributes (1 - mask).
+        scale = (1.0 - mask_per_g).to(belief.opacities.dtype)
+        belief.opacities = belief.opacities * scale
+        return belief, hist_render
 
     def refine_current_gaussians(self, image_shape: tuple[int, int]):
         """Run online Gaussian refinement against stored observations.
@@ -172,7 +368,13 @@ class SplatBeliefState(nn.Module):
                 trgt_c2w_raw = model_input["trgt_c2w"].clone() 
                 # Make ctxt to be identity and adjust trgt accordingly
                 model_input["ctxt_c2w"] = torch.eye(4, device=ctxt_c2w_raw.device).unsqueeze(0).unsqueeze(0).repeat(b, num_context, 1, 1)
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", torch.linalg.inv(ctxt_c2w_raw), trgt_c2w_raw)
+                # linalg.inv requires fp32; cast to float for the inverse under bf16 autocast.
+                _orig_dtype = trgt_c2w_raw.dtype
+                model_input["trgt_c2w"] = torch.einsum(
+                    "bijk, bikl -> bijl",
+                    torch.linalg.inv(ctxt_c2w_raw.float()),
+                    trgt_c2w_raw.float(),
+                ).to(_orig_dtype)
             context_gaussians, target_gaussians = self.encoder(
                 model_input, 
                 t=t,
@@ -210,6 +412,19 @@ class SplatBeliefState(nn.Module):
             # Update belief Gaussians
             self.belief_gaussians = target_gaussians
 
+            # Object-permanence guidance: opacity-mode short-circuits belief
+            # contribution in regions that history already covers. DPS-mode
+            # leaves belief untouched here and relies on sampler-level grad.
+            self._last_history_render = None
+            if self._obj_permanence_active(state_t):
+                hist_render = self._render_history_only(model_input, h, w)
+                if hist_render is not None:
+                    if self.obj_permanence_mode == "opacity":
+                        self.belief_gaussians, _ = self._apply_opacity_constraint(
+                            self.belief_gaussians, model_input, h, w, hist_render=hist_render,
+                        )
+                    self._last_history_render = hist_render
+
             # Store observed frame for online refinement (once per new state_t)
             if self.refiner is not None:
                 obs_rgb = self.unnormalize(model_input["ctxt_rgb"][:, 0])  # [B, 3, H, W]
@@ -228,7 +443,13 @@ class SplatBeliefState(nn.Module):
                 trgt_c2w_raw = model_input["trgt_c2w"].clone() 
                 # Make ctxt to be identity and adjust trgt accordingly
                 model_input["ctxt_c2w"] = torch.eye(4, device=ctxt_c2w_raw.device).unsqueeze(0).unsqueeze(0).repeat(b, num_context, 1, 1)
-                model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", torch.linalg.inv(ctxt_c2w_raw), trgt_c2w_raw)
+                # linalg.inv requires fp32; cast to float for the inverse under bf16 autocast.
+                _orig_dtype = trgt_c2w_raw.dtype
+                model_input["trgt_c2w"] = torch.einsum(
+                    "bijk, bikl -> bijl",
+                    torch.linalg.inv(ctxt_c2w_raw.float()),
+                    trgt_c2w_raw.float(),
+                ).to(_orig_dtype)
             # TODO evolve context_gaussians as diffusion t goes
             context_gaussians, target_gaussians = self.encoder(
                 model_input, 
@@ -254,7 +475,19 @@ class SplatBeliefState(nn.Module):
                 model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["trgt_c2w"])
             # Update belief Gaussians
             self.belief_gaussians = target_gaussians
-        
+
+            # Same constraint as the new-state branch — keeps every diffusion
+            # step (state_t == current_timestep) consistent with the same rule.
+            self._last_history_render = None
+            if self._obj_permanence_active(state_t):
+                hist_render = self._render_history_only(model_input, h, w)
+                if hist_render is not None:
+                    if self.obj_permanence_mode == "opacity":
+                        self.belief_gaussians, _ = self._apply_opacity_constraint(
+                            self.belief_gaussians, model_input, h, w, hist_render=hist_render,
+                        )
+                    self._last_history_render = hist_render
+
         assert state_t >= self.current_timestep, "state_t should not be smaller than the current timestep"
 
         # Augmented gaussians
@@ -319,62 +552,65 @@ class SplatBeliefState(nn.Module):
                 "rendered_intm_depth": intm_rendered_depth,
             })
         
-        extract_dino = False if self.dino_model is None else True
         # Sample from target rendered semantic feature maps
         if self.use_semantic and not self.inference_mode:
             target_rendered_semantic = self.encoder.get_semantic_features(target_rendered_features)
-            target_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                target_rendered_semantic_reg = self.encoder.get_semantic_reg_features(target_rendered_features)
             target_samples = self.sample_patches_and_get_clip_embeddings(
                 target_rendered_semantic,
                 self.unnormalize(model_input["trgt_rgb"]),
                 num_samples=self.feature_patch_num_samples,
                 min_scale=self.feature_patch_min_scale,
                 max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=target_rendered_semantic_reg
             )
-            
+            if self.dino_model is not None:
+                target_samples["semantic_reg_dense"] = self.encoder.get_semantic_reg_features(target_rendered_features)
+                target_samples["dino_dense"] = self._compute_dense_dino_targets(
+                    self.unnormalize(model_input["trgt_rgb"])
+                )
+
             misc[f"trgt_semantic"] = target_samples
-        
+
         # Sample from context rendered semantic feature maps
         if self.use_semantic and not self.inference_mode:
             context_rendered_semantic = self.encoder.get_semantic_features(context_rendered_features)
-            context_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                context_rendered_semantic_reg = self.encoder.get_semantic_reg_features(context_rendered_features)
             context_samples = self.sample_patches_and_get_clip_embeddings(
                 context_rendered_semantic,
                 self.unnormalize(model_input["ctxt_rgb"]),
                 num_samples=self.feature_patch_num_samples,
                 min_scale=self.feature_patch_min_scale,
                 max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=context_rendered_semantic_reg
             )
-    
+            if self.dino_model is not None:
+                context_samples["semantic_reg_dense"] = self.encoder.get_semantic_reg_features(context_rendered_features)
+                context_samples["dino_dense"] = self._compute_dense_dino_targets(
+                    self.unnormalize(model_input["ctxt_rgb"])
+                )
+
             misc[f"ctxt_semantic"] = context_samples
-        
+
         # If available, also sample from intermediate rendered semantic maps
         if "intm_c2w" in model_input and self.use_semantic and not self.inference_mode:
             intm_rendered_semantic = self.encoder.get_semantic_features(intm_rendered_features)
-            intm_rendered_semantic_reg = None
-            if self.dino_model is not None:
-                intm_rendered_semantic_reg = self.encoder.get_semantic_reg_features(intm_rendered_features)
             intm_samples = self.sample_patches_and_get_clip_embeddings(
                 intm_rendered_semantic,
                 self.unnormalize(model_input["intm_rgb"]),
                 num_samples=self.feature_patch_num_samples,
                 min_scale=self.feature_patch_min_scale,
                 max_scale=self.feature_patch_max_scale,
-                extract_dino=extract_dino,
-                semantic_reg_maps=intm_rendered_semantic_reg
             )
-            
+            if self.dino_model is not None:
+                intm_samples["semantic_reg_dense"] = self.encoder.get_semantic_reg_features(intm_rendered_features)
+                intm_samples["dino_dense"] = self._compute_dense_dino_targets(
+                    self.unnormalize(model_input["intm_rgb"])
+                )
+
             # Update misc with the sampled patches and their center features
             misc[f"intm_semantic"] = intm_samples
-        
+
+        # One CLIP forward across all collected patches.
+        if self.use_semantic and not self.inference_mode:
+            self._run_clip_on_collected_patches(misc)
+
         return self.normalize(target_rendered_color), target_rendered_depth, misc
 
     def render(self, gaussians, extrinsics, intrinsics, near, far, h, w,
@@ -598,6 +834,36 @@ class SplatBeliefState(nn.Module):
         else:
             model.belief_gaussians = None
 
+    def _compute_dense_dino_targets(self, rgb_maps):
+        """Run the (frozen) DINO encoder on rgb_maps and return dense feature maps.
+
+        Outputs are bilinearly upsampled back to rendered resolution so they
+        can be compared pixel-wise against the encoder's dense reg head output.
+
+        Returns: tensor of shape (batch, views, dino_c, height, width).
+        """
+        batch, views, _, height, width = rgb_maps.shape
+        rgb_flat = rgb_maps.reshape(batch * views, 3, height, width)
+        dino_patch_size = self.dino_model.patch_embed.patch_size
+        if isinstance(dino_patch_size, (tuple, list)):
+            dino_patch_size = dino_patch_size[0]
+        dino_h0 = max(dino_patch_size, height // 4 * dino_patch_size)
+        dino_w0 = max(dino_patch_size, width // 4 * dino_patch_size)
+        rgb_resized = torch.nn.functional.interpolate(
+            rgb_flat, size=(dino_h0, dino_w0), mode='bilinear', align_corners=False
+        )
+        with torch.no_grad():
+            feats = forward_2d_model_batch(rgb_resized, self.dino_model)
+            _, dino_c, dh, dw = feats.shape
+            feats = torch.nn.functional.interpolate(
+                feats, size=(height, width), mode='bilinear', align_corners=False
+            ).reshape(batch, views, dino_c, height, width)
+        return feats
+
+    # CLIP image normalization constants (OpenAI CLIP / open_clip ViT-B/16)
+    _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+    _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
     def sample_patches_and_get_clip_embeddings(
         self,
         semantic_maps,
@@ -606,202 +872,78 @@ class SplatBeliefState(nn.Module):
         min_scale=0.03125,  # 1/32 of the image size
         max_scale=1.0,
         seed=None,
-        extract_dino=False,
-        reg_patch_size=4,
-        semantic_reg_maps=None,
     ):
-        """
-        Randomly sample pixels from rendered semantic feature maps and get CLIP embeddings for patches
-        centered at these pixels at random scales.
-        
-        Args:
-            semantic_maps: Tensor of semantic feature maps [batch, views, channels, height, width]
-            rgb_maps: Tensor of RGB maps [batch, views, 3, height, width] 
-            num_samples: Number of random pixels to sample
-            min_scale: Minimum scale factor (relative to image size)
-            max_scale: Maximum scale factor (relative to image size)
-            seed: Random seed for reproducibility
-            extract_dino: Whether to extract DINO feature embeddings
-            
-        Returns:
-            Dictionary containing stacked tensors of sampled features and embeddings
-        """
+        """Vectorized random-patch sampler. See SplatBelief for details."""
         if seed is not None:
             torch.manual_seed(seed)
-            
-        # Get dimensions
-        batch, views, channels, height, width = semantic_maps.shape
-        
-        # Extract DINO features for all images at once if requested and model is available
-        dino_feature_maps = None
-        if extract_dino and hasattr(self, 'dino_model') and self.dino_model is not None:
-            # Reshape RGB maps to [batch*views, 3, height, width] for batch processing
-            rgb_flat = rgb_maps.reshape(batch * views, 3, height, width)
-            dino_h0 = height // reg_patch_size * 14 # dinov2 uses patch size of 14
-            dino_w0 = width // reg_patch_size * 14
-            # Resize images for DINO model
-            rgb_resized = torch.nn.functional.interpolate(
-                rgb_flat, size=(dino_h0, dino_w0), mode='bilinear', align_corners=False
-            )
-            with torch.no_grad():
-                dino_feature_maps = forward_2d_model_batch(rgb_resized, self.dino_model)
-                # Reshape back to [batch, views, feature_dim, feature_height, feature_width]
-                _, dino_c, dino_h, dino_w = dino_feature_maps.shape
-                dino_feature_maps = dino_feature_maps.reshape(batch, views, dino_c, dino_h, dino_w)
-                
-                # Interpolate DINO features to match semantic maps size
-                dino_feature_maps = torch.nn.functional.interpolate(
-                    dino_feature_maps.flatten(0, 1),  # [batch*views, dino_c, dino_h, dino_w]
-                    size=(height, width),
-                    mode='bilinear',
-                    align_corners=False
-                ).reshape(batch, views, dino_c, height, width)
-                
-        # Initialize output containers
-        all_center_features = []
-        all_center_features_reg = []
-        all_rgb_patches = []
-        all_batch_indices = []
-        all_dino_features = [] if extract_dino else None
-        
-        # For each batch
-        for b in range(batch):
-            batch_rgb_patches = []
-            batch_center_features = []
-            if extract_dino and semantic_reg_maps is not None:
-                batch_center_features_reg = []
-            batch_pixel_positions = []
-            batch_scales = []
-            batch_view_indices = []
-            batch_dino_features = [] if extract_dino else None
-            
-            # For each view
-            for v in range(views):
-                view_center_features = []
-                view_center_features_reg = [] if extract_dino and semantic_reg_maps is not None else None
-                view_rgb_patches = []
-                view_pixel_positions = []
-                view_scales = []
-                view_dino_features = [] if extract_dino else None
-                
-                # Generate random pixel coordinates
-                rand_pixels = []
-                for _ in range(num_samples):
-                    # Random x, y positions
-                    y = torch.randint(0, height, (1,)).item()
-                    x = torch.randint(0, width, (1,)).item()
-                    
-                    # Log-uniform sampling between min_scale and max_scale
-                    log_min = np.log(min_scale)
-                    log_max = np.log(max_scale)
-                    log_scale = log_min + torch.rand(1).item() * (log_max - log_min)
-                    scale = np.exp(log_scale)
-                    
-                    # Calculate patch size based on scale
-                    patch_size = max(1, int(min(height, width) * scale))
-                    
-                    # Calculate patch boundaries with clamping to image boundaries
-                    half_size = patch_size // 2
-                    y_min = max(0, y - half_size)
-                    y_max = min(height, y + half_size)
-                    x_min = max(0, x - half_size)
-                    x_max = min(width, x + half_size)
-                    
-                    rand_pixels.append((y, x, scale, y_min, y_max, x_min, x_max))
-                
-                # Extract patches for this view
-                for y, x, scale, y_min, y_max, x_min, x_max in rand_pixels:
-                    # Extract features at the center point
-                    center_feature = semantic_maps[b, v, :, y, x]
-                    # center_feature = center_feature / center_feature.norm(dim=-1, keepdim=True)
-                    view_center_features.append(center_feature)
-                    # Extract regularized semantic features if available
-                    if extract_dino and semantic_reg_maps is not None:
-                        center_feature_reg = semantic_reg_maps[b, v, :, y, x]
-                        view_center_features_reg.append(center_feature_reg)
-                    
-                    # Extract DINO features at the center point if available
-                    if extract_dino and dino_feature_maps is not None:
-                        # Directly get DINO feature at center pixel using same coordinates
-                        dino_feature = dino_feature_maps[b, v, :, y, x]
-                        view_dino_features.append(dino_feature)
-                    
-                    # Sample RGB for the same patch
-                    rgb_patch = rgb_maps[b, v, :, y_min:y_max, x_min:x_max]
-                    
-                    rgb_patch_resized = self.clip_process(rgb_patch).half()
-                    
-                    # Store resized patch for later batch processing with CLIP
-                    view_rgb_patches.append(rgb_patch_resized)
-                    view_pixel_positions.append((y, x))
-                    view_scales.append(scale)
-                
-                # Add view data to batch containers
-                batch_center_features.append(torch.stack(view_center_features))
-                if extract_dino and view_center_features_reg:
-                    batch_center_features_reg.append(torch.stack(view_center_features_reg))
-                batch_rgb_patches.extend(view_rgb_patches)
-                batch_pixel_positions.extend(view_pixel_positions)
-                batch_scales.extend(view_scales)
-                batch_view_indices.extend([v] * len(view_rgb_patches))
-                if extract_dino and view_dino_features:
-                    batch_dino_features.append(torch.stack(view_dino_features))
-            
-            # Stack view features for this batch
-            all_center_features.append(torch.stack(batch_center_features))  # [views, num_samples, channels]
-            if extract_dino and batch_center_features_reg:
-                all_center_features_reg.append(torch.stack(batch_center_features_reg)) # [views, num_samples, reg_channels]
-            if extract_dino and batch_dino_features:
-                all_dino_features.append(torch.stack(batch_dino_features))  # [views, num_samples, dino_dim]
-            
-            # Process all RGB patches for this batch through CLIP at once
-            if hasattr(self, 'clip_model') and self.clip_model is not None and batch_rgb_patches:
-                # Stack all patches for batch inference
-                stacked_rgb_patches = torch.stack(batch_rgb_patches)  # [views*num_samples, 3, 224, 224]
-                
-                with torch.no_grad():
-                    batch_clip_embeddings = self.clip_model.encode_image(stacked_rgb_patches)
-                    # batch_clip_embeddings /= batch_clip_embeddings.norm(dim=-1, keepdim=True)
-                
-                # Reshape to match the views and samples dimensions
-                batch_clip_embeddings = batch_clip_embeddings.reshape(views, num_samples, -1)
-                all_rgb_patches.append(stacked_rgb_patches.reshape(views, num_samples, 3, 224, 224))
-            else:
-                batch_clip_embeddings = None
-                if batch_rgb_patches:
-                    all_rgb_patches.append(torch.stack(batch_rgb_patches).reshape(views, num_samples, 3, 224, 224))
-            
-            # Store batch clip embeddings
-            if batch_clip_embeddings is not None:
-                all_batch_indices.append(torch.full((views * num_samples,), b, dtype=torch.long))
-            
-        # Create final return dictionary with stacked tensors
-        result = {}
-        
-        # Stack center features across batches: [batch, views, num_samples, channels]
-        if all_center_features:
-            result["center_features"] = torch.stack(all_center_features)
-        
-        # Stack regularized center features if available: [batch, views, num_samples, reg_channels]
-        if extract_dino and all_center_features_reg is not None:
-            result["center_features_reg"] = torch.stack(all_center_features_reg)
-        
-        # Stack DINO features if extracted: [batch, views, num_samples, dino_dim]
-        if extract_dino and all_dino_features:
-            result["dino_embeddings"] = torch.stack(all_dino_features)
-        
-        # Stack RGB patches: [batch, views, num_samples, 3, 224, 224]
-        if all_rgb_patches:
-            result["rgb_patches"] = torch.stack(all_rgb_patches)
-        
-        # Stack CLIP embeddings if available: [batch, views, num_samples, embedding_dim]
-        if hasattr(self, 'clip_model') and self.clip_model is not None and 'batch_clip_embeddings' in locals() and batch_clip_embeddings is not None:
-            clip_embeddings = []
-            for b in range(batch):
-                # Get all embeddings for this batch
-                clip_embeddings.append(batch_clip_embeddings)
-            
-            if clip_embeddings:
-                result["clip_embeddings"] = torch.stack(clip_embeddings) # [batch, views, num_samples, embedding_dim]
-        
-        return result
+
+        B, V, C, H, W = semantic_maps.shape
+        N = num_samples
+        device = semantic_maps.device
+
+        ys = torch.randint(0, H, (B, V, N), device=device)
+        xs = torch.randint(0, W, (B, V, N), device=device)
+        log_scale = torch.empty((B, V, N), device=device).uniform_(
+            float(np.log(min_scale)), float(np.log(max_scale))
+        )
+        scales = log_scale.exp()
+
+        sm_flat = semantic_maps.reshape(B, V, C, H * W)
+        flat_idx = (ys * W + xs).unsqueeze(2).expand(-1, -1, C, -1)
+        centers = torch.gather(sm_flat, 3, flat_idx)
+        centers = centers.permute(0, 1, 3, 2).contiguous()
+
+        half_pix = (min(H, W) * scales / 2.0).clamp(min=1.0)
+
+        lin = torch.linspace(-1.0, 1.0, 224, device=device)
+        gy, gx = torch.meshgrid(lin, lin, indexing="ij")
+        base_x = gx[None, None, None]
+        base_y = gy[None, None, None]
+        cx = xs.float()[..., None, None]
+        cy = ys.float()[..., None, None]
+        hp = half_pix[..., None, None]
+        sample_x = cx + base_x * hp
+        sample_y = cy + base_y * hp
+        sample_x = (sample_x / max(W - 1, 1)) * 2.0 - 1.0
+        sample_y = (sample_y / max(H - 1, 1)) * 2.0 - 1.0
+        grid = torch.stack([sample_x, sample_y], dim=-1)
+
+        rgb_flat = rgb_maps.reshape(B * V, 3, H, W)
+        grid_per_bv = grid.reshape(B * V, N * 224, 224, 2)
+        rgb_patches = torch.nn.functional.grid_sample(
+            rgb_flat, grid_per_bv,
+            mode="bilinear", padding_mode="border", align_corners=True,
+        )
+        rgb_patches = rgb_patches.reshape(B * V, 3, N, 224, 224).permute(0, 2, 1, 3, 4)
+        rgb_patches = rgb_patches.reshape(B, V, N, 3, 224, 224)
+
+        mean = torch.tensor(self._CLIP_MEAN, device=device, dtype=rgb_patches.dtype).view(1, 1, 1, 3, 1, 1)
+        std = torch.tensor(self._CLIP_STD, device=device, dtype=rgb_patches.dtype).view(1, 1, 1, 3, 1, 1)
+        rgb_patches = ((rgb_patches - mean) / std).half()
+
+        return {"center_features": centers, "rgb_patches": rgb_patches}
+
+    def _run_clip_on_collected_patches(self, misc):
+        """Single CLIP forward across trgt/ctxt/intm patches stashed in misc."""
+        if self.clip_model is None:
+            return
+        keys = []
+        chunks = []
+        for k in ("trgt_semantic", "ctxt_semantic", "intm_semantic"):
+            if k not in misc or "rgb_patches" not in misc[k]:
+                continue
+            patches = misc[k]["rgb_patches"]
+            B_k, V_k, N_k = patches.shape[:3]
+            chunks.append(patches.reshape(-1, 3, 224, 224))
+            keys.append((k, B_k, V_k, N_k))
+        if not chunks:
+            return
+        all_patches = torch.cat(chunks, dim=0)
+        with torch.no_grad():
+            all_clip = self.clip_model.encode_image(all_patches)
+        offset = 0
+        for k, B_k, V_k, N_k in keys:
+            count = B_k * V_k * N_k
+            misc[k]["clip_embeddings"] = all_clip[offset:offset + count].reshape(B_k, V_k, N_k, -1)
+            offset += count
+            del misc[k]["rgb_patches"]

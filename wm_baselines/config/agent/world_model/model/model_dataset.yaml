@@ -72,7 +72,12 @@ load_pn: False
 lock_pn_steps: 0
 
 load_enc: False
-lock_enc_steps: 0
+# Component-only finetuning. Set finetune_component to one of:
+#   encoder | depth_predictor | semantic_head
+# and finetune_steps > 0 to freeze everything except that component for the
+# first N steps; after step N, all parameters are unlocked.
+finetune_component: null
+finetune_steps: 0
 
 load_optimizer: False
 

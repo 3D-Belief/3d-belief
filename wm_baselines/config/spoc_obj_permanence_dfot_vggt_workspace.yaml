@@ -8,13 +8,17 @@ defaults:
 embodied_task:
   name: spoc_obj_permanence_dfot_vggt
   episode_root: ${paths.episode_roots.obj_permanence}
+  episode_sample_count: 200
+  episode_sample_seed: ${oc.env:SEED,42}
+  turnaround_degrees: 180.0
+  turnaround_tolerance_degrees: 3.25
   adjacent_angle: 0.785  # 45 degrees
   adjacent_distance: 1.0  # meters
   occupancy_resolution: 0.1  # meters
   occupancy_obstacle_height_thresh: -0.12  # meters
   rotation_step: 10
   move_step: 0.3
-  vlm_model_name: "gpt-5-mini"
+  vlm_model_name: null
   trajectory:
     save: True
     save_path: ${paths.output_root}/obj_permanence_dfot_vggt

@@ -157,9 +157,12 @@ class DiffusionTemporal(nn.Module):
         background_weight=0.3,
         use_semantic=False,
         use_reg_model=False,
+        sampler="ddim",
     ):
         super().__init__()
         assert not (type(self) == DiffusionTemporal and model.channels != model.out_dim)
+        self.sampler = sampler
+        assert self.sampler in ("ddim", "dpm_solver_pp"), f"unknown sampler {self.sampler!r}"
 
         self.model = model
         self.channels = self.model.channels
@@ -294,6 +297,152 @@ class DiffusionTemporal(nn.Module):
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * noise
             - extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * x_start
         )
+
+    def _dps_step(self, inp, time_cond, x_t_input, render_high_res=False,
+                  global_step=100000, state_t=None,
+                  filter_border_gaussians=False,
+                  depth_inference_min=0.2, depth_inference_max=10.0):
+        """Run a single DPS-guided model_predictions: compute pred_noise / x_start
+        in the standard way, plus a 3D-Gaussian-parameter loss that pulls
+        belief gaussians at history-covered pixels toward history's geometry.
+
+        Returns (pred_noise, x_start, x_start_high_res, dps_grad) where
+        dps_grad is dL/dx_t (same shape as x_t_input) or None when DPS is
+        disabled / inactive for this step.
+        """
+        model = self.model
+        active = (
+            getattr(model, "obj_permanence_mode", "none") == "dps"
+            and model.history_gaussians is not None
+            and state_t is not None and int(state_t) >= getattr(model, "obj_permanence_state_t_min", 1)
+        )
+        if not active:
+            pred_noise, x_start, x_start_high_res = self.model_predictions(
+                inp, time_cond, clip_x_start=True, render_high_res=render_high_res,
+                global_step=global_step, state_t=state_t,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
+            )
+            return pred_noise, x_start, x_start_high_res, None
+
+        # Run forward with grad enabled. We re-build the prediction ourselves
+        # so that the graph from x_t to belief.opacities/means is intact.
+        x_t = x_t_input.detach().clone().requires_grad_(True)
+        inp_local = dict(inp)
+        if self.clean_target:
+            inp_local["noisy_trgt_rgb"] = inp["trgt_rgb"][:, 0]
+        else:
+            inp_local["noisy_trgt_rgb"] = x_t
+
+        b, _, _, h, w = inp_local["ctxt_rgb"].shape
+        with torch.enable_grad():
+            # SplatBeliefState.forward populates self.model.belief_gaussians
+            # and self.model._last_history_render. We then re-render the
+            # augmented gaussians at trgt_c2w to get the model output, mimicking
+            # model_predictions but keeping the autograd graph alive.
+            model(
+                inp_local, t=time_cond, global_step=global_step, state_t=state_t,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
+            )
+            belief = model.belief_gaussians
+            hist_render = model._last_history_render
+            gaussians_full = model.history_gaussians + belief
+            output = model.decoder.forward(
+                gaussians_full.float(),
+                inp_local["trgt_c2w"],
+                inp_local["intrinsics"].unsqueeze(1),
+                inp_local["near"].float().unsqueeze(1),
+                inp_local["far"].float().unsqueeze(1),
+                (h, w),
+                depth_mode=model.depth_mode,
+            )
+            color = output.color
+            if self.use_depth_mask:
+                depth_mask = model.encoder.get_depth_mask(output.features)
+                depth_mask = torch.sigmoid(depth_mask)
+                depth_mask = (depth_mask > 0.5).float()
+                color = color * depth_mask
+            model_output = self.normalize(color)[:, 0, ...]
+
+            # Reproduce the dynamic-thresholding clip used in model_predictions.
+            def _dyn_clip(x_start_local):
+                s = torch.quantile(
+                    rearrange(x_start_local, "b ... -> b (...)").abs(), 0.95, dim=-1,
+                )
+                s.clamp_(min=1.0)
+                s = right_pad_dims_to(x_start_local, s)
+                return x_start_local.clamp(-s, s) / s
+
+            x_start_high_res_local = None
+            if self.objective == "pred_noise":
+                pred_noise_local = model_output
+                x_start_local = self.predict_start_from_noise(x_t, time_cond, pred_noise_local)
+                x_start_local = _dyn_clip(x_start_local)
+            elif self.objective == "pred_x0":
+                x_start_local = model_output
+                x_start_local = _dyn_clip(x_start_local)
+                num_targets = x_start_local.shape[0] // x_t.shape[0]
+                x_start_local = rearrange(
+                    x_start_local, "(b nt) c h w -> b nt c h w", nt=num_targets,
+                )[:, 0, ...]
+                if render_high_res:
+                    x_start_high_res_local = x_start_local
+                    x_start_local = F.interpolate(
+                        x_start_local, size=(64, 64), mode="bilinear", antialias=True,
+                    )
+                pred_noise_local = self.predict_noise_from_start(x_t, time_cond, x_start_local)
+            elif self.objective == "pred_v":
+                v_local = model_output
+                x_start_local = self.predict_start_from_v(x_t, time_cond, v_local)
+                x_start_local = _dyn_clip(x_start_local)
+                pred_noise_local = self.predict_noise_from_start(x_t, time_cond, x_start_local)
+            else:
+                raise ValueError(f"unknown objective {self.objective}")
+
+            # 3D-space DPS loss: pull predicted belief gaussian positions and
+            # opacities toward what history says at the corresponding projected
+            # pixel of the target view. Uses projection (works regardless of
+            # encoder inference_mode pre-filtering).
+            if hist_render is None:
+                grad = None
+            else:
+                with torch.no_grad():
+                    mask_pix = hist_render["mask"]                                  # [B,1,H,W]
+                    # 3D positions per pixel (history-depth backprojection in world frame)
+                    P_pix = model._build_3d_position_refs(hist_render, inp_local, h, w)  # [B, H*W, 3]
+                    P_pix_map = P_pix.view(b, h, w, 3).permute(0, 3, 1, 2)               # [B, 3, H, W]
+                # Project each predicted gaussian's mean into the target camera
+                # to find its corresponding (u, v); look up the per-pixel
+                # reference position there. Detach uv so the reference is not
+                # treated as a function of the gaussian's own position.
+                uv, z_cam = model._project_gaussians_to_trgt(belief.means.detach(), inp_local, h, w)
+                with torch.no_grad():
+                    mask_per_g = model._sample_mask_at_gaussians(mask_pix, uv, z_cam, h, w)
+                    u_n = (uv[..., 0] / w) * 2.0 - 1.0
+                    v_n = (uv[..., 1] / h) * 2.0 - 1.0
+                    grid = torch.stack([u_n, v_n], dim=-1).view(b, belief.means.shape[1], 1, 2)
+                    P_ref_g = torch.nn.functional.grid_sample(
+                        P_pix_map, grid, mode="bilinear",
+                        padding_mode="zeros", align_corners=False,
+                    ).view(b, 3, belief.means.shape[1]).permute(0, 2, 1)            # [B, G, 3]
+
+                pos_diff = ((belief.means - P_ref_g) ** 2).sum(dim=-1)              # [B, G]
+                op_diff = (belief.opacities - 1.0) ** 2                              # [B, G]
+                norm = mask_per_g.sum().clamp(min=1.0)
+                L = (
+                    model.dps_pos_weight * (mask_per_g * pos_diff).sum()
+                    + model.dps_opacity_weight * (mask_per_g * op_diff).sum()
+                ) / norm
+                grad = torch.autograd.grad(L, x_t, retain_graph=False, allow_unused=True)[0]
+
+        # Detach predictions back to inference path.
+        pred_noise = pred_noise_local.detach()
+        x_start = x_start_local.detach()
+        x_start_high_res = x_start_high_res_local.detach() if x_start_high_res_local is not None else None
+        return pred_noise, x_start, x_start_high_res, (grad.detach() if grad is not None else None)
 
     def predict_start_from_v(self, x_t, t, v):
         return (
@@ -548,17 +697,23 @@ class DiffusionTemporal(nn.Module):
             else:
                 render_high_res = False
             render_high_res = False
-            pred_noise, x_start, _ = self.model_predictions(
-                inp,
-                time_cond,
-                clip_x_start=True,
+            pred_noise, x_start, _, dps_grad = self._dps_step(
+                inp, time_cond, x_t_input=img,
                 render_high_res=render_high_res,
-                global_step=global_step,
-                state_t=state_t,
+                global_step=global_step, state_t=state_t,
                 filter_border_gaussians=filter_border_gaussians,
                 depth_inference_min=depth_inference_min,
                 depth_inference_max=depth_inference_max,
             )
+            if dps_grad is not None:
+                # Normalize to a fixed pixel-space step size so the guidance
+                # magnitude is bounded across timesteps. scale ≈ DPS λ.
+                gnorm = dps_grad.flatten(1).norm(dim=1).clamp(min=1e-8)
+                lam = self.model.dps_guidance_scale / gnorm
+                lam = lam.view(-1, *([1] * (dps_grad.dim() - 1)))
+                x_start = x_start - lam * dps_grad
+                x_start = x_start.clamp(-1.0, 1.0)
+                pred_noise = self.predict_noise_from_start(img, time_cond, x_start)
             if time_next < 0:
                 img = x_start
                 imgs.append(img)
@@ -629,11 +784,144 @@ class DiffusionTemporal(nn.Module):
         return out_dict
 
     @torch.no_grad()
+    def dpm_solver_pp_sample(
+        self, shape, return_all_timesteps=False, inp=None, global_step=100000,
+        state_t=None, fast_sampling=False,
+        filter_border_gaussians=False,
+        depth_inference_min=0.2, depth_inference_max=10.0,
+    ):
+        """DPM-Solver++(2M) data-prediction sampler — temporal variant.
+
+        Mirrors the structure of `ddim_sample` (same final-step refinement,
+        depth-mask, render_video tail) but replaces the per-step DDIM update
+        with an order-2 DPM-Solver++ multistep update in log-SNR space.
+        """
+        batch, device = shape[0], self.betas.device
+        T = self.num_timesteps
+        N = self.sampling_timesteps
+        if fast_sampling:
+            N = 10
+        temperature = self.temperature
+
+        alphas_sqrt = self.alphas_cumprod.sqrt()
+        sigmas = (1.0 - self.alphas_cumprod).clamp_min(1e-12).sqrt()
+        lambdas = torch.log(alphas_sqrt / sigmas)
+        # Uniform-in-t schedule (same integer timesteps DDIM picks). The DPM++
+        # update reads alpha/sigma/lambda directly from the schedule at those
+        # discrete t values — no snap-to-grid quantization artifacts.
+        times = (
+            torch.linspace(-1, T - 1, N + 1).int().tolist()
+        )
+        times = list(reversed(times))  # [T-1, ..., 0, -1]
+
+        if "num_frames_render" in inp.keys():
+            num_frames_render = inp["num_frames_render"]
+        else:
+            num_frames_render = 20
+
+        img = torch.randn(shape, device=device) * temperature
+        imgs = [img]
+        x_pred_prev = None
+        h_prev = None
+        depth_masks = None
+        frames = depth_frames = semantics = render_poses = None
+
+        for i in tqdm(range(len(times) - 1), desc="dpm-solver++ step"):
+            t = times[i]
+            t_next = times[i + 1]
+            time_cond = torch.full((batch,), t, device=device, dtype=torch.long)
+            if self.clean_target:
+                inp["noisy_trgt_rgb"] = inp["trgt_rgb"][:, 0, :, :, :]
+            else:
+                inp["noisy_trgt_rgb"] = img
+
+            _, x_pred, _, dps_grad = self._dps_step(
+                inp, time_cond, x_t_input=img,
+                render_high_res=False,
+                global_step=global_step, state_t=state_t,
+                filter_border_gaussians=filter_border_gaussians,
+                depth_inference_min=depth_inference_min,
+                depth_inference_max=depth_inference_max,
+            )
+            if dps_grad is not None:
+                gnorm = dps_grad.flatten(1).norm(dim=1).clamp(min=1e-8)
+                lam = self.model.dps_guidance_scale / gnorm
+                lam = lam.view(-1, *([1] * (dps_grad.dim() - 1)))
+                x_pred = (x_pred - lam * dps_grad).clamp(-1.0, 1.0)
+
+            if t_next < 0:
+                img = x_pred
+                imgs.append(img)
+                # Final-step refinement & rendering — same as ddim_sample tail.
+                _, _, _, h_img, w_img = inp["ctxt_rgb"].shape
+                refined_gaussians = self.model.refine_current_gaussians((h_img, w_img))
+                if refined_gaussians is not None:
+                    refined_output = self.model.decoder.forward(
+                        refined_gaussians.float(),
+                        inp["trgt_c2w"],
+                        inp["intrinsics"].unsqueeze(1),
+                        inp["near"].float().unsqueeze(1),
+                        inp["far"].float().unsqueeze(1),
+                        (h_img, w_img),
+                        depth_mode=self.model.depth_mode,
+                    )
+                    img = self.normalize(torch.clamp(refined_output.color[:, 0], 0.0, 1.0))
+                    imgs[-1] = img
+
+                if "render_poses" in inp:
+                    if self.use_depth_mask:
+                        frames, depth_frames, semantics, render_poses, depth_masks = self.model.render_video(
+                            inp, time_cond, n=num_frames_render, render_high_res=False,
+                        )
+                    else:
+                        frames, depth_frames, semantics, render_poses = self.model.render_video(
+                            inp, time_cond, n=num_frames_render, render_high_res=False,
+                        )
+                continue
+
+            alpha_t = alphas_sqrt[t]; sigma_t = sigmas[t]
+            alpha_s = alphas_sqrt[t_next]; sigma_s = sigmas[t_next]
+            h = lambdas[t_next] - lambdas[t]
+
+            if x_pred_prev is None:
+                D = x_pred
+            else:
+                r = (h_prev / h.clamp_min(1e-9)).clamp_min(1e-9)
+                D = (1.0 + 1.0 / (2.0 * r)) * x_pred - (1.0 / (2.0 * r)) * x_pred_prev
+                # Order-2 extrapolation can overshoot when h is non-uniform.
+                # x_pred is already dynamically thresholded to [-1, 1] inside
+                # model_predictions; clamp D to a slightly looser range so
+                # the multistep correction is bounded but not too tight.
+                D = D.clamp(-1.5, 1.5)
+
+            img = (sigma_s / sigma_t) * img + alpha_s * (1.0 - torch.exp(-h)) * D
+            imgs.append(img)
+            x_pred_prev = x_pred
+            h_prev = h
+
+        ret = img if not return_all_timesteps else torch.stack(imgs, dim=1)
+        ret = self.unnormalize(ret)
+        out_dict = {
+            "images": ret,
+            "videos": frames,
+            "depth_masks": depth_masks,
+            "depth_videos": depth_frames,
+            "semantic_videos": semantics,
+            "inp": inp,
+            "render_poses": render_poses,
+            "time_cond": time_cond,
+        }
+        return out_dict
+
+    @torch.no_grad()
     def sample(self, batch_size=2, return_all_timesteps=False, inp=None, state_t=None, fast_sampling=False, filter_border_gaussians=False, depth_inference_min=0.2, depth_inference_max=10.0):
         image_size, channels = self.image_size, self.channels
-        sample_fn = (
-            self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
-        )
+        if self.sampler == "dpm_solver_pp":
+            sample_fn = self.dpm_solver_pp_sample
+        elif self.is_ddim_sampling:
+            sample_fn = self.ddim_sample
+        else:
+            sample_fn = self.p_sample_loop
         return sample_fn(
             (batch_size, channels, image_size, image_size),
             return_all_timesteps=return_all_timesteps,
@@ -829,8 +1117,8 @@ class DiffusionTemporal(nn.Module):
             semantic_loss = reduce(semantic_loss, "b ... -> b (...)", "mean")
             semantic_loss = semantic_loss * extract(self.p2_loss_weight, t, semantic_loss.shape)
             if self.use_reg_model:
-                semantic_reg_gt = trgt_semantic["dino_embeddings"]
-                rendered_trgt_semantic_reg = trgt_semantic["center_features_reg"]
+                semantic_reg_gt = trgt_semantic["dino_dense"]
+                rendered_trgt_semantic_reg = trgt_semantic["semantic_reg_dense"]
                 semantic_reg_gt = semantic_reg_gt.to(rendered_trgt_semantic_reg.dtype)
                 semantic_loss_reg = self.loss_fn(semantic_reg_gt, rendered_trgt_semantic_reg, reduction="none")
                 semantic_loss_reg = reduce(semantic_loss_reg, "b ... -> b (...)", "mean")
@@ -920,8 +1208,8 @@ class DiffusionTemporal(nn.Module):
                 self.p2_loss_weight, t, loss_intermediate_semantic.shape
             )
             if self.use_reg_model:
-                intermediate_semantic_reg_gt = intm_semantic["dino_embeddings"]
-                rendered_intm_semantic_reg = intm_semantic["center_features_reg"]
+                intermediate_semantic_reg_gt = intm_semantic["dino_dense"]
+                rendered_intm_semantic_reg = intm_semantic["semantic_reg_dense"]
                 intermediate_semantic_reg_gt = intermediate_semantic_reg_gt.to(rendered_intm_semantic_reg.dtype)
                 loss_intermediate_semantic_reg = self.loss_fn(
                 rendered_intm_semantic_reg, intermediate_semantic_reg_gt, reduction="none"
@@ -976,8 +1264,8 @@ class DiffusionTemporal(nn.Module):
                 semantic_loss_ctxt = reduce(semantic_loss_ctxt, "b ... -> b (...)", "mean")
                 semantic_loss_ctxt = semantic_loss_ctxt * extract(self.p2_loss_weight, t_zero, semantic_loss_ctxt.shape)
                 if self.use_reg_model:
-                    semantic_reg_gt_ctxt = ctxt_semantic["dino_embeddings"]
-                    rendered_ctxt_semantic_reg = ctxt_semantic["center_features_reg"]
+                    semantic_reg_gt_ctxt = ctxt_semantic["dino_dense"]
+                    rendered_ctxt_semantic_reg = ctxt_semantic["semantic_reg_dense"]
                     semantic_reg_gt_ctxt = semantic_reg_gt_ctxt.to(rendered_ctxt_semantic_reg.dtype)
                     semantic_loss_ctxt_reg = self.loss_fn(rendered_ctxt_semantic_reg, semantic_reg_gt_ctxt, reduction="none")
                     semantic_loss_ctxt_reg = reduce(semantic_loss_ctxt_reg, "b ... -> b (...)", "mean")
@@ -1086,7 +1374,8 @@ class Trainer(object):
         cfg=None,
         num_context=1,
         load_enc=False,
-        lock_enc_steps=0,
+        finetune_component=None,
+        finetune_steps=0,
         use_identity=False,
         load_optimizer=False,
         use_depth_smoothness=False,
@@ -1162,7 +1451,13 @@ class Trainer(object):
         self.step = 0
 
         self.load_enc = load_enc
-        self.lock_enc_steps = lock_enc_steps
+        self.finetune_component = finetune_component
+        self.finetune_steps = finetune_steps
+        if self.finetune_steps > 0 and self.finetune_component is None:
+            raise ValueError(
+                "finetune_steps > 0 requires finetune_component to be set "
+                "(one of 'encoder', 'depth_predictor', 'semantic_head')."
+            )
 
         self.use_identity = use_identity
 
@@ -1281,32 +1576,43 @@ class Trainer(object):
 
         print(f"Encoder weights loaded successfully from {path}")
 
-    # def lock_encoder(self):
-    #     model = self.accelerator.unwrap_model(self.model)
-    #     for param in model.model.encoder.backbone.parameters():
-    #         param.requires_grad = False
-    #     print("Encoder weights locked.")
+    def _component_modules(self, component):
+        encoder = self.accelerator.unwrap_model(self.model).model.encoder
+        if component == "encoder":
+            return [encoder]
+        if component == "depth_predictor":
+            return [encoder.depth_predictor]
+        if component == "semantic_head":
+            modules = []
+            if hasattr(encoder, "to_semantic"):
+                modules.append(encoder.to_semantic)
+            if hasattr(encoder, "to_semantic_reg"):
+                modules.append(encoder.to_semantic_reg)
+            if not modules:
+                raise RuntimeError(
+                    "finetune_component='semantic_head' but encoder has neither "
+                    "to_semantic nor to_semantic_reg (check use_semantic / use_reg_model)."
+                )
+            return modules
+        raise ValueError(
+            f"Unknown finetune_component {component!r}; "
+            "expected one of 'encoder', 'depth_predictor', 'semantic_head'."
+        )
 
-    # def unlock_encoder(self):
-    #     model = self.accelerator.unwrap_model(self.model)
-    #     for param in model.model.encoder.backbone.parameters():
-    #         param.requires_grad = True
-    #     print("Encoder weights unlocked.")
-    
-    def lock_encoder(self):
+    def restrict_to_component(self):
         model = self.accelerator.unwrap_model(self.model)
-        for name, param in model.model.named_parameters():
-            if "to_semantic" not in name:
-                param.requires_grad = False
-            else:
+        for param in model.parameters():
+            param.requires_grad = False
+        for module in self._component_modules(self.finetune_component):
+            for param in module.parameters():
                 param.requires_grad = True
-        print("Model weights locked (except to_semantic layers).")
+        print(f"Finetune restricted to component '{self.finetune_component}'.")
 
-    def unlock_encoder(self):
+    def unlock_all(self):
         model = self.accelerator.unwrap_model(self.model)
-        for param in model.model.parameters():
+        for param in model.parameters():
             param.requires_grad = True
-        print("Model weights unlocked.")
+        print("All parameters unlocked.")
 
     def train(self):
         accelerator = self.accelerator
@@ -1318,9 +1624,9 @@ class Trainer(object):
         log_path = os.path.join(str(self.results_folder), 'logs.json.txt')
         start_time = time.time()
 
-        # lock encoder if needed
-        if self.lock_enc_steps > 0:
-            self.lock_encoder()
+        # restrict training to a single component for the first finetune_steps
+        if self.finetune_steps > 0:
+            self.restrict_to_component()
         
         if accelerator.is_main_process:  # or not accelerator.is_main_process:
             self.ema.to(device)
@@ -1357,9 +1663,9 @@ class Trainer(object):
 
                 while self.step < self.train_num_steps:
 
-                    # unlock encoder if reached the max lock step
-                    if self.step == self.lock_enc_steps:
-                        self.unlock_encoder()
+                    # unlock everything once the component-only finetune phase ends
+                    if self.finetune_steps > 0 and self.step == self.finetune_steps:
+                        self.unlock_all()
                     
                     total_loss = 0.0
                     total_rgb_loss = 0.0

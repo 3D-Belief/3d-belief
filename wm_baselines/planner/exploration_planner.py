@@ -28,6 +28,7 @@ class ExplorationPlanner(BasePlanner):
         adjacent_angle: float,
         adjacent_distance: float,
         stuck_rotate_times: int = 11,
+        goal_sampling_kwargs: Dict[str, Any] = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -42,6 +43,14 @@ class ExplorationPlanner(BasePlanner):
         self.pose_check_dict = {}
         self.goal_sampling_strategy = goal_sampling_strategy
         assert self.goal_sampling_strategy in GOAL_SAMPLING_REGISTRY, f"Unknown goal sampling strategy {self.goal_sampling_strategy}"
+        # Optional kwargs forwarded to the goal sampling function (e.g. min_clearance_m, forward_fraction, ...)
+        if goal_sampling_kwargs is None:
+            self.goal_sampling_kwargs = {}
+        elif isinstance(goal_sampling_kwargs, DictConfig):
+            from omegaconf import OmegaConf
+            self.goal_sampling_kwargs = OmegaConf.to_container(goal_sampling_kwargs, resolve=True)
+        else:
+            self.goal_sampling_kwargs = dict(goal_sampling_kwargs)
         self.path_planning_algorithm = path_planning_algorithm
         assert self.path_planning_algorithm in PATH_PLANNING_REGISTRY, f"Unknown path planning algorithm {self.path_planning_algorithm}"
         self.action_name = action_name
@@ -130,7 +139,7 @@ class ExplorationPlanner(BasePlanner):
         current_pose: Union[Tensor, np.ndarray] = self.current_asset["pose"]  # (4, 4)
         start = current_pose[:3, 3].cpu().numpy() if isinstance(current_pose, Tensor) else current_pose[:3, 3]  # (3,)
         # sample goal
-        goals, forwards = GOAL_SAMPLING_REGISTRY[self.goal_sampling_strategy](occ, current_pose)
+        goals, forwards = GOAL_SAMPLING_REGISTRY[self.goal_sampling_strategy](occ, current_pose, **self.goal_sampling_kwargs)
         if self.random_free or (goals is None or len(goals) == 0):
             goals, forwards = GOAL_SAMPLING_REGISTRY["random_free"](occ, current_pose)
             self.random_free = False  # reset random free goal sampling

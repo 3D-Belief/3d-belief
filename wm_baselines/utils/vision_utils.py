@@ -7,6 +7,24 @@ from torch import Tensor
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 
+
+def visualize_semantic_query_intensity_map(
+    intensity_map: np.ndarray,
+) -> np.ndarray:
+    """    Visualizes a semantic intensity map by applying a colormap.
+    Args:
+        intensity_map (np.ndarray): The intensity map to visualize, shape [b, h, w] or [h, w].
+    Returns:
+        np.ndarray: The visualized intensity map with shape [b, h, w, 3] or [h, w, 3].
+    """
+    intensity_map = (intensity_map - intensity_map.min()) / (intensity_map.max() - intensity_map.min() + 1e-8)
+    # Apply colormap (jet, viridis, plasma, etc.) by looping over the batch
+    intensity_np = plt.cm.jet(intensity_map)[:, :, :3]  # Remove alpha channel
+    # Convert to uint8
+    intensity_np = (intensity_np * 255).astype(np.uint8)
+    return intensity_np
+
+
 def get_yaw_from_pose(pose_matrix):
     raw_z_axis = pose_matrix[:3, 2]
     # -Z

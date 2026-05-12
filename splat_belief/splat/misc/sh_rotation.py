@@ -15,17 +15,33 @@ def rotate_sh(
     dtype = sh_coefficients.dtype
 
     *_, n = sh_coefficients.shape
-    alpha, beta, gamma = matrix_to_angles(rotations)
-    result = []
-    for degree in range(isqrt(n)):
-        with torch.device(device):
-            sh_rotations = wigner_D(degree, alpha, beta, gamma).type(dtype)
-        sh_rotated = einsum(
-            sh_rotations,
-            sh_coefficients[..., degree**2 : (degree + 1) ** 2],
-            "... i j, ... j -> ... i",
-        )
-        result.append(sh_rotated)
+    # e3nn's matrix_to_angles asserts det(R) == 1; under bf16/fp16 autocast the
+    # rotation matrices lose enough precision that the assertion fires (even
+    # after casting back to fp32, the values are already perturbed). Force
+    # this block to fp32 with autocast disabled AND re-orthonormalize R via
+    # SVD so it's exactly a rotation. Same numerical result as the original
+    # fp32 path when the input was already a clean rotation.
+    with torch.amp.autocast(device_type="cuda", enabled=False):
+        rotations_fp32 = rotations.float()
+        # Project to nearest rotation: R = U V^T with sign of det(U V^T) folded
+        # into the last column of V to guarantee det == +1.
+        U, _, Vh = torch.linalg.svd(rotations_fp32)
+        det = torch.det(U @ Vh)
+        sign = torch.where(det < 0, -torch.ones_like(det), torch.ones_like(det))
+        Vh = Vh.clone()
+        Vh[..., -1, :] = Vh[..., -1, :] * sign.unsqueeze(-1)
+        rotations_fp32 = U @ Vh
+        alpha, beta, gamma = matrix_to_angles(rotations_fp32)
+        result = []
+        for degree in range(isqrt(n)):
+            with torch.device(device):
+                sh_rotations = wigner_D(degree, alpha, beta, gamma).type(dtype)
+            sh_rotated = einsum(
+                sh_rotations,
+                sh_coefficients[..., degree**2 : (degree + 1) ** 2],
+                "... i j, ... j -> ... i",
+            )
+            result.append(sh_rotated)
 
     return torch.cat(result, dim=-1)
 

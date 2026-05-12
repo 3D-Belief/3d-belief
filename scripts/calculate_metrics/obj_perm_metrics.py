@@ -14,7 +14,7 @@ Then, for each episode, aggregate metrics across the kept files:
 Finally, compute global stats across episodes using the per-episode means.
 
 Usage:
-  python analyze_episode_level_metrics.py /path/to/root --outdir results
+  python analyze_episode_level_metrics.py <prediction_root> --outdir results
 Optional:
   --metrics lpips_distance siglip_similarity   (default)
 """
