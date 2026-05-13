@@ -163,6 +163,7 @@ def train(cfg: DictConfig):
         obj_permanence_mask_blur=int(cfg.get("obj_permanence_mask_blur", 5)),
         obj_permanence_mask_threshold=float(cfg.get("obj_permanence_mask_threshold", 0.5)),
         obj_permanence_erode_kernel=int(cfg.get("obj_permanence_erode_kernel", 0)),
+        obj_permanence_mask_binarize_after_blur=bool(cfg.get("obj_permanence_mask_binarize_after_blur", False)),
         dps_guidance_scale=float(cfg.get("dps_guidance_scale", 1.0)),
         dps_pos_weight=float(cfg.get("dps_pos_weight", 1.0)),
         dps_opacity_weight=float(cfg.get("dps_opacity_weight", 0.5)),
@@ -173,7 +174,8 @@ def train(cfg: DictConfig):
         f"state_t_min={model.obj_permanence_state_t_min}, "
         f"mask_blur={model.obj_permanence_mask_blur}, "
         f"mask_threshold={model.obj_permanence_mask_threshold}, "
-        f"erode_kernel={model.obj_permanence_erode_kernel}"
+        f"erode_kernel={model.obj_permanence_erode_kernel}, "
+        f"mask_binarize_after_blur={model.obj_permanence_mask_binarize_after_blur}"
     )
 
     diffusion = DiffusionTemporal(

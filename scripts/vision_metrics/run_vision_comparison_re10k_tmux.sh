@@ -5,8 +5,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SESSION="${SESSION:-re10k_temporal_vision_metrics}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
-DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/data/re10k}"
+PYTHON_BIN="${PYTHON_BIN:-/home/ubuntu/tianmin-neurips/miniconda3/envs/3d-belief/bin/python}"
+DATASET_ROOT="${DATASET_ROOT:-/home/ubuntu/tianmin-neurips/datasets}"
 RUN_NAME="${RUN_NAME:-re10k_temporal_vision_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/outputs/vision_metrics/${RUN_NAME}}"
 MODELS="${MODELS:-3d_belief,dfot,gen3c}"
@@ -21,13 +21,31 @@ DRY_RUN="${DRY_RUN:-0}"
 CUDA_VISIBLE_DEVICES_VALUE="${CUDA_VISIBLE_DEVICES:-}"
 PYTORCH_CUDA_ALLOC_CONF_VALUE="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-BELIEF_CHECKPOINT="${BELIEF_CHECKPOINT:-${REPO_ROOT}/checkpoints/3d_belief_re10k.pt}"
-DFOT_CHECKPOINT="${DFOT_CHECKPOINT:-${REPO_ROOT}/checkpoints/DFoT_RE10K.ckpt}"
+BELIEF_CHECKPOINT="${BELIEF_CHECKPOINT:-/home/ubuntu/tianmin-neurips/yyin34/codebase/3d-belief/checkpoints/model-44.pt}"
+BELIEF_CONFIG_PROFILE="${BELIEF_CONFIG_PROFILE:-re10k_128_vggt}"
+BELIEF_OBJ_PERMANENCE_MODE="${BELIEF_OBJ_PERMANENCE_MODE:-none}"
+BELIEF_OBJ_PERMANENCE_STATE_T_MIN="${BELIEF_OBJ_PERMANENCE_STATE_T_MIN:-1}"
+BELIEF_OBJ_PERMANENCE_MASK_BLUR="${BELIEF_OBJ_PERMANENCE_MASK_BLUR:-5}"
+BELIEF_OBJ_PERMANENCE_MASK_THRESHOLD="${BELIEF_OBJ_PERMANENCE_MASK_THRESHOLD:-0.5}"
+BELIEF_OBJ_PERMANENCE_ERODE_KERNEL="${BELIEF_OBJ_PERMANENCE_ERODE_KERNEL:-0}"
+BELIEF_OBJ_PERMANENCE_MASK_BINARIZE="${BELIEF_OBJ_PERMANENCE_MASK_BINARIZE:-0}"
+BELIEF_DPS_GUIDANCE_SCALE="${BELIEF_DPS_GUIDANCE_SCALE:-1.0}"
+BELIEF_DPS_POS_WEIGHT="${BELIEF_DPS_POS_WEIGHT:-1.0}"
+BELIEF_DPS_OPACITY_WEIGHT="${BELIEF_DPS_OPACITY_WEIGHT:-0.5}"
+BELIEF_REFINER_ENABLED="${BELIEF_REFINER_ENABLED:-}"
+BELIEF_REFINER_NUM_ITERATIONS="${BELIEF_REFINER_NUM_ITERATIONS:-}"
+BELIEF_REFINER_PRIOR_WEIGHT="${BELIEF_REFINER_PRIOR_WEIGHT:-}"
+BELIEF_REFINER_DEPTH_CONSISTENCY_WEIGHT="${BELIEF_REFINER_DEPTH_CONSISTENCY_WEIGHT:-}"
+BELIEF_REFINER_POSITION_UPDATE_MODE="${BELIEF_REFINER_POSITION_UPDATE_MODE:-}"
+BELIEF_REFINER_RAY_TANGENT_WEIGHT="${BELIEF_REFINER_RAY_TANGENT_WEIGHT:-}"
+BELIEF_REFINER_RAY_MIN_DEPTH="${BELIEF_REFINER_RAY_MIN_DEPTH:-}"
+DFOT_CHECKPOINT="${DFOT_CHECKPOINT:-/home/ubuntu/tianmin-neurips/yyin34/codebase/3d-belief/checkpoints/DFoT_RE10K.ckpt}"
+DFOT_REPO="${DFOT_REPO:-${REPO_ROOT}/third_party/dfot}"
 
-GEN3C_PYTHON="${GEN3C_PYTHON:-python}"
-GEN3C_REPO="${GEN3C_REPO:-${REPO_ROOT}/third_party/GEN3C}"
+GEN3C_PYTHON="${GEN3C_PYTHON:-/home/ubuntu/tianmin-neurips/miniconda3/envs/cosmos-predict1/bin/python}"
+GEN3C_REPO="${GEN3C_REPO:-/home/ubuntu/tianmin-neurips/yyin34/codebase/GEN3C}"
 GEN3C_CHECKPOINT_DIR="${GEN3C_CHECKPOINT_DIR:-${GEN3C_REPO}/checkpoints}"
-GEN3C_CUDA_HOME="${GEN3C_CUDA_HOME:-${CUDA_HOME:-${CONDA_PREFIX:-}}}"
+GEN3C_CUDA_HOME="${GEN3C_CUDA_HOME:-/home/ubuntu/tianmin-neurips/miniconda3/envs/cosmos-predict1}"
 GEN3C_HEIGHT="${GEN3C_HEIGHT:-704}"
 GEN3C_WIDTH="${GEN3C_WIDTH:-1280}"
 GEN3C_FPS="${GEN3C_FPS:-10}"
@@ -57,7 +75,17 @@ args=(
     "--num-episodes" "${NUM_EPISODES}"
     "--scan-max-frames" "${SCAN_MAX_FRAMES}"
     "--belief-checkpoint" "${BELIEF_CHECKPOINT}"
+    "--belief-config-profile" "${BELIEF_CONFIG_PROFILE}"
+    "--belief-obj-permanence-mode" "${BELIEF_OBJ_PERMANENCE_MODE}"
+    "--belief-obj-permanence-state-t-min" "${BELIEF_OBJ_PERMANENCE_STATE_T_MIN}"
+    "--belief-obj-permanence-mask-blur" "${BELIEF_OBJ_PERMANENCE_MASK_BLUR}"
+    "--belief-obj-permanence-mask-threshold" "${BELIEF_OBJ_PERMANENCE_MASK_THRESHOLD}"
+    "--belief-obj-permanence-erode-kernel" "${BELIEF_OBJ_PERMANENCE_ERODE_KERNEL}"
+    "--belief-dps-guidance-scale" "${BELIEF_DPS_GUIDANCE_SCALE}"
+    "--belief-dps-pos-weight" "${BELIEF_DPS_POS_WEIGHT}"
+    "--belief-dps-opacity-weight" "${BELIEF_DPS_OPACITY_WEIGHT}"
     "--dfot-checkpoint" "${DFOT_CHECKPOINT}"
+    "--dfot-repo" "${DFOT_REPO}"
     "--gen3c-python" "${GEN3C_PYTHON}"
     "--gen3c-repo" "${GEN3C_REPO}"
     "--gen3c-checkpoint-dir" "${GEN3C_CHECKPOINT_DIR}"
@@ -81,6 +109,32 @@ if [[ -n "${EPISODE_FILE}" ]]; then
 fi
 if [[ "${DRY_RUN}" == "1" ]]; then
     args+=("--dry-run")
+fi
+if [[ "${BELIEF_OBJ_PERMANENCE_MASK_BINARIZE}" == "1" ]]; then
+    args+=("--belief-obj-permanence-mask-binarize")
+fi
+if [[ "${BELIEF_REFINER_ENABLED}" == "1" ]]; then
+    args+=("--belief-refiner-enabled")
+elif [[ "${BELIEF_REFINER_ENABLED}" == "0" ]]; then
+    args+=("--no-belief-refiner-enabled")
+fi
+if [[ -n "${BELIEF_REFINER_NUM_ITERATIONS}" ]]; then
+    args+=("--belief-refiner-num-iterations" "${BELIEF_REFINER_NUM_ITERATIONS}")
+fi
+if [[ -n "${BELIEF_REFINER_PRIOR_WEIGHT}" ]]; then
+    args+=("--belief-refiner-prior-weight" "${BELIEF_REFINER_PRIOR_WEIGHT}")
+fi
+if [[ -n "${BELIEF_REFINER_DEPTH_CONSISTENCY_WEIGHT}" ]]; then
+    args+=("--belief-refiner-depth-consistency-weight" "${BELIEF_REFINER_DEPTH_CONSISTENCY_WEIGHT}")
+fi
+if [[ -n "${BELIEF_REFINER_POSITION_UPDATE_MODE}" ]]; then
+    args+=("--belief-refiner-position-update-mode" "${BELIEF_REFINER_POSITION_UPDATE_MODE}")
+fi
+if [[ -n "${BELIEF_REFINER_RAY_TANGENT_WEIGHT}" ]]; then
+    args+=("--belief-refiner-ray-tangent-weight" "${BELIEF_REFINER_RAY_TANGENT_WEIGHT}")
+fi
+if [[ -n "${BELIEF_REFINER_RAY_MIN_DEPTH}" ]]; then
+    args+=("--belief-refiner-ray-min-depth" "${BELIEF_REFINER_RAY_MIN_DEPTH}")
 fi
 if [[ "${GEN3C_FOREGROUND_MASKING}" == "0" ]]; then
     args+=("--gen3c-no-foreground-masking")

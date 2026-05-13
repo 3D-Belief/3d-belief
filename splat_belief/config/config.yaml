@@ -114,6 +114,28 @@ inference_dtype: fp32
 
 load_optimizer: False
 
+# Diffusion data space. The default preserves the original RGB pixel-space
+# model; set diffusion_space=latents and model/encoder=latent_uvitmvsplat for
+# VAE latent diffusion.
+diffusion_space: pixels
+latent:
+  enabled: false
+  channels: 4
+  downsample_factor: 8
+  scale_factor: 0.18215
+  vae_name: stabilityai/sd-vae-ft-ema
+  vae_path: null
+  mode: online
+  batch_size: 8
+  dtype: fp32
+  return_depth: true
+  target_latent_loss_weight: 1.0
+  target_rgb_loss_weight: 0.1
+  context_latent_loss_weight: 1.0
+  context_rgb_loss_weight: 0.1
+  intermediate_latent_loss_weight: 1.0
+  intermediate_rgb_loss_weight: 0.1
+
 use_identity: True
 ctxt_losses_factor: 1.0
 
@@ -144,6 +166,7 @@ obj_permanence_state_t_min: 1
 obj_permanence_mask_blur: 5
 obj_permanence_mask_threshold: 0.5
 obj_permanence_erode_kernel: 0
+obj_permanence_mask_binarize_after_blur: false
 dps_guidance_scale: 1.0
 dps_pos_weight: 1.0
 dps_opacity_weight: 0.5
@@ -189,6 +212,11 @@ refiner:
   use_ssim: false
   ssim_weight: 0.2
   window_size: 10
+  depth_consistency_weight: 0.0
+  depth_consistency_use_log: true
+  position_update_mode: ray
+  ray_tangent_weight: 1.0
+  ray_min_depth: 1.0e-4
   # Regularization
   prior_weight: 0.1
   freeze_geometry: false

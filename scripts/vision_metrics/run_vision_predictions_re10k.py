@@ -18,10 +18,8 @@ import torch
 import torch.nn.functional as F
 
 from common import (
-    DEFAULT_CHECKPOINT_ROOT,
     DEFAULT_OUTPUT_ROOT,
     EpisodeSpec,
-    REPO_ROOT,
     add_project_paths,
     compute_key_frame_indices,
     env_snapshot,
@@ -39,9 +37,10 @@ from common import (
 )
 
 
-DEFAULT_RE10K_ROOT = Path(os.environ.get("RE10K_DATASET_ROOT", str(REPO_ROOT / "data" / "re10k")))
-DEFAULT_BELIEF_CKPT = DEFAULT_CHECKPOINT_ROOT / "3d_belief_re10k.pt"
-DEFAULT_DFOT_CKPT = DEFAULT_CHECKPOINT_ROOT / "DFoT_RE10K.ckpt"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_RE10K_ROOT = Path("/home/ubuntu/tianmin-neurips/datasets")
+DEFAULT_BELIEF_CKPT = Path("/home/ubuntu/tianmin-neurips/yyin34/codebase/3d-belief/checkpoints/model-44.pt")
+DEFAULT_DFOT_CKPT = Path("/home/ubuntu/tianmin-neurips/yyin34/codebase/3d-belief/checkpoints/DFoT_RE10K.ckpt")
 DEFAULT_DFOT_REPO = REPO_ROOT / "third_party" / "dfot"
 
 # Match 3D-Belief RE10K training thresholds.
@@ -82,6 +81,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-nonmonotonic", action="store_true")
 
     parser.add_argument("--belief-checkpoint", type=Path, default=DEFAULT_BELIEF_CKPT)
+    parser.add_argument(
+        "--belief-config-profile",
+        default="re10k_128_vggt",
+        choices=("re10k_128_vggt", "re10k_256_from_128"),
+        help="3D-Belief architecture/training override profile to use for inference.",
+    )
     parser.add_argument("--belief-sampling-steps", type=int, default=50)
     parser.add_argument("--belief-sampler", default="ddim")
     parser.add_argument("--belief-temperature", type=float, default=0.85)
@@ -92,6 +97,26 @@ def parse_args() -> argparse.Namespace:
                         help="Object permanence guidance mode for 3D-Belief inference.")
     parser.add_argument("--belief-obj-permanence-state-t-min", type=int, default=1,
                         help="Minimum temporal state_t where object permanence guidance activates.")
+    parser.add_argument("--belief-obj-permanence-mask-blur", type=int, default=5)
+    parser.add_argument("--belief-obj-permanence-mask-threshold", type=float, default=0.5)
+    parser.add_argument("--belief-obj-permanence-erode-kernel", type=int, default=0)
+    parser.add_argument(
+        "--belief-obj-permanence-mask-binarize",
+        action="store_true",
+        help="Binarize the history coverage mask after optional blur using the mask threshold.",
+    )
+    parser.add_argument("--belief-dps-guidance-scale", type=float, default=1.0)
+    parser.add_argument("--belief-dps-pos-weight", type=float, default=1.0)
+    parser.add_argument("--belief-dps-opacity-weight", type=float, default=0.5)
+    parser.add_argument("--belief-refiner-enabled",
+                        action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--belief-refiner-num-iterations", type=int, default=None)
+    parser.add_argument("--belief-refiner-prior-weight", type=float, default=None)
+    parser.add_argument("--belief-refiner-depth-consistency-weight", type=float, default=None)
+    parser.add_argument("--belief-refiner-position-update-mode",
+                        choices=("free", "ray", "ray_tangent"), default=None)
+    parser.add_argument("--belief-refiner-ray-tangent-weight", type=float, default=None)
+    parser.add_argument("--belief-refiner-ray-min-depth", type=float, default=None)
 
     parser.add_argument("--dfot-checkpoint", type=Path, default=DEFAULT_DFOT_CKPT)
     parser.add_argument("--dfot-repo", type=Path, default=DEFAULT_DFOT_REPO)
@@ -101,18 +126,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--gen3c-python",
-        default=os.environ.get("GEN3C_PYTHON", sys.executable),
+        default=os.environ.get("GEN3C_PYTHON", "/home/ubuntu/tianmin-neurips/miniconda3/envs/cosmos-predict1/bin/python"),
     )
-    parser.add_argument(
-        "--gen3c-repo",
-        type=Path,
-        default=Path(os.environ.get("GEN3C_REPO", str(REPO_ROOT / "third_party" / "GEN3C"))),
-    )
+    parser.add_argument("--gen3c-repo", type=Path, default=Path("/home/ubuntu/tianmin-neurips/yyin34/codebase/GEN3C"))
     parser.add_argument("--gen3c-checkpoint-dir", type=Path, default=None)
     parser.add_argument(
         "--gen3c-cuda-home",
         type=Path,
-        default=Path(os.environ.get("GEN3C_CUDA_HOME", os.environ.get("CUDA_HOME", sys.prefix))),
+        default=Path(os.environ.get("GEN3C_CUDA_HOME", "/home/ubuntu/tianmin-neurips/miniconda3/envs/cosmos-predict1")),
     )
     parser.add_argument("--gen3c-height", type=int, default=704)
     parser.add_argument("--gen3c-width", type=int, default=1280)
@@ -341,11 +362,37 @@ class BeliefTemporalRunnerRE10K:
         if GlobalHydra.instance().is_initialized():
             GlobalHydra.instance().clear()
 
-        # Match train_re10k_unfrozen.sh architecture.
+        if args.belief_config_profile == "re10k_256_from_128":
+            belief_profile_overrides = [
+                "setting_name=debug",
+                "dataset.vggt_alignment_loss_weight=2.0",
+                "dataset.intermediate_weight=5.0",
+                "dataset.depth_loss_weight=0.5",
+                "dataset.depth_smooth_loss_weight=0.1",
+                "ctxt_losses_factor=0.8",
+                "model.encoder.backbone.use_vggt_alignment=false",
+                "repa_encoder_name=dinov3-vit-b",
+                (
+                    "repa_encoder_weights="
+                    f"{Path(__file__).resolve().parents[2] / 'checkpoints' / 'dinov3_vitb16_pretrain_lvd1689m.pth'}"
+                ),
+                "use_depth_smoothness=true",
+            ]
+        else:
+            belief_profile_overrides = [
+                "setting_name=pixelsplat_h100",
+                "dataset.vggt_alignment_loss_weight=2.0",
+                "dataset.depth_loss_weight=1.0",
+                "dataset.depth_smooth_loss_weight=0.1",
+                "ctxt_losses_factor=0.7",
+                "model.encoder.backbone.use_vggt_alignment=true",
+                "use_depth_smoothness=true",
+            ]
+
+        # Match the selected RE10K 3D-Belief training architecture.
         overrides = [
             "dataset=realestate",
             f"dataset.root_dir={args.dataset_root}",
-            "setting_name=pixelsplat_h100",
             f"stage={args.stage}",
             "batch_size=1",
             "num_target=1",
@@ -376,7 +423,6 @@ class BeliefTemporalRunnerRE10K:
             "model.encoder.inference_mode=false",
             "model.encoder.grid_sample_disable_cudnn=true",
             "model/encoder/backbone=u_vit3d_pose",
-            "model.encoder.backbone.use_vggt_alignment=true",
             "model.encoder.backbone.use_repa=true",
             f"model.encoder.backbone.input_size=[{args.image_size},{args.image_size}]",
             "model_type=uvit_pose",
@@ -393,6 +439,22 @@ class BeliefTemporalRunnerRE10K:
             f"checkpoint_path={args.belief_checkpoint}",
             f"results_folder={DEFAULT_OUTPUT_ROOT / '_tmp_belief_re10k'}",
         ]
+        overrides.extend(belief_profile_overrides)
+        refiner_overrides = {
+            "refiner.enabled": getattr(args, "belief_refiner_enabled", None),
+            "refiner.num_iterations": getattr(args, "belief_refiner_num_iterations", None),
+            "refiner.prior_weight": getattr(args, "belief_refiner_prior_weight", None),
+            "refiner.depth_consistency_weight": getattr(args, "belief_refiner_depth_consistency_weight", None),
+            "refiner.position_update_mode": getattr(args, "belief_refiner_position_update_mode", None),
+            "refiner.ray_tangent_weight": getattr(args, "belief_refiner_ray_tangent_weight", None),
+            "refiner.ray_min_depth": getattr(args, "belief_refiner_ray_min_depth", None),
+        }
+        for key, value in refiner_overrides.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                value = str(value).lower()
+            overrides.append(f"{key}={value}")
         config_dir = str(Path(__file__).resolve().parents[2] / "splat_belief" / "config")
         with hydra.initialize_config_dir(config_dir=config_dir, version_base=None):
             cfg = hydra.compose(config_name="config", overrides=overrides)
@@ -414,6 +476,13 @@ class BeliefTemporalRunnerRE10K:
         config = {
             "requested_mode": str(args.belief_obj_permanence_mode),
             "requested_state_t_min": int(args.belief_obj_permanence_state_t_min),
+            "requested_mask_blur": int(args.belief_obj_permanence_mask_blur),
+            "requested_mask_threshold": float(args.belief_obj_permanence_mask_threshold),
+            "requested_erode_kernel": int(args.belief_obj_permanence_erode_kernel),
+            "requested_mask_binarize_after_blur": bool(args.belief_obj_permanence_mask_binarize),
+            "requested_dps_guidance_scale": float(args.belief_dps_guidance_scale),
+            "requested_dps_pos_weight": float(args.belief_dps_pos_weight),
+            "requested_dps_opacity_weight": float(args.belief_dps_opacity_weight),
             "resolved": {},
         }
         for name, module in self._belief_modules().items():
@@ -425,9 +494,29 @@ class BeliefTemporalRunnerRE10K:
             module.obj_permanence_mode = str(args.belief_obj_permanence_mode)
             if hasattr(module, "obj_permanence_state_t_min"):
                 module.obj_permanence_state_t_min = int(args.belief_obj_permanence_state_t_min)
+            if hasattr(module, "obj_permanence_mask_blur"):
+                module.obj_permanence_mask_blur = int(args.belief_obj_permanence_mask_blur)
+            if hasattr(module, "obj_permanence_mask_threshold"):
+                module.obj_permanence_mask_threshold = float(args.belief_obj_permanence_mask_threshold)
+            if hasattr(module, "obj_permanence_erode_kernel"):
+                module.obj_permanence_erode_kernel = int(args.belief_obj_permanence_erode_kernel)
+            module.obj_permanence_mask_binarize_after_blur = bool(args.belief_obj_permanence_mask_binarize)
+            if hasattr(module, "dps_guidance_scale"):
+                module.dps_guidance_scale = float(args.belief_dps_guidance_scale)
+            if hasattr(module, "dps_pos_weight"):
+                module.dps_pos_weight = float(args.belief_dps_pos_weight)
+            if hasattr(module, "dps_opacity_weight"):
+                module.dps_opacity_weight = float(args.belief_dps_opacity_weight)
             config["resolved"][name] = {
                 "obj_permanence_mode": getattr(module, "obj_permanence_mode", None),
                 "obj_permanence_state_t_min": getattr(module, "obj_permanence_state_t_min", None),
+                "obj_permanence_mask_blur": getattr(module, "obj_permanence_mask_blur", None),
+                "obj_permanence_mask_threshold": getattr(module, "obj_permanence_mask_threshold", None),
+                "obj_permanence_erode_kernel": getattr(module, "obj_permanence_erode_kernel", None),
+                "obj_permanence_mask_binarize_after_blur": getattr(module, "obj_permanence_mask_binarize_after_blur", None),
+                "dps_guidance_scale": getattr(module, "dps_guidance_scale", None),
+                "dps_pos_weight": getattr(module, "dps_pos_weight", None),
+                "dps_opacity_weight": getattr(module, "dps_opacity_weight", None),
             }
         print(f"[3d_belief] object permanence config: {config}")
         return config
@@ -463,16 +552,34 @@ class BeliefTemporalRunnerRE10K:
         return inp
 
     def _sample(self, sample: Mapping[str, Any], ctxt_idx: int, trgt_idx: int,
-                render_indices: Sequence[int], state_t: int):
+                render_indices: Sequence[int], state_t: int,
+                clean_target: bool = False):
         inp = self._make_input(sample, ctxt_idx, trgt_idx, render_indices)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         started = time.time()
-        with torch.no_grad(), make_autocast_ctx(self.dtype):
+        with self._temporary_clean_target(clean_target), torch.no_grad(), make_autocast_ctx(self.dtype):
             out = self.trainer.ema.ema_model.sample(batch_size=1, inp=inp, state_t=state_t)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         return out, time.time() - started
+
+    @contextmanager
+    def _temporary_clean_target(self, enabled: bool):
+        diffusion_modules = [
+            getattr(self.trainer, "model", None),
+            getattr(getattr(self.trainer, "ema", None), "ema_model", None),
+        ]
+        previous_values = []
+        for module in diffusion_modules:
+            if module is not None and hasattr(module, "clean_target"):
+                previous_values.append((module, module.clean_target))
+                module.clean_target = bool(enabled)
+        try:
+            yield
+        finally:
+            for module, previous in previous_values:
+                module.clean_target = previous
 
     @staticmethod
     def _frames_from_output(out: Mapping[str, Any]) -> List[np.ndarray]:
@@ -513,7 +620,7 @@ class BeliefTemporalRunnerRE10K:
             "notes": [
                 "RE10K: 3D-Belief uses temporal_inference stack (no semantic/reg model, no image cond).",
                 "`imagined_kf0_to_kf1` is the state_t=0 prediction (only kf0 observed).",
-                "`observed` is re-rendered at state_t=1 between kf0 and kf1 after kf1 is observed.",
+                "`observed` is a separate clean-target state_t=0 prediction from kf0 to kf1.",
             ],
         }
 
@@ -546,20 +653,11 @@ class BeliefTemporalRunnerRE10K:
         frames_12 = self._frames_from_output(out_12)
         frame_map_12 = {idx: resize_uint8(frame, sample["height_width"])
                         for idx, frame in zip(render_12, frames_12)}
-        observed_frames = {idx: frame_map_12[idx] for idx in frame_sets["observed"]
-                           if idx in frame_map_12}
         imagined_12_frames = {idx: frame_map_12[idx]
                               for idx in frame_sets["imagined_kf1_to_kf2"]
                               if idx in frame_map_12}
-        self._write_split(episode_dir, "observed", observed_frames, frame_sets["observed"])
         self._write_split(episode_dir, "imagined_kf1_to_kf2",
                           imagined_12_frames, frame_sets["imagined_kf1_to_kf2"])
-        trace["splits"]["observed"] = {
-            "mode": "state_t1_context_kf1_state_carries_kf0",
-            "frame_indices": frame_sets["observed"],
-            "elapsed_seconds": elapsed_12,
-            "diffusion_calls": 1,
-        }
         trace["splits"]["imagined_kf1_to_kf2"] = {
             "mode": "state_t1_context_kf1_target_kf2",
             "frame_indices": frame_sets["imagined_kf1_to_kf2"],
@@ -568,6 +666,34 @@ class BeliefTemporalRunnerRE10K:
         }
         trace["total_diffusion_calls"] += 1
         trace["total_prediction_seconds"] += elapsed_12
+
+        # Keep scene-memory evaluation independent of the imagination branch.
+        self.trainer.model.model.reset_timestep()
+        self.trainer.ema.ema_model.model.reset_timestep()
+        out_observed, elapsed_observed = self._sample(
+            sample,
+            ctxt_idx=0,
+            trgt_idx=kf1,
+            render_indices=render_01,
+            state_t=0,
+            clean_target=True,
+        )
+        frames_observed = self._frames_from_output(out_observed)
+        frame_map_observed = {idx: resize_uint8(frame, sample["height_width"])
+                              for idx, frame in zip(render_01, frames_observed)}
+        observed_frames = {idx: frame_map_observed[idx]
+                           for idx in frame_sets["observed"]
+                           if idx in frame_map_observed}
+        self._write_split(episode_dir, "observed", observed_frames, frame_sets["observed"])
+        trace["splits"]["observed"] = {
+            "mode": "state_t0_context_kf0_clean_target_kf1_scene_memory",
+            "frame_indices": frame_sets["observed"],
+            "elapsed_seconds": elapsed_observed,
+            "diffusion_calls": 1,
+            "clean_target": True,
+        }
+        trace["total_diffusion_calls"] += 1
+        trace["total_prediction_seconds"] += elapsed_observed
         return trace
 
 
@@ -975,9 +1101,26 @@ def main() -> None:
             "dfot": str(args.dfot_checkpoint.resolve()),
             "gen3c": str((args.gen3c_checkpoint_dir or (args.gen3c_repo / "checkpoints")).resolve()),
         },
+        "belief_config_profile": args.belief_config_profile,
         "belief_obj_permanence": {
             "mode": args.belief_obj_permanence_mode,
             "state_t_min": args.belief_obj_permanence_state_t_min,
+            "mask_blur": args.belief_obj_permanence_mask_blur,
+            "mask_threshold": args.belief_obj_permanence_mask_threshold,
+            "erode_kernel": args.belief_obj_permanence_erode_kernel,
+            "mask_binarize_after_blur": args.belief_obj_permanence_mask_binarize,
+            "dps_guidance_scale": args.belief_dps_guidance_scale,
+            "dps_pos_weight": args.belief_dps_pos_weight,
+            "dps_opacity_weight": args.belief_dps_opacity_weight,
+        },
+        "belief_refiner": {
+            "enabled": args.belief_refiner_enabled,
+            "num_iterations": args.belief_refiner_num_iterations,
+            "prior_weight": args.belief_refiner_prior_weight,
+            "depth_consistency_weight": args.belief_refiner_depth_consistency_weight,
+            "position_update_mode": args.belief_refiner_position_update_mode,
+            "ray_tangent_weight": args.belief_refiner_ray_tangent_weight,
+            "ray_min_depth": args.belief_refiner_ray_min_depth,
         },
         "dry_run": bool(args.dry_run),
         "env": env_snapshot(),

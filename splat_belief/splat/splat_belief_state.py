@@ -63,6 +63,7 @@ class SplatBeliefState(nn.Module):
         obj_permanence_mask_blur: int = 5,
         obj_permanence_mask_threshold: float = 0.5,
         obj_permanence_erode_kernel: int = 0,
+        obj_permanence_mask_binarize_after_blur: bool = False,
         dps_guidance_scale: float = 1.0,
         dps_pos_weight: float = 1.0,
         dps_opacity_weight: float = 0.5,
@@ -121,6 +122,7 @@ class SplatBeliefState(nn.Module):
         self.obj_permanence_state_t_min = int(obj_permanence_state_t_min)
         self.obj_permanence_mask_blur = int(obj_permanence_mask_blur)
         self.obj_permanence_mask_threshold = float(obj_permanence_mask_threshold)
+        self.obj_permanence_mask_binarize_after_blur = bool(obj_permanence_mask_binarize_after_blur)
         # When > 0, the binary depth-validity mask is eroded by this kernel
         # size (odd) before being blurred. This shifts the "fully suppress
         # belief" core inward and frees the silhouette band to receive both
@@ -196,6 +198,8 @@ class SplatBeliefState(nn.Module):
                 k += 1
             mask = torchvision.transforms.functional.gaussian_blur(mask, k)
         mask = mask.clamp(0.0, 1.0)
+        if getattr(self, "obj_permanence_mask_binarize_after_blur", False):
+            mask = (mask >= float(self.obj_permanence_mask_threshold)).to(mask.dtype)
         return {"rgb": rgb, "depth": depth, "mask": mask}
 
     def _build_per_gaussian_mask(self, mask_pix, num_gaussians, h, w):
@@ -406,6 +410,12 @@ class SplatBeliefState(nn.Module):
                 assert self.current_timestep+1==state_t # can only differ by 1
                 self.current_timestep+=1
                 self.history_gaussians=context_gaussians+self.history_gaussians.detach()
+            if self.refiner is not None:
+                self.refiner.add_source_rays(
+                    context_gaussians,
+                    model_input["ctxt_c2w"][:, 0],
+                    prepend=self.current_timestep > 0,
+                )
             
             # Update inc obs Gaussians
             self.incremental_gaussians = context_gaussians

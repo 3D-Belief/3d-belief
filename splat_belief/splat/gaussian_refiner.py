@@ -34,6 +34,15 @@ class GaussianRefinerCfg:
     use_ssim: bool = False
     ssim_weight: float = 0.2
     window_size: int = 10
+    # Geometry preservation loss. Defaults preserve the original RGB-only behavior.
+    depth_consistency_weight: float = 0.0
+    depth_consistency_use_log: bool = True
+    # Position update parameterization. "free" keeps the original unconstrained
+    # XYZ update. "ray" updates only depth along each Gaussian's source ray.
+    # "ray_tangent" additionally allows a small penalized tangent residual.
+    position_update_mode: str = "ray"
+    ray_tangent_weight: float = 1.0
+    ray_min_depth: float = 1e-4
     # Regularization
     prior_weight: float = 0.1
     freeze_geometry: bool = False
@@ -207,6 +216,21 @@ class ObservedFrame:
     far: Float[Tensor, "1"]
 
 
+@dataclass
+class ObservedRenderRef:
+    """Initial render buffers for an observed frame, used as refinement priors."""
+    depth: Float[Tensor, "1 height width"]
+    depth_mask: Float[Tensor, "1 height width"]
+
+
+@dataclass
+class SourceRayRefs:
+    """Per-Gaussian source rays in the same order as history_gaussians."""
+    origins: Float[Tensor, "batch gaussian 3"]
+    directions: Float[Tensor, "batch gaussian 3"]
+    valid: Float[Tensor, "batch gaussian"]
+
+
 class GaussianRefiner:
     """Online Gaussian refinement via photometric optimization.
     
@@ -218,6 +242,7 @@ class GaussianRefiner:
         self.cfg = cfg
         self.decoder = decoder
         self.observed_frames: List[ObservedFrame] = []
+        self.source_rays: Optional[SourceRayRefs] = None
     
     def add_observation(
         self,
@@ -243,6 +268,49 @@ class GaussianRefiner:
     def reset(self):
         """Clear all stored observations."""
         self.observed_frames = []
+        self.source_rays = None
+
+    def add_source_rays(
+        self,
+        gaussians: Gaussians,
+        c2w: Float[Tensor, "batch 4 4"],
+        prepend: bool = False,
+    ):
+        """Register source camera rays for newly inserted context Gaussians.
+
+        The refiner can later use these rays to constrain mean updates to depth
+        along each Gaussian's source observation ray. `prepend=True` matches the
+        history update order `new_context + old_history`.
+        """
+        means = gaussians.means.detach()
+        if c2w.ndim == 4:
+            c2w = c2w[:, 0]
+        origins = c2w[:, :3, 3].detach().to(device=means.device, dtype=means.dtype)
+        origins = origins[:, None, :].expand_as(means).clone()
+        delta = means - origins
+        depth = delta.norm(dim=-1).clamp_min(float(self.cfg.ray_min_depth))
+        directions = delta / depth.unsqueeze(-1)
+        valid = torch.isfinite(directions).all(dim=-1) & torch.isfinite(depth) & (depth > 0)
+        new_refs = SourceRayRefs(
+            origins=origins.detach(),
+            directions=directions.detach(),
+            valid=valid.detach(),
+        )
+        if self.source_rays is None:
+            self.source_rays = new_refs
+            return
+        if prepend:
+            self.source_rays = SourceRayRefs(
+                origins=torch.cat([new_refs.origins, self.source_rays.origins.to(origins.device)], dim=1),
+                directions=torch.cat([new_refs.directions, self.source_rays.directions.to(origins.device)], dim=1),
+                valid=torch.cat([new_refs.valid, self.source_rays.valid.to(origins.device)], dim=1),
+            )
+        else:
+            self.source_rays = SourceRayRefs(
+                origins=torch.cat([self.source_rays.origins.to(origins.device), new_refs.origins], dim=1),
+                directions=torch.cat([self.source_rays.directions.to(origins.device), new_refs.directions], dim=1),
+                valid=torch.cat([self.source_rays.valid.to(origins.device), new_refs.valid], dim=1),
+            )
     
     def _compute_visibility_mask(
         self,
@@ -295,6 +363,72 @@ class GaussianRefiner:
             visible = visible | (in_front & in_bounds)
         
         return visible
+
+    @torch.no_grad()
+    def _render_observation_refs(
+        self,
+        gaussians: Gaussians,
+        image_shape: tuple[int, int],
+    ) -> List[ObservedRenderRef]:
+        """Render the unrefined Gaussians at each observed view.
+
+        These buffers provide a pseudo-depth target. They are detached by
+        construction; the refiner is still free to improve RGB, but large
+        geometry drift is discouraged when depth consistency is enabled.
+        """
+        refs: List[ObservedRenderRef] = []
+        for obs in self.observed_frames:
+            output = self.decoder.forward(
+                gaussians.float(),
+                obs.c2w.unsqueeze(0),
+                obs.intrinsics.unsqueeze(0),
+                obs.near.unsqueeze(0),
+                obs.far.unsqueeze(0),
+                image_shape,
+                depth_mode=None,
+            )
+            depth = output.depth[:, 0].detach()
+            near = obs.near.float().view(-1, 1, 1)
+            far = obs.far.float().view(-1, 1, 1)
+            depth_mask = ((depth > (near + 1e-3)) & (depth < (far - 1e-3))).float()
+            refs.append(ObservedRenderRef(depth=depth, depth_mask=depth_mask))
+        return refs
+
+    def _depth_consistency_loss(
+        self,
+        rendered_depth: Tensor,
+        ref: ObservedRenderRef,
+        obs: ObservedFrame,
+    ) -> Tensor:
+        """Penalize drift from the initial rendered depth in valid pixels."""
+        near = obs.near.float().view(-1, 1, 1)
+        far = obs.far.float().view(-1, 1, 1)
+        current_mask = (rendered_depth > (near + 1e-3)) & (rendered_depth < (far - 1e-3))
+        ref_mask = ref.depth_mask > 0.5
+        mask = current_mask & ref_mask
+        if not mask.any():
+            return rendered_depth.new_zeros(())
+        if self.cfg.depth_consistency_use_log:
+            current = torch.log(rendered_depth.clamp_min(1e-3))
+            target = torch.log(ref.depth.clamp_min(1e-3))
+        else:
+            current = rendered_depth
+            target = ref.depth
+        return F.l1_loss(current[mask], target[mask])
+
+    def _ray_tangent_basis(self, directions: Tensor) -> tuple[Tensor, Tensor]:
+        """Build two stable orthonormal tangent vectors for each ray."""
+        up_y = torch.zeros_like(directions)
+        up_y[..., 1] = 1.0
+        up_x = torch.zeros_like(directions)
+        up_x[..., 0] = 1.0
+        use_x = (directions * up_y).sum(dim=-1, keepdim=True).abs() > 0.95
+        helper = torch.where(use_x, up_x, up_y)
+        t1 = torch.cross(directions, helper, dim=-1)
+        t1 = t1 / t1.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        t2 = torch.cross(directions, t1, dim=-1)
+        t2 = t2 / t2.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        return t1, t2
     
     def refine(
         self,
@@ -318,6 +452,12 @@ class GaussianRefiner:
         
         B, G, _ = gaussians.means.shape
         device = gaussians.means.device
+
+        render_refs = (
+            self._render_observation_refs(gaussians, image_shape)
+            if self.cfg.depth_consistency_weight > 0
+            else None
+        )
         
         # Compute visibility mask — which Gaussians to actually update
         if self.cfg.use_visibility_masking:
@@ -337,7 +477,53 @@ class GaussianRefiner:
         # Create optimizable parameters (replace NaN/Inf with zeros to avoid optimizer issues)
         means_det = gaussians.means.detach().clone()
         means_det = torch.where(torch.isfinite(means_det), means_det, torch.zeros_like(means_det))
-        means_param = means_det.requires_grad_(True)
+        position_mode = str(getattr(self.cfg, "position_update_mode", "free")).lower()
+        if position_mode not in ("free", "ray", "ray_tangent"):
+            position_mode = "free"
+        ray_refs = self.source_rays
+        use_ray_position = (
+            position_mode in ("ray", "ray_tangent")
+            and ray_refs is not None
+            and ray_refs.origins.shape[:2] == means_det.shape[:2]
+            and not self.cfg.freeze_geometry
+        )
+        if use_ray_position:
+            ray_origins = ray_refs.origins.to(device=device, dtype=means_det.dtype).detach()
+            ray_directions = ray_refs.directions.to(device=device, dtype=means_det.dtype).detach()
+            ray_directions = ray_directions / ray_directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            ray_valid = ray_refs.valid.to(device=device).bool().detach()
+            depth_init = ((means_det - ray_origins) * ray_directions).sum(dim=-1)
+            depth_init = depth_init.clamp_min(float(self.cfg.ray_min_depth))
+            ray_depth_log_param = torch.log(depth_init).requires_grad_(True)
+            if position_mode == "ray_tangent":
+                ray_tangent_basis_1, ray_tangent_basis_2 = self._ray_tangent_basis(ray_directions)
+                ray_tangent_param = torch.zeros(
+                    *means_det.shape[:2], 2,
+                    device=device,
+                    dtype=means_det.dtype,
+                    requires_grad=True,
+                )
+            else:
+                ray_tangent_basis_1 = ray_tangent_basis_2 = ray_tangent_param = None
+            means_param = None
+        else:
+            ray_origins = ray_directions = ray_valid = None
+            ray_depth_log_param = None
+            ray_tangent_basis_1 = ray_tangent_basis_2 = ray_tangent_param = None
+            means_param = means_det.requires_grad_(True)
+
+        def current_means() -> Tensor:
+            if not use_ray_position:
+                return means_param
+            depth = torch.exp(ray_depth_log_param).clamp_min(float(self.cfg.ray_min_depth))
+            means_cur = ray_origins + depth.unsqueeze(-1) * ray_directions
+            if ray_tangent_param is not None:
+                means_cur = means_cur + (
+                    ray_tangent_param[..., :1] * ray_tangent_basis_1
+                    + ray_tangent_param[..., 1:] * ray_tangent_basis_2
+                )
+            return torch.where(ray_valid.unsqueeze(-1), means_cur, means_det)
+
         scales_param = scales.clone().requires_grad_(True)
         rotations_param = rotations.clone().requires_grad_(True)
         harmonics_det = gaussians.harmonics.detach().clone()
@@ -376,7 +562,12 @@ class GaussianRefiner:
         # Build optimizer param groups — optionally freeze geometry
         param_groups = []
         if not self.cfg.freeze_geometry:
-            param_groups.append({"params": [means_param], "lr": self.cfg.lr_means})
+            if use_ray_position:
+                param_groups.append({"params": [ray_depth_log_param], "lr": self.cfg.lr_means})
+                if ray_tangent_param is not None:
+                    param_groups.append({"params": [ray_tangent_param], "lr": self.cfg.lr_means})
+            else:
+                param_groups.append({"params": [means_param], "lr": self.cfg.lr_means})
             param_groups.append({"params": [scales_param], "lr": self.cfg.lr_scaling})
             param_groups.append({"params": [rotations_param], "lr": self.cfg.lr_rotation})
         if self.cfg.harmonics_dc_only:
@@ -407,7 +598,7 @@ class GaussianRefiner:
                 optimizer.param_groups[0]["lr"] = lr_means_cur
             
             # Render from each observed view, backward per-view for memory efficiency
-            for obs in self.observed_frames:
+            for obs_idx, obs in enumerate(self.observed_frames):
                 # Assemble full harmonics (DC may be optimizable, rest frozen)
                 if self.cfg.harmonics_dc_only:
                     harmonics_full = torch.cat([harmonics_dc_param, harmonics_rest], dim=-1)
@@ -416,7 +607,7 @@ class GaussianRefiner:
                 
                 # Reconstruct gaussians from current params
                 refined = reconstruct_gaussians(
-                    means_param, scales_param, rotations_param,
+                    current_means(), scales_param, rotations_param,
                     harmonics_full, opacities_param, features_detached,
                 )
                 
@@ -432,14 +623,21 @@ class GaussianRefiner:
                 )
                 
                 rendered_rgb = output.color[:, 0]  # [B, 3, H, W]
+                rendered_depth = output.depth[:, 0]  # [B, H, W]
                 gt_rgb = obs.rgb  # [B, 3, H, W]
                 
                 # L1 photometric loss
-                loss = F.l1_loss(rendered_rgb, gt_rgb)
+                loss = self.cfg.rgb_loss_weight * F.l1_loss(rendered_rgb, gt_rgb)
                 
                 if self.cfg.use_ssim:
                     ssim_loss = 1.0 - _ssim(rendered_rgb, gt_rgb)
                     loss = (1.0 - self.cfg.ssim_weight) * loss + self.cfg.ssim_weight * ssim_loss
+
+                if self.cfg.depth_consistency_weight > 0 and render_refs is not None:
+                    depth_loss = self._depth_consistency_loss(
+                        rendered_depth, render_refs[obs_idx], obs,
+                    )
+                    loss = loss + self.cfg.depth_consistency_weight * depth_loss
                 
                 # Backward per-view to free graph immediately (gradient accumulation)
                 (loss / num_obs).backward()
@@ -458,16 +656,30 @@ class GaussianRefiner:
                     )
                 if not self.cfg.freeze_geometry:
                     loss_prior = loss_prior + (
-                        F.mse_loss(means_param, means_init)
+                        F.mse_loss(current_means(), means_init)
                         + F.mse_loss(scales_param, scales_init)
                         + F.mse_loss(rotations_param, rotations_init)
                     )
                 (self.cfg.prior_weight * loss_prior).backward()
-            
+            if (
+                use_ray_position
+                and ray_tangent_param is not None
+                and self.cfg.ray_tangent_weight > 0
+            ):
+                loss_tangent = (ray_tangent_param ** 2).mean()
+                (self.cfg.ray_tangent_weight * loss_tangent).backward()
+
             # Zero out gradients for non-visible Gaussians so they stay frozen
             if vis_mask is not None:
                 inv_mask = ~vis_mask  # [B, G]
-                for p in [means_param, scales_param, rotations_param]:
+                if use_ray_position:
+                    if ray_depth_log_param.grad is not None:
+                        ray_depth_log_param.grad[inv_mask] = 0.0
+                    if ray_tangent_param is not None and ray_tangent_param.grad is not None:
+                        ray_tangent_param.grad[inv_mask] = 0.0
+                elif means_param.grad is not None:
+                    means_param.grad[inv_mask] = 0.0
+                for p in [scales_param, rotations_param]:
                     if p.grad is not None:
                         p.grad[inv_mask] = 0.0
                 if self.cfg.harmonics_dc_only:
@@ -480,16 +692,22 @@ class GaussianRefiner:
                     opacities_param.grad[inv_mask] = 0.0
             
             # Accumulate gradients for densification
-            if means_param.grad is not None:
+            if means_param is not None and means_param.grad is not None:
                 visible_mask = means_param.grad.abs().sum(dim=-1) > 0  # [B, G]
                 grad_norm = means_param.grad.norm(dim=-1, keepdim=True)  # [B, G, 1]
+                grad_accum[visible_mask] += grad_norm[visible_mask]
+                grad_count[visible_mask] += 1
+            elif ray_depth_log_param is not None and ray_depth_log_param.grad is not None:
+                visible_mask = ray_depth_log_param.grad.abs() > 0
+                grad_norm = ray_depth_log_param.grad.abs().unsqueeze(-1)
                 grad_accum[visible_mask] += grad_norm[visible_mask]
                 grad_count[visible_mask] += 1
             
             optimizer.step()
             
             # Densification
-            if (self.cfg.num_iterations >= self.cfg.densify_every and
+            if (not use_ray_position and
+                self.cfg.num_iterations >= self.cfg.densify_every and
                 iteration > 0 and 
                 iteration % self.cfg.densify_every == 0):
                 if self.cfg.harmonics_dc_only:
@@ -516,7 +734,7 @@ class GaussianRefiner:
             else:
                 harmonics_final = harmonics_param
             result = reconstruct_gaussians(
-                means_param, scales_param, rotations_param,
+                current_means(), scales_param, rotations_param,
                 harmonics_final, opacities_param, features_detached,
             )
             # Deep-copy to free optimizer state and computation graph
@@ -529,7 +747,13 @@ class GaussianRefiner:
             )
         
         # Aggressively free optimizer, params, and GPU cache
-        del optimizer, means_param, scales_param, rotations_param
+        del optimizer, scales_param, rotations_param
+        if means_param is not None:
+            del means_param
+        if ray_depth_log_param is not None:
+            del ray_depth_log_param
+        if ray_tangent_param is not None:
+            del ray_tangent_param
         if self.cfg.harmonics_dc_only:
             del harmonics_dc_param, harmonics_rest
         else:
