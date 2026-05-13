@@ -193,13 +193,12 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 If you find 3D-Belief useful in your research, please cite:
 
 ```bibtex
-@misc{yin20263dbelief,
-  title={3D-Belief: Embodied Belief Inference via Generative 3D World Modeling},
-  author={Yin, Yifan and Wen, Zehao and Ye, Suyu and Chen, Jieneng and Zheng, Zehan and Dai, Nanru and Shi, Haojun and Huang, Aydan and Zhang, Zheyuan and Yuille, Alan and Xie, Jianwen and Tewari, Ayush and Shu, Tianmin},
-  year={2026},
-  eprint={2605.11367},
-  archivePrefix={arXiv},
-  primaryClass={cs.CV},
-  url={https://arxiv.org/abs/2605.11367}
+@article{yin2026_3dbelief,
+  title   = {3D-Belief: Embodied Belief Inference via Generative 3D World Modeling},
+  author  = {Yin, Yifan and Wen, Zehao and Ye, Suyu and Chen, Jieneng and Zheng, Zehan and Dai, Nanru and Shi, Haojun and Huang, Aydan and Zhang, Zheyuan and Yuille, Alan and Xie, Jianwen and Tewari, Ayush and Shu, Tianmin},
+  journal = {arXiv preprint arXiv:2605.11367},
+  year    = {2026},
+  doi     = {10.48550/arXiv.2605.11367},
+  url     = {https://arxiv.org/abs/2605.11367}
 }
 ```
