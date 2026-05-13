@@ -3,7 +3,7 @@
 <div align="center">
 
 <a href="https://3d-belief.github.io" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Project_Page-blue" alt="Project Page"></a>
-<a href="https://3d-belief.github.io/static/3D_Belief.pdf" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Paper-PDF-red" alt="Paper PDF"></a>
+<a href="https://arxiv.org/abs/2605.11367" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/arXiv-2605.11367-b31b1b.svg" alt="arXiv"></a>
 <a href="https://huggingface.co/datasets/SCAI-JHU/3d-belief"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models%20%26%20Data-yellow" alt="HuggingFace"></a>
 
 </div>
@@ -194,9 +194,12 @@ If you find 3D-Belief useful in your research, please cite:
 
 ```bibtex
 @misc{yin20263dbelief,
-  title={3D-Belief: A Generative 3D World Model for Embodied Reasoning and Planning},
-  author={Yin, Yifan and Wen, Zehao and Chen, Jieneng and Zheng, Zehan and Dai, Nanru and Shi, Haojun and Ye, Suyu and Huang, Aydan and Zhang, Zheyuan and Yuille, Alan and Xie, Jianwen and Tewari, Ayush and Shu, Tianmin},
+  title={3D-Belief: Embodied Belief Inference via Generative 3D World Modeling},
+  author={Yin, Yifan and Wen, Zehao and Ye, Suyu and Chen, Jieneng and Zheng, Zehan and Dai, Nanru and Shi, Haojun and Huang, Aydan and Zhang, Zheyuan and Yuille, Alan and Xie, Jianwen and Tewari, Ayush and Shu, Tianmin},
   year={2026},
-  url={https://3d-belief.github.io/}
+  eprint={2605.11367},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  url={https://arxiv.org/abs/2605.11367}
 }
 ```
