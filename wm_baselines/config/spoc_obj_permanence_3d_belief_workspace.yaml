@@ -65,11 +65,11 @@ agent:
           #            in the target view falls inside history-covered area.
           # - dps:     diffusion-posterior-sampling guidance through gaussian
           #            mean/opacity targets derived from history.
-          obj_permanence_mode: "none"
-          obj_permanence_state_t_min: 1
-          obj_permanence_mask_blur: 5
+          obj_permanence_mode: "opacity"
+          obj_permanence_state_t_min: 0
+          obj_permanence_mask_blur: 0
           obj_permanence_mask_threshold: 0.5
-          obj_permanence_erode_kernel: 0
+          obj_permanence_erode_kernel: 11
           dps_guidance_scale: 1.0
           dps_pos_weight: 1.0
           dps_opacity_weight: 0.5

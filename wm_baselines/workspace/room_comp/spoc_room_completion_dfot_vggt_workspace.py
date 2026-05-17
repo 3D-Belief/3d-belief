@@ -12,6 +12,7 @@ from pathlib import Path
 import math
 import json
 import time
+import traceback
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from typing import Any, Dict
@@ -53,6 +54,7 @@ class SpocRoomCompletionDFoTVGGTWorkspace(BaseWorkspace):
         self.task_manager.set_camera(self.agent.camera)
 
         for ep_idx, ep in enumerate(self.task_manager.episodes):
+            ep_save_path = None
             try:
                 self.env_interface.reset()
                 self.agent.reset()
@@ -76,10 +78,11 @@ class SpocRoomCompletionDFoTVGGTWorkspace(BaseWorkspace):
                 # save using BaseWorkspace.save()
                 result_paths = self.save(ep_save_path)
                 print(f"Saved results to: {result_paths}")
-            except:
-                result_paths = self.save(ep_save_path)
-                print(f"Error in episode {self.task_manager.current_ep_name}, skipping to next episode.")
-                continue
+            except Exception:
+                if ep_save_path:
+                    self.save(ep_save_path)
+                traceback.print_exc()
+                raise
 
 
 @hydra.main(

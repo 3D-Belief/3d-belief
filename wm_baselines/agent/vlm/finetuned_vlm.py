@@ -5,32 +5,46 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Iterable
 import numpy as np
 from pathlib import Path
 import ast, re
-from transformers import Qwen2_5_VLForConditionalGeneration, Qwen3VLForConditionalGeneration, AutoProcessor
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+try:
+    from transformers import Qwen3VLForConditionalGeneration
+except ImportError:
+    Qwen3VLForConditionalGeneration = None
 from peft import PeftModel
 from qwen_vl_utils import process_vision_info
 
 class VLM():
     def __init__(self, vlm_model_name: str, adapter_path: str):
-        # base_model_path = 'Qwen/Qwen2.5-VL-7B-Instruct'
-        base_model_path = 'Qwen/Qwen3-VL-8B-Instruct'
+        self._temp_paths = []
+        normalized_model_name = vlm_model_name.lower().replace("_", "-")
+        if normalized_model_name in {"qwen-2", "qwen2", "qwen2.5", "qwen2-5"}:
+            base_model_path = "Qwen/Qwen2.5-VL-7B-Instruct"
+            model_cls = Qwen2_5_VLForConditionalGeneration
+        elif normalized_model_name in {"qwen-3", "qwen3"}:
+            if Qwen3VLForConditionalGeneration is None:
+                raise ImportError(
+                    "Qwen3VLForConditionalGeneration is unavailable in this transformers "
+                    "install. Use vlm_model_name='qwen-2' or upgrade transformers."
+                )
+            base_model_path = "Qwen/Qwen3-VL-8B-Instruct"
+            model_cls = Qwen3VLForConditionalGeneration
+        else:
+            raise ValueError(f"Unknown finetuned VLM model name: {vlm_model_name!r}")
 
         print("Loading base model...")
-        # model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        #     base_model_path, 
-        #     device_map="auto"
-        # )
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
+        model = model_cls.from_pretrained(
             base_model_path, 
-            dtype="auto",
+            torch_dtype="auto",
             device_map="auto"
         )
 
         # Load processor from base model (not adapter)
         self.processor = AutoProcessor.from_pretrained(base_model_path)
 
-        # # Now load the LoRA adapter on top of the base model
-        # print("Loading LoRA adapter...")
-        # model = PeftModel.from_pretrained(model, adapter_path)
+        if adapter_path:
+            print("Loading LoRA adapter...")
+            model = PeftModel.from_pretrained(model, adapter_path)
         self.model = model.eval()
 
     def __del__(self):
