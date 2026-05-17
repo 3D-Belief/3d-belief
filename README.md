@@ -78,6 +78,7 @@ python -m scripts.download_training_data --save_dir ../../data --types all
 python -m objathor.dataset.download_annotations --version 2023_07_28 --path ../../data
 python -m objathor.dataset.download_assets --version 2023_07_28 --path ../../data
 python -m scripts.download_objaverse_houses --save_dir ../../data --subset val
+cd ../../
 ```
 
 ## Data & Checkpoints
