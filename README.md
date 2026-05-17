@@ -106,9 +106,9 @@ unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 
 ## Vision Evaluation
 
-Compute video-prediction metrics (Scene memory PSNR/SSIM/LPIPS and scene imagination FVD/FID) for 3D-Belief, NWM, and DFoT on the AI2-THOR (SPOC) trajectories.
+Compute video-prediction metrics (PSNR/SSIM/LPIPS for Scene memory and FVD/FID for scene imagination) for 3D-Belief, NWM, and DFoT on the AI2-THOR (SPOC) trajectories.
 
-The SPOC dataloader resolves a split as `data/spoc/<stage>/`. Expose the downloaded trajectories as the `test` split with a symlink:
+Expose the downloaded trajectories as the `test` split of the SPOC dataset with a symlink:
 
 ```bash
 mkdir -p data/spoc
@@ -123,7 +123,7 @@ OUTPUT_ROOT="$PWD/outputs/vision_metrics/spoc" \
 bash scripts/vision_metrics/run_vision_comparison.sh
 ```
 
-Results are written to `OUTPUT_ROOT` (default `outputs/vision_metrics/<run-name>/`): per-model predictions and ground truth, plus `metrics/summary.json` and `metrics/summary.csv` with the aggregated observed and imagined scores.
+Results are written to `OUTPUT_ROOT` (default `outputs/vision_metrics/<run-name>/`). `metrics/summary.json` and `metrics/summary.csv` show the aggregated observed and imagined scores.
 
 ## Embodied Evaluation
 
