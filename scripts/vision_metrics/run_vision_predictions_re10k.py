@@ -95,11 +95,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--belief-obj-permanence-mode", default="none",
                         choices=("none", "opacity", "dps"),
                         help="Object permanence guidance mode for 3D-Belief inference.")
-    parser.add_argument("--belief-obj-permanence-state-t-min", type=int, default=1,
+    parser.add_argument("--belief-obj-permanence-state-t-min", type=int, default=0,
                         help="Minimum temporal state_t where object permanence guidance activates.")
-    parser.add_argument("--belief-obj-permanence-mask-blur", type=int, default=5)
+    parser.add_argument("--belief-obj-permanence-mask-blur", type=int, default=0)
     parser.add_argument("--belief-obj-permanence-mask-threshold", type=float, default=0.5)
-    parser.add_argument("--belief-obj-permanence-erode-kernel", type=int, default=0)
+    parser.add_argument("--belief-obj-permanence-erode-kernel", type=int, default=21)
     parser.add_argument(
         "--belief-obj-permanence-mask-binarize",
         action="store_true",
@@ -117,6 +117,46 @@ def parse_args() -> argparse.Namespace:
                         choices=("free", "ray", "ray_tangent"), default=None)
     parser.add_argument("--belief-refiner-ray-tangent-weight", type=float, default=None)
     parser.add_argument("--belief-refiner-ray-min-depth", type=float, default=None)
+    parser.add_argument(
+        "--belief-save-gaussians",
+        action="store_true",
+        help="Export 3D-Belief Gaussian PLY assets for each prediction split.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-layers",
+        default="full",
+        help="Comma-separated Gaussian layers to export: full,history,belief,incremental.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-opacity-thresh",
+        type=float,
+        default=0.0,
+        help="Viewer-export only: drop Gaussians with opacity below this threshold.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-max-scale",
+        type=float,
+        default=0.0,
+        help="Viewer-export only: drop Gaussians whose largest covariance stddev exceeds this value. <=0 disables.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-max-count",
+        type=int,
+        default=0,
+        help="Viewer-export only: keep at most this many Gaussians by opacity after other filters. <=0 disables.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-voxel-size",
+        type=float,
+        default=0.0,
+        help="Viewer-export only: voxel size for a cheap isolation filter. <=0 disables.",
+    )
+    parser.add_argument(
+        "--belief-gaussian-min-voxel-count",
+        type=int,
+        default=1,
+        help="Viewer-export only: with --belief-gaussian-voxel-size, keep voxels containing at least this many Gaussians.",
+    )
 
     parser.add_argument("--dfot-checkpoint", type=Path, default=DEFAULT_DFOT_CKPT)
     parser.add_argument("--dfot-repo", type=Path, default=DEFAULT_DFOT_REPO)
@@ -465,6 +505,19 @@ class BeliefTemporalRunnerRE10K:
         self.trainer, _ = _build_model_and_trainer(cfg)
         self.dtype = args.belief_inference_dtype
         self.obj_permanence_config = self._configure_obj_permanence(args)
+        self.save_gaussians = bool(getattr(args, "belief_save_gaussians", False))
+        self.gaussian_layers = {
+            item.strip()
+            for item in str(getattr(args, "belief_gaussian_layers", "full")).split(",")
+            if item.strip()
+        }
+        self.gaussian_export_filters = {
+            "opacity_thresh": float(getattr(args, "belief_gaussian_opacity_thresh", 0.0)),
+            "max_scale": float(getattr(args, "belief_gaussian_max_scale", 0.0)),
+            "max_count": int(getattr(args, "belief_gaussian_max_count", 0)),
+            "voxel_size": float(getattr(args, "belief_gaussian_voxel_size", 0.0)),
+            "min_voxel_count": int(getattr(args, "belief_gaussian_min_voxel_count", 1)),
+        }
 
     def _belief_modules(self) -> dict[str, Any]:
         return {
@@ -591,15 +644,162 @@ class BeliefTemporalRunnerRE10K:
     @staticmethod
     def _write_split(episode_dir: Path, split: str,
                      frames: Mapping[int, np.ndarray],
-                     requested_indices: Sequence[int]) -> None:
+                     requested_indices: Sequence[int],
+                     gaussian_assets: Mapping[str, str] | None = None) -> None:
         split_dir = episode_dir / split
         save_indexed_frames(frames, split_dir / "frames")
         save_video(split_dir / "prediction.mp4", [frames[i] for i in sorted(frames)])
-        write_json(split_dir / "manifest.json", {
+        manifest = {
             "split": split,
             "requested_frame_indices": list(requested_indices),
             "saved_frame_indices": sorted(frames),
-        })
+        }
+        if gaussian_assets:
+            manifest["gaussian_assets"] = dict(gaussian_assets)
+        write_json(split_dir / "manifest.json", manifest)
+
+    def _export_gaussian_assets(self, sample: Mapping[str, Any], episode_dir: Path,
+                                split: str, reference_frame_idx: int) -> dict[str, str]:
+        if not self.save_gaussians:
+            return {}
+        from splat_belief.splat.types import Gaussians
+        from splat_belief.splat.ply_export import compute_ply_normalization, export_gaussians_to_ply
+
+        model = self.trainer.ema.ema_model.model
+        gaussians_by_name = {
+            "full": getattr(model, "augmented_gaussians", None),
+            "history": getattr(model, "history_gaussians", None),
+            "belief": getattr(model, "belief_gaussians", None),
+            "incremental": getattr(model, "incremental_gaussians", None),
+        }
+        reference_pose = sample["video_dict"]["render_poses"][reference_frame_idx]
+        if torch.is_tensor(reference_pose):
+            reference_pose = reference_pose.to("cuda")
+            if reference_pose.ndim == 2:
+                reference_pose = reference_pose.unsqueeze(0)
+
+        gaussian_dir = episode_dir / split / "gaussians"
+        gaussian_dir.mkdir(parents=True, exist_ok=True)
+        assets = {}
+        filter_stats = {}
+        shared_normalization = None
+        normalization_manifest = None
+        normalization_source = getattr(model, "augmented_gaussians", None)
+        if normalization_source is not None:
+            normalization_gaussians, normalization_stats = self._filter_gaussians_for_export(
+                normalization_source.detach().float(), Gaussians,
+            )
+            if normalization_gaussians is not None:
+                shared_normalization = compute_ply_normalization(normalization_gaussians.means[0])
+                center, scale_factor = shared_normalization
+                normalization_manifest = {
+                    "source": "filtered_augmented_gaussians",
+                    "source_filter_stats": normalization_stats,
+                    "center": [float(v) for v in center.detach().cpu().tolist()],
+                    "scale_factor": float(scale_factor.detach().cpu().item()),
+                }
+        for name, gaussians in gaussians_by_name.items():
+            if name not in self.gaussian_layers:
+                continue
+            if gaussians is None:
+                continue
+            gaussians, stats = self._filter_gaussians_for_export(gaussians.detach().float(), Gaussians)
+            filter_stats[name] = stats
+            if gaussians is None:
+                print(f"[3d_belief] skipping empty Gaussian export for {split}/{name}: {stats}")
+                continue
+            ply_path = gaussian_dir / f"{name}.ply"
+            export_gaussians_to_ply(
+                gaussians, reference_pose, ply_path,
+                normalization=shared_normalization,
+            )
+            assets[name] = str(ply_path.relative_to(episode_dir))
+        if assets:
+            write_json(gaussian_dir / "manifest.json", {
+                "split": split,
+                "reference_frame_idx": int(reference_frame_idx),
+                "filters": self.gaussian_export_filters,
+                "filter_stats": filter_stats,
+                "shared_normalization": normalization_manifest,
+                "assets": assets,
+            })
+        return assets
+
+    def _filter_gaussians_for_export(self, gaussians, gaussians_cls):
+        filters = self.gaussian_export_filters
+        means = gaussians.means
+        covs = gaussians.covariances
+        harmonics = gaussians.harmonics
+        opacities = gaussians.opacities
+        features = gaussians.features
+
+        if means.ndim != 3 or means.shape[0] != 1:
+            raise ValueError(
+                "Viewer Gaussian export filtering currently expects batch size 1; "
+                f"got means shape {tuple(means.shape)}"
+            )
+
+        keep = (
+            torch.isfinite(means).all(dim=-1)
+            & torch.isfinite(covs).reshape(*covs.shape[:2], -1).all(dim=-1)
+            & torch.isfinite(harmonics).reshape(*harmonics.shape[:2], -1).all(dim=-1)
+            & torch.isfinite(opacities)
+        )
+
+        opacity_thresh = float(filters["opacity_thresh"])
+        if opacity_thresh > 0:
+            keep = keep & (opacities >= opacity_thresh)
+
+        max_scale = float(filters["max_scale"])
+        if max_scale > 0 and keep.any():
+            covs_sym = 0.5 * (covs + covs.transpose(-1, -2))
+            try:
+                evals = torch.linalg.eigvalsh(covs_sym)
+            except Exception:
+                evals = torch.linalg.eigvalsh(covs_sym.detach().cpu()).to(covs.device)
+            gaussian_scales = evals.clamp_min(0).sqrt().max(dim=-1).values
+            keep = keep & (gaussian_scales <= max_scale)
+
+        voxel_size = float(filters["voxel_size"])
+        min_voxel_count = int(filters["min_voxel_count"])
+        if voxel_size > 0 and min_voxel_count > 1 and keep.any():
+            voxel_keep = torch.zeros_like(keep)
+            kept_idx = torch.nonzero(keep[0], as_tuple=False).squeeze(-1)
+            coords = torch.floor(means[0, kept_idx] / voxel_size).to(torch.int64)
+            _, inverse, counts = torch.unique(coords, dim=0, return_inverse=True, return_counts=True)
+            local_keep = counts[inverse] >= min_voxel_count
+            voxel_keep[0, kept_idx[local_keep]] = True
+            keep = voxel_keep
+
+        max_count = int(filters["max_count"])
+        if max_count > 0 and int(keep.sum().item()) > max_count:
+            kept_idx = torch.nonzero(keep[0], as_tuple=False).squeeze(-1)
+            scores = opacities[0, kept_idx]
+            top_idx = torch.topk(scores, k=max_count, largest=True, sorted=False).indices
+            limited_keep = torch.zeros_like(keep)
+            limited_keep[0, kept_idx[top_idx]] = True
+            keep = limited_keep
+
+        input_count = int(means.shape[1])
+        output_count = int(keep.sum().item())
+        stats = {
+            "input_count": input_count,
+            "output_count": output_count,
+            "removed_count": input_count - output_count,
+            "kept_fraction": float(output_count / max(input_count, 1)),
+        }
+        if output_count == 0:
+            return None, stats
+
+        m = keep[0]
+        filtered_features = features[:, m].contiguous() if features is not None else None
+        return gaussians_cls(
+            means=means[:, m].contiguous(),
+            covariances=covs[:, m].contiguous(),
+            harmonics=harmonics[:, m].contiguous(),
+            opacities=opacities[:, m].contiguous(),
+            features=filtered_features,
+        ), stats
 
     def predict_episode(self, sample: Mapping[str, Any], episode_dir: Path) -> dict:
         episode = sample["episode"]
@@ -637,13 +837,18 @@ class BeliefTemporalRunnerRE10K:
         imagined_01_frames = {idx: frame_map_01[idx]
                               for idx in frame_sets["imagined_kf0_to_kf1"]
                               if idx in frame_map_01}
+        gaussian_assets_01 = self._export_gaussian_assets(
+            sample, episode_dir, "imagined_kf0_to_kf1", reference_frame_idx=0,
+        )
         self._write_split(episode_dir, "imagined_kf0_to_kf1",
-                          imagined_01_frames, frame_sets["imagined_kf0_to_kf1"])
+                          imagined_01_frames, frame_sets["imagined_kf0_to_kf1"],
+                          gaussian_assets=gaussian_assets_01)
         trace["splits"]["imagined_kf0_to_kf1"] = {
             "mode": "state_t0_context_kf0_only_predict_kf1",
             "frame_indices": frame_sets["imagined_kf0_to_kf1"],
             "elapsed_seconds": elapsed_01,
             "diffusion_calls": 1,
+            "gaussian_assets": gaussian_assets_01,
         }
 
         # State 1: condition on kf1, predict kf2 (state carries kf0).
@@ -656,13 +861,18 @@ class BeliefTemporalRunnerRE10K:
         imagined_12_frames = {idx: frame_map_12[idx]
                               for idx in frame_sets["imagined_kf1_to_kf2"]
                               if idx in frame_map_12}
+        gaussian_assets_12 = self._export_gaussian_assets(
+            sample, episode_dir, "imagined_kf1_to_kf2", reference_frame_idx=kf1,
+        )
         self._write_split(episode_dir, "imagined_kf1_to_kf2",
-                          imagined_12_frames, frame_sets["imagined_kf1_to_kf2"])
+                          imagined_12_frames, frame_sets["imagined_kf1_to_kf2"],
+                          gaussian_assets=gaussian_assets_12)
         trace["splits"]["imagined_kf1_to_kf2"] = {
             "mode": "state_t1_context_kf1_target_kf2",
             "frame_indices": frame_sets["imagined_kf1_to_kf2"],
             "elapsed_seconds": elapsed_12,
             "diffusion_calls": 1,
+            "gaussian_assets": gaussian_assets_12,
         }
         trace["total_diffusion_calls"] += 1
         trace["total_prediction_seconds"] += elapsed_12
@@ -684,13 +894,18 @@ class BeliefTemporalRunnerRE10K:
         observed_frames = {idx: frame_map_observed[idx]
                            for idx in frame_sets["observed"]
                            if idx in frame_map_observed}
-        self._write_split(episode_dir, "observed", observed_frames, frame_sets["observed"])
+        gaussian_assets_observed = self._export_gaussian_assets(
+            sample, episode_dir, "observed", reference_frame_idx=0,
+        )
+        self._write_split(episode_dir, "observed", observed_frames,
+                          frame_sets["observed"], gaussian_assets=gaussian_assets_observed)
         trace["splits"]["observed"] = {
             "mode": "state_t0_context_kf0_clean_target_kf1_scene_memory",
             "frame_indices": frame_sets["observed"],
             "elapsed_seconds": elapsed_observed,
             "diffusion_calls": 1,
             "clean_target": True,
+            "gaussian_assets": gaussian_assets_observed,
         }
         trace["total_diffusion_calls"] += 1
         trace["total_prediction_seconds"] += elapsed_observed
@@ -1121,6 +1336,13 @@ def main() -> None:
             "position_update_mode": args.belief_refiner_position_update_mode,
             "ray_tangent_weight": args.belief_refiner_ray_tangent_weight,
             "ray_min_depth": args.belief_refiner_ray_min_depth,
+        },
+        "belief_gaussian_export_filters": {
+            "opacity_thresh": args.belief_gaussian_opacity_thresh,
+            "max_scale": args.belief_gaussian_max_scale,
+            "max_count": args.belief_gaussian_max_count,
+            "voxel_size": args.belief_gaussian_voxel_size,
+            "min_voxel_count": args.belief_gaussian_min_voxel_count,
         },
         "dry_run": bool(args.dry_run),
         "env": env_snapshot(),

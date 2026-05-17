@@ -159,11 +159,10 @@ def train(cfg: DictConfig):
         use_depth_mask=use_depth_mask,
         refiner_cfg=refiner_cfg,
         obj_permanence_mode=str(cfg.get("obj_permanence_mode", "none")),
-        obj_permanence_state_t_min=int(cfg.get("obj_permanence_state_t_min", 1)),
-        obj_permanence_mask_blur=int(cfg.get("obj_permanence_mask_blur", 5)),
+        obj_permanence_state_t_min=int(cfg.get("obj_permanence_state_t_min", 0)),
+        obj_permanence_mask_blur=int(cfg.get("obj_permanence_mask_blur", 0)),
         obj_permanence_mask_threshold=float(cfg.get("obj_permanence_mask_threshold", 0.5)),
-        obj_permanence_erode_kernel=int(cfg.get("obj_permanence_erode_kernel", 0)),
-        obj_permanence_mask_binarize_after_blur=bool(cfg.get("obj_permanence_mask_binarize_after_blur", False)),
+        obj_permanence_erode_kernel=int(cfg.get("obj_permanence_erode_kernel", 21)),
         dps_guidance_scale=float(cfg.get("dps_guidance_scale", 1.0)),
         dps_pos_weight=float(cfg.get("dps_pos_weight", 1.0)),
         dps_opacity_weight=float(cfg.get("dps_opacity_weight", 0.5)),
@@ -174,8 +173,7 @@ def train(cfg: DictConfig):
         f"state_t_min={model.obj_permanence_state_t_min}, "
         f"mask_blur={model.obj_permanence_mask_blur}, "
         f"mask_threshold={model.obj_permanence_mask_threshold}, "
-        f"erode_kernel={model.obj_permanence_erode_kernel}, "
-        f"mask_binarize_after_blur={model.obj_permanence_mask_binarize_after_blur}"
+        f"erode_kernel={model.obj_permanence_erode_kernel}"
     )
 
     diffusion = DiffusionTemporal(
@@ -194,6 +192,7 @@ def train(cfg: DictConfig):
         use_reg_model=use_reg_model,
         use_depth_mask=use_depth_mask,
         sampler=cfg.get("sampler", "ddim"),
+        cfg=cfg,
     ).cuda()
 
     print(f"using lr {cfg.lr}")
@@ -680,8 +679,10 @@ def sample_video_idx_from_dataset(dataset, num_samples=15, min_frames=20, max_fr
         scene_idx = random.randint(0, len(dataset.scene_path_list) - 1)
         video_length = len(dataset.all_rgb_files[scene_idx])
         assert video_length>0
+        lower = max(1, min(int(min_frames), int(max_frames), video_length))
+        upper = max(1, min(max(int(min_frames), int(max_frames)), video_length))
         num_frames = dataset.rng.choice(
-            np.arange(min(min_frames, video_length-1), min(max_frames, video_length)), 1, replace=False
+            np.arange(lower, upper + 1), 1, replace=False
         )
         sampled_indices.append((scene_idx, num_frames[0]))
     return sampled_indices

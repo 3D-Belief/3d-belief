@@ -52,6 +52,8 @@ temperature: 1.0
 sampling_steps: 50
 train_num_steps: 550000
 warmup_period: 10000
+sample_every: 2000
+save_every: 2000
 
 ema_decay: 0.995
 deterministic: False
@@ -162,11 +164,10 @@ background_weight: 0.1
 # Object permanence guidance for temporal inference. See
 # docs/object_permanence_guidance.md.
 obj_permanence_mode: none
-obj_permanence_state_t_min: 1
-obj_permanence_mask_blur: 5
+obj_permanence_state_t_min: 0
+obj_permanence_mask_blur: 0
 obj_permanence_mask_threshold: 0.5
-obj_permanence_erode_kernel: 0
-obj_permanence_mask_binarize_after_blur: false
+obj_permanence_erode_kernel: 11
 dps_guidance_scale: 1.0
 dps_pos_weight: 1.0
 dps_opacity_weight: 0.5

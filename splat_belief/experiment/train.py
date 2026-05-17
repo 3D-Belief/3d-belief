@@ -17,7 +17,9 @@ from splat_belief.splat.decoder import get_decoder
 from splat_belief.splat.encoder import get_encoder
 from splat_belief.embodied.semantic_mapper import SemanticMapper
 import torch
-torch.autograd.set_detect_anomaly(True)
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
 import numpy as np
 from accelerate import DistributedDataParallelKwargs
 from accelerate import Accelerator
@@ -52,6 +54,8 @@ def train(cfg: DictConfig):
         pin_memory=True,
         num_workers=8,
         worker_init_fn=lambda id: np.random.seed(id * 4),
+        persistent_workers=True,
+        prefetch_factor=4,
     )
     depth_mode = cfg.depth_mode
     extended_visualization = cfg.extended_visualization
@@ -154,7 +158,7 @@ def train(cfg: DictConfig):
         model,
         image_size=dataset.image_size,
         timesteps=1000,  # number of steps
-        sampling_timesteps=10,
+        sampling_timesteps=cfg.get("sampling_steps", 10),
         loss_type="l2",  # L1 or L2
         objective="pred_x0",
         beta_schedule="cosine",
@@ -188,9 +192,9 @@ def train(cfg: DictConfig):
         gradient_accumulate_every=1,  # gradient accumulation steps
         ema_decay=cfg.ema_decay,  # exponential moving average decay
         amp=False,  # turn on mixed precision
-        sample_every=2000,
-        wandb_every=2000,
-        save_every=2000,
+        sample_every=cfg.get("sample_every", 2000),
+        wandb_every=cfg.get("wandb_every", 2000),
+        save_every=cfg.get("save_every", 2000),
         results_folder=cfg.results_folder,
         num_samples=1,
         warmup_period=warmup_period,
@@ -273,7 +277,7 @@ def get_train_settings(name, ngpus):
         }
     elif name == "pixelsplat":
         return {
-            "batch_size": ngpus,
+            "batch_size": 2 * ngpus,
             "num_context": 1,
             "num_target": 1,
             "use_viewdir": False,

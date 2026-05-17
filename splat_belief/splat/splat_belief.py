@@ -122,19 +122,22 @@ class SplatBelief(nn.Module):
         repa_gt_ctxt = None
         repa_gt_trgt = None
         if self.repa_encoder is not None:
-            raw_ctxt = self.unnormalize(model_input["ctxt_rgb"]).squeeze(1)
-            raw_ctxt = preprocess_raw_image(
-                raw_ctxt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
-            )
-            repa_gt_ctxt = self.repa_encoder.forward_features(raw_ctxt)
-            if 'dino' in self.repa_encoder_name: repa_gt_ctxt = repa_gt_ctxt['x_norm_patchtokens']
+            with torch.no_grad():
+                raw_ctxt = self.unnormalize(model_input["ctxt_rgb"]).squeeze(1)
+                raw_ctxt = preprocess_raw_image(
+                    raw_ctxt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
+                )
+                repa_gt_ctxt = self.repa_encoder.forward_features(raw_ctxt)
+                if 'dino' in self.repa_encoder_name: repa_gt_ctxt = repa_gt_ctxt['x_norm_patchtokens']
+                repa_gt_ctxt = repa_gt_ctxt.detach()
 
-            raw_trgt = self.unnormalize(model_input["trgt_rgb"]).squeeze(1)
-            raw_trgt = preprocess_raw_image(
-                raw_trgt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
-            )
-            repa_gt_trgt = self.repa_encoder.forward_features(raw_trgt)
-            if 'dino' in self.repa_encoder_name: repa_gt_trgt = repa_gt_trgt['x_norm_patchtokens']
+                raw_trgt = self.unnormalize(model_input["trgt_rgb"]).squeeze(1)
+                raw_trgt = preprocess_raw_image(
+                    raw_trgt, self.repa_encoder_name, resolution=self.repa_encoder_resolution
+                )
+                repa_gt_trgt = self.repa_encoder.forward_features(raw_trgt)
+                if 'dino' in self.repa_encoder_name: repa_gt_trgt = repa_gt_trgt['x_norm_patchtokens']
+                repa_gt_trgt = repa_gt_trgt.detach()
 
         # Augmented gaussians
         gaussians = context_gaussians + target_gaussians
