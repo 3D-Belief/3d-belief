@@ -19,4 +19,4 @@ adjacent_distance: 3.0  # meters
 #                                  candidate camera position geographically
 #                                  closest to it (always navigable; biased
 #                                  toward the hotspot location).
-goal_selection_strategy: closest_camera_to_max_pixel
+goal_selection_strategy: max_camera_score

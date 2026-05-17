@@ -107,8 +107,6 @@ else
 fi
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/splat_belief:\${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
-# Avoid user-site torch ABI conflicts.
-export PYTHONNOUSERSITE=1
 export MPLCONFIGDIR="/tmp/matplotlib"
 export OPENBLAS_NUM_THREADS="\${OPENBLAS_NUM_THREADS:-1}"
 export OMP_NUM_THREADS="\${OMP_NUM_THREADS:-1}"

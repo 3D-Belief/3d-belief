@@ -17,7 +17,6 @@ paths:
   # ---------------------------------------------------------------------------
   episode_roots:
     # Object searching & env testing episodes (validation split)
-    # Used by: spoc_obj_searching_*, spoc_env_testing, stretch_*
     obj_searching: data/spoc_trajectories_val
 
     # Object completion episodes

@@ -24,7 +24,6 @@ EPISODE_ROOT="data/spoc_trajectories_val"
 CONDA_ENV="3d-belief"
 # Environment variables
 export XFORMERS_DISABLED=1
-export PYTHONNOUSERSITE=1
 export OBJAVERSE_DATA_DIR="data/2023_07_28"
 export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 
