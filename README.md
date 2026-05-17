@@ -104,11 +104,28 @@ unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_v
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 ```
 
-## Configure Paths
+## Vision Evaluation
 
-**Configure paths to point at your local data and checkpoints before running anything**. [`wm_baselines/config/paths.yaml`](wm_baselines/config/paths.yaml) contains central paths config used by every baseline. Most fields under `paths.episode_roots` and `paths.checkpoints` should point at the layout produced by the [Data & Checkpoints](#data--checkpoints) step (`data/...` and `checkpoints/...`). The file's header lists which workspace each entry feeds into.
+Compute video-prediction metrics (Scene memory PSNR/SSIM/LPIPS and scene imagination FVD/FID) for 3D-Belief, NWM, and DFoT on the AI2-THOR (SPOC) trajectories.
 
-## Evaluation
+The SPOC dataloader resolves a split as `data/spoc/<stage>/`. Expose the downloaded trajectories as the `test` split with a symlink:
+
+```bash
+mkdir -p data/spoc
+ln -sfn "$PWD/data/spoc_trajectories_val" data/spoc/test
+```
+
+Run predictions and metrics for all three models. Optionally pick the GPU and an output directory:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+OUTPUT_ROOT="$PWD/outputs/vision_metrics/spoc" \
+bash scripts/vision_metrics/run_vision_comparison.sh
+```
+
+Results are written to `OUTPUT_ROOT` (default `outputs/vision_metrics/<run-name>/`): per-model predictions and ground truth, plus `metrics/summary.json` and `metrics/summary.csv` with the aggregated observed and imagined scores.
+
+## Embodied Evaluation
 
 To evaluate on 3D-CORE and the short SPOC object-navigation episodes, please follow the instructions below. See [Example Evaluation Results](RESULTS.md) for a reference of the results produced.
 

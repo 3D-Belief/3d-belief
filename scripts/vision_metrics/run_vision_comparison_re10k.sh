@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run RE10K vision predictions (3D-Belief + DFoT + Gen3C) inside a tmux session.
+# Run RE10K vision predictions (3D-Belief + DFoT + Gen3C) + metrics.
+# Plain foreground script: run it directly, or wrap it in tmux/nohup yourself.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-SESSION="${SESSION:-re10k_temporal_vision_metrics}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ubuntu/tianmin-neurips/miniconda3/envs/3d-belief/bin/python}"
 DATASET_ROOT="${DATASET_ROOT:-/home/ubuntu/tianmin-neurips/datasets}"
 RUN_NAME="${RUN_NAME:-re10k_temporal_vision_$(date +%Y%m%d_%H%M%S)}"
@@ -59,11 +59,6 @@ GEN3C_FOREGROUND_MASKING="${GEN3C_FOREGROUND_MASKING:-1}"
 GEN3C_ENABLE_PROMPT_ENCODER="${GEN3C_ENABLE_PROMPT_ENCODER:-0}"
 GEN3C_OFFLOAD="${GEN3C_OFFLOAD:-0}"
 GEN3C_MISSING_DEPTH_POLICY="${GEN3C_MISSING_DEPTH_POLICY:-moge}"
-
-if tmux has-session -t "${SESSION}" 2>/dev/null; then
-    echo "tmux session '${SESSION}' already exists. Attach with: tmux attach -t ${SESSION}"
-    exit 1
-fi
 
 args=(
     "--dataset-root" "${DATASET_ROOT}"
@@ -146,19 +141,19 @@ if [[ "${GEN3C_OFFLOAD}" == "1" ]]; then
     args+=("--gen3c-offload")
 fi
 
-CMD_PRED="cd ${REPO_ROOT}/scripts/vision_metrics && \
-    PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 \
-    PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF_VALUE} \
-    ${CUDA_VISIBLE_DEVICES_VALUE:+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_VALUE}} \
-    ${PYTHON_BIN} run_vision_predictions_re10k.py ${args[*]}"
-
-CMD_METRICS="cd ${REPO_ROOT}/scripts/vision_metrics && \
-    PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 \
-    ${PYTHON_BIN} compute_vision_metrics.py --run-dir ${OUTPUT_ROOT} --fvd-backbone ${FVD_BACKBONE}"
-
 mkdir -p "${OUTPUT_ROOT}"
 echo "Output: ${OUTPUT_ROOT}"
-echo "Session: ${SESSION}"
 
-tmux new-session -d -s "${SESSION}" -n predict "bash -lc '${CMD_PRED} && ${CMD_METRICS}; echo Done; exec bash'"
-echo "tmux attach -t ${SESSION}"
+cd "${REPO_ROOT}/scripts/vision_metrics"
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF_VALUE}"
+if [[ -n "${CUDA_VISIBLE_DEVICES_VALUE}" ]]; then
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_VALUE}"
+fi
+
+"${PYTHON_BIN}" run_vision_predictions_re10k.py "${args[@]}"
+if [[ "${DRY_RUN}" != "1" ]]; then
+    "${PYTHON_BIN}" compute_vision_metrics.py --run-dir "${OUTPUT_ROOT}" --fvd-backbone "${FVD_BACKBONE}"
+fi
+echo "Done. Metrics in ${OUTPUT_ROOT}/metrics/"
