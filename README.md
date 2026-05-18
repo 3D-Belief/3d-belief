@@ -29,10 +29,11 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 
 - [Installation](#installation)
   - [Environment Setup](#environment-setup)
-  - [Third-Party Packages](#third-party-packages)
+  - [Third-Party Packages and Assets](#third-party-packages-and-assets)
 - [Data & Checkpoints](#data--checkpoints)
-- [Configure Paths](#configure-paths)
-- [Evaluation](#evaluation)
+- [Inference](#inference)
+- [Vision Evaluation](#vision-evaluation)
+- [Embodied Evaluation](#embodied-evaluation)
   - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
   - [3D Contextual Reasoning (3D-CORE)](#3d-contextual-reasoning-3d-core)
 - [Repository Structure](#repository-structure)
@@ -215,8 +216,11 @@ python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajecto
 │   ├── workspace/         # Evaluation entry points
 │   └── config/            # Baseline configs including paths.yaml
 ├── scripts/
-│   ├── rollouts/          # Embodied evaluation scripts
-│   └── calculate_metrics/ # Per-task metric evaluation scripts
+│   ├── training/          # Model training / finetuning scripts
+│   ├── inference/         # 3D-Belief inference scripts
+│   ├── vision_metrics/    # Vision evaluation scripts
+│   ├── rollouts/          # Embodied rollouts scripts
+│   └── calculate_metrics/ # Per-task embodied evaluation scripts
 └── third_party/           # Submodules
 ```
 
