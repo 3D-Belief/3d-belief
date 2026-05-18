@@ -174,6 +174,12 @@ python scripts/calculate_metrics/obj_searching_metrics.py <path_to_predicted_tra
 - **Room Completion** (`room_comp_*`)
 - **Object Permanence** (`obj_perm_*`)
 
+We use Gemini-2.5-Flash for evaluation. Export your key:
+
+```bash
+export GEMINI_API_KEY=your_gemini_api_key
+```
+
 Run one task/model pair:
 
 ```bash
@@ -183,12 +189,6 @@ bash scripts/rollouts/reasoning.sh obj_comp_3d_belief
 Available agent keys:
 - `obj_comp_3d_belief`, `room_comp_3d_belief`, `obj_perm_3d_belief`
 - `obj_comp_dfot_vggt`, `room_comp_dfot_vggt`, `obj_perm_dfot_vggt`
-
-We use Gemini-2.5-Flash for evaluation — export your key:
-
-```bash
-export GEMINI_API_KEY=your_gemini_api_key
-```
 
 Evaluate each task:
 
