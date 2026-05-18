@@ -191,8 +191,7 @@ def train(cfg: DictConfig):
         use_semantic=use_semantic,
         use_reg_model=use_reg_model,
         use_depth_mask=use_depth_mask,
-        sampler=cfg.get("sampler", "ddim"),
-        cfg=cfg,
+        sampler=cfg.get("sampler", "dpm_solver_pp"),
     ).cuda()
 
     print(f"using lr {cfg.lr}")

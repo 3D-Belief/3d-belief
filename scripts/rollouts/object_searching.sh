@@ -34,9 +34,9 @@ export OBJAVERSE_HOUSES_DIR="data/houses_2023_07_28"
 #  3d_belief_semantic_goal_selector         | 3D Belief + Semantic Goal Selector
 #  gpt_vlm_agent                            | GPT VLM Agent
 #  gemini_vlm_agent                         | Gemini VLM Agent
-#  qwen3_vlm_agent                      | Finetuned (Qwen3) VLM Agent
+#  qwen3_vlm_agent                          | Finetuned (Qwen3) VLM Agent
 #  vggt_frontier                            | VGGT + Frontier Agent
-#  vggt_gpt_vlm_goal_selector            | VGGT + GPT VLM Goal Selector
+#  vggt_gpt_vlm_goal_selector               | VGGT + GPT VLM Goal Selector
 #  vggt_gemini_vlm_goal_selector           | VGGT + Gemini VLM Goal Selector
 #  dfot_vggt_gpt_vlm_goal_selector         | DFoT-VGGT + GPT VLM Goal Selector
 #  dfot_vggt_gemini_vlm_goal_selector      | DFoT-VGGT + Gemini VLM Goal Selector

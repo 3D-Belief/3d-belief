@@ -100,22 +100,36 @@ Download and set up evaluation data:
 ```bash
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/*.zip"
 # Unzipping may take several minutes
-unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
-```
-
-## Vision Evaluation
-
-Compute video-prediction metrics (PSNR/SSIM/LPIPS for Scene memory and FVD/FID for scene imagination) for 3D-Belief, NWM, and DFoT on the AI2-THOR (SPOC) trajectories.
-
-Expose the downloaded trajectories as the `test` split of the SPOC dataset with a symlink:
-
-```bash
+unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
+# Expose the unzipped validation trajectories as the `test` split with a symlink for model inference
 mkdir -p data/spoc
 ln -sfn "$PWD/data/spoc_trajectories_val" data/spoc/test
 ```
 
-Run predictions and metrics for all three models. Optionally pick the GPU and an output directory:
+## Inference
+
+Run inference on 2 episodes sampled from the datasets:
+
+```bash
+# INFERENCE_SAMPLE_FROM_DATASET=false samples episodes from a predefined pool in splat_belief/config/inference/temporal_indices.py.
+
+# INFERENCE_SAVE_SCENE=true saves the Gaussian scene as .ply, but will make inference slower.
+
+CUDA_VISIBLE_DEVICES=0 \
+INFERENCE_SAMPLE_FROM_DATASET=true \
+INFERENCE_NUM_SAMPLES=2 \
+INFERENCE_SAVE_SCENE=true \
+RESULTS_FOLDER=outputs/inference/spoc_demo \
+bash scripts/inference/validate.sh
+```
+
+This loads `checkpoints/3d_belief_spoc.pt`, samples 2 episodes from
+`data/spoc/test`, and writes per-step, per-episode renders to `RESULTS_FOLDER`.
+
+## Vision Evaluation
+
+To compute video-prediction metrics (PSNR/SSIM/LPIPS for Scene memory and FVD/FID for scene imagination) for 3D-Belief, NWM, and DFoT on the AI2-THOR (SPOC) trajectories, run the following command:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
