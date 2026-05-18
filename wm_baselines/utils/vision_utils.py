@@ -355,6 +355,10 @@ def _get_T_c1_for_frame(ref_E_first_cw: torch.Tensor,
                         current_E_cw_t: torch.Tensor | None) -> torch.Tensor:
     T_c1w = _as_4x4(ref_E_first_cw)  # first camera-from-world
     if points_are_world_frame:
+        # World-frame points -> express in the FIRST camera's frame (the frame
+        # the occupancy/planner consume, consistent with pose_map). This MUST be
+        # applied via apply_se3_points on finite-filtered points; the old
+        # homogeneous _transform_points_np corrupted it on inf-bearing rows.
         return T_c1w
     if current_E_cw_t is None:
         raise ValueError("current_extrinsic_cw is required when points_are_world_frame=False.")
@@ -368,6 +372,37 @@ def _transform_points_np(pts_flat: np.ndarray, T_4x4: torch.Tensor) -> np.ndarra
     T_np = T_4x4.detach().cpu().float().numpy()
     pts_h = np.concatenate([pts_flat, np.ones((pts_flat.shape[0], 1))], axis=1)
     return (pts_h @ T_np.T)[:, :3]
+
+
+def finite_xyz_mask(pts_flat: np.ndarray) -> np.ndarray:
+    """Boolean (N,) mask of rows whose (x,y,z) are all finite.
+
+    VGGT depth has invalid pixels (sky / holes / low-conf) that unproject to
+    +/-inf. Those rows MUST be dropped before any transform: in a homogeneous
+    `pts_h @ T` matmul an inf coordinate produces inf*0 -> nan and corrupts the
+    result (this silently turned the correct ~1.5 m cloud into a ~2.9 m blob).
+    """
+    p = np.asarray(pts_flat)
+    if p.ndim != 2 or p.shape[1] != 3:
+        p = p.reshape(-1, 3)
+    return np.isfinite(p).all(axis=1)
+
+
+def apply_se3_points(pts_flat: np.ndarray, T_4x4: torch.Tensor) -> np.ndarray:
+    """Apply a rigid SE(3) transform to finite (N,3) points: p' = p @ R^T + t.
+
+    Plain affine form (no homogeneous augmentation) so there is no `inf*0`
+    contamination path. Caller MUST pass already-finite points
+    (see `finite_xyz_mask`); non-finite input still yields non-finite output
+    but never corrupts neighboring finite rows.
+    """
+    if pts_flat.size == 0:
+        return pts_flat
+    T_np = np.asarray(T_4x4.detach().cpu().float().numpy()
+                      if hasattr(T_4x4, "detach") else T_4x4, dtype=np.float64)
+    R = T_np[:3, :3]
+    t = T_np[:3, 3]
+    return (np.asarray(pts_flat, dtype=np.float64) @ R.T + t).astype(np.float32, copy=False)
 
 def _stack_points_colors(all_pts: list[np.ndarray], all_cols: list[np.ndarray | None]):
     pts = np.concatenate(all_pts, axis=0) if len(all_pts) else np.empty((0,3), dtype=np.float32)

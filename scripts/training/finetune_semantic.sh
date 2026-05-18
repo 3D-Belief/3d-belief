@@ -8,18 +8,24 @@ conda activate 3d-belief
 nvidia-smi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Ensure local repo is found before any pip-installed copy
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 
 export MASTER_PORT=$((12000 + RANDOM % 1000))
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+NGPUS="${1:-${NGPUS:-1}}"
+# wandb mode (online|local) and entity: overridable via 2nd/3rd CLI arg or env var
+WANDB="${2:-${WANDB:-local}}"
+WANDB_ENTITY="${3:-${WANDB_ENTITY:-null}}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((NGPUS - 1)))}"
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
-DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/data/all_rerendered_root}"
-CHECKPOINT_PATH="${CHECKPOINT_PATH:-${REPO_ROOT}/checkpoints/3d_belief_depth.pt}"
+DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/data/spoc}"
+CHECKPOINT_PATH="${CHECKPOINT_PATH:-${REPO_ROOT}/checkpoints/3d_belief_spoc.pt}"
 
-CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MASTER_PORT\
+CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node $NGPUS --master_port $MASTER_PORT\
     splat_belief/experiment/train.py \
     dataset=spoc \
     dataset.vggt_alignment_loss_weight=2.0 \
@@ -32,7 +38,7 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     results_folder=outputs/training/spoc_semantic \
     semantic_config=${REPO_ROOT}/splat_belief/config/semantic/onehot.yaml \
     checkpoint_path="${CHECKPOINT_PATH}" \
-    ngpus=1 \
+    ngpus=$NGPUS \
     image_size=128 \
     ctxt_min=5 \
     ctxt_max=15 \
@@ -61,7 +67,8 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node 1 --master_port $MAS
     repa_encoder_resolution=512 \
     model_type=uvit_pose \
     name=spoc_semantic \
-    wandb=local \
+    wandb=$WANDB \
+    ++wandb.entity=$WANDB_ENTITY \
     clean_target=false \
     use_identity=true \
     intermediate=true \

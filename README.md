@@ -115,7 +115,7 @@ Run inference on 2 episodes sampled from the datasets:
 ```bash
 # INFERENCE_SAMPLE_FROM_DATASET=false samples episodes from a predefined pool in splat_belief/config/inference/temporal_indices.py.
 
-# INFERENCE_SAVE_SCENE=true saves the Gaussian scene as .ply, but will make inference slower.
+# INFERENCE_SAVE_SCENE=true saves Gaussian scenes as .ply, but will make inference slower.
 
 CUDA_VISIBLE_DEVICES=0 \
 INFERENCE_SAMPLE_FROM_DATASET=true \

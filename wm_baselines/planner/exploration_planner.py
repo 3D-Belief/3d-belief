@@ -105,8 +105,9 @@ class ExplorationPlanner(BasePlanner):
                 self.path_keypoints = []
                 print("No more valid path found")
                 trace_asset = {
-                    # "pcd": current_asset["pcd"],
+                    "pcd": current_asset.get("pcd", None),
                     "rgb": current_asset["rgb"],
+                    "depth": current_asset.get("depth", None),
                     "occupancy": deepcopy(current_asset["occupancy"]),
                     "path": None,
                     "goal": self.current_goal if self.current_goal is not None else None,
@@ -123,8 +124,9 @@ class ExplorationPlanner(BasePlanner):
         action = {"action_name": self.action_name, "args": {"target_pose": next_pose}}
 
         trace_asset = {
-            # "pcd": current_asset["pcd"],
+            "pcd": current_asset.get("pcd", None),
             "rgb": current_asset["rgb"],
+            "depth": current_asset.get("depth", None),
             "occupancy": deepcopy(current_asset["occupancy"]),
             "path": path_keypoints if len(path_keypoints)>0 else None,
             "goal": self.current_goal if self.current_goal is not None else None,

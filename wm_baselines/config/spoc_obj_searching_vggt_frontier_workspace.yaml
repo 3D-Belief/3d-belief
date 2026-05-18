@@ -45,4 +45,4 @@ agent:
   assets_saver:
     save: True
     save_path: "${embodied_task.trajectory.save_path}"
-    asset_keys: ['occupancy', 'rgb']
+    asset_keys: ['occupancy', 'rgb', 'pcd', 'depth']

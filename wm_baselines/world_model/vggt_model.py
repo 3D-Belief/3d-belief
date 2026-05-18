@@ -26,6 +26,8 @@ from wm_baselines.utils.vision_utils import (
     _mask_take,
     _get_T_c1_for_frame,
     _transform_points_np,
+    finite_xyz_mask,
+    apply_se3_points,
     _image_to_hw3,
     _stack_points_colors,
     _move_time_from_dim1_to_dim0,
@@ -67,6 +69,7 @@ class VGGTModel(BaseWorldModel):
         }
         self.rgb_images: List[np.ndarray] = []
         self.scene_pcd: o3d.geometry.PointCloud = None
+        self.last_depth_vis: Optional[np.ndarray] = None
         self.resample_pcd = True
         self.resample_pcd_check_dict = {"z_previous": None, "t_previous": None}
         self.adjacent_angle = adjacent_angle
@@ -109,6 +112,8 @@ class VGGTModel(BaseWorldModel):
                 max_range=self.obs_occupancy.max_range,
                 free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
                 seed=self._seed,
+                agent_free_radius=self.obs_occupancy.agent_free_radius,
+                flip_y=self.obs_occupancy.flip_y,
             )
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
@@ -121,6 +126,8 @@ class VGGTModel(BaseWorldModel):
         
         assets = {
             "rgb": rgb,
+            "pcd": self.scene_pcd,
+            "depth": self.last_depth_vis,
             "occupancy": self.obs_occupancy,
             "position": position,
             "rotation": rotation,
@@ -138,6 +145,8 @@ class VGGTModel(BaseWorldModel):
             max_range=self.obs_occupancy.max_range,
             free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
             seed=self._seed,
+            agent_free_radius=self.obs_occupancy.agent_free_radius,
+            flip_y=self.obs_occupancy.flip_y,
         )
         self.initial_location = {}
         self.step = -1
@@ -148,6 +157,7 @@ class VGGTModel(BaseWorldModel):
         }
         self.rgb_images = []
         self.scene_pcd = None
+        self.last_depth_vis = None
         self.resample_pcd = True
         self.resample_pcd_check_dict = {"z_previous": None, "t_previous": None}
 
@@ -364,14 +374,22 @@ class VGGTModel(BaseWorldModel):
                 good_d = _depth_valid_mask_per_frame(dm_t, H, W)
                 mask = good_d if mask is None else (mask & good_d)
 
+            # Drop non-finite (invalid-depth) points BEFORE masking/transform so
+            # points and colors stay aligned and no inf reaches the transform.
+            fmask = finite_xyz_mask(pts_flat)
+            mask = fmask if mask is None else (mask & fmask)
+
             pts_flat = _mask_take(pts_flat, mask)
 
-            # Transform to first-camera coords
+            # Express points in the FIRST camera's frame (the frame the
+            # occupancy/planner consume, consistent with pose_map). Applied via
+            # apply_se3_points (plain affine) on the now finite-only points; the
+            # old homogeneous _transform_points_np corrupted inf-bearing rows.
             E_curr = None
             if not points_are_world_frame:
                 E_curr = current_extrinsic_cw[t]
             T_c1_for_t = _get_T_c1_for_frame(ref_extrinsic_first_cw, points_are_world_frame, E_curr)
-            pts_flat = _transform_points_np(pts_flat, T_c1_for_t)
+            pts_flat = apply_se3_points(pts_flat, T_c1_for_t)
 
             # Colors
             cols_flat = None
@@ -399,6 +417,28 @@ class VGGTModel(BaseWorldModel):
         if len(pcd.points) > 0:
             pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
         return pcd
+
+    @staticmethod
+    def _colorize_depth(depth: np.ndarray, conf: Optional[np.ndarray] = None) -> np.ndarray:
+        """Colorize a (H,W) metric depth map to an (H,W,3) uint8 image (turbo).
+
+        Robust 2–98 percentile normalization; low-confidence pixels (conf < 0.6,
+        the same threshold used for the point cloud) are blacked out so the trace
+        shows exactly what feeds the reconstruction.
+        """
+        import matplotlib.cm as cm
+        d = np.asarray(depth, dtype=np.float32)
+        valid = np.isfinite(d) & (d > 0)
+        if conf is not None:
+            valid &= (np.asarray(conf, dtype=np.float32) >= 0.6)
+        if valid.any():
+            lo, hi = np.percentile(d[valid], [2, 98])
+        else:
+            lo, hi = 0.0, 1.0
+        dn = np.clip((d - lo) / max(1e-6, hi - lo), 0.0, 1.0)
+        rgb = (cm.turbo(dn)[..., :3] * 255).astype(np.uint8)
+        rgb[~valid] = 0
+        return rgb
 
     @with_timing
     def _inference_pcd(self) -> o3d.geometry.PointCloud:
@@ -435,6 +475,11 @@ class VGGTModel(BaseWorldModel):
             img = images.squeeze(0)                # (T,3,H,W)
             pm_world = point_map_by_unprojection   # (T,H,W,3)
             dm = depth_map_scaled.squeeze(0)       # (T,H,W,1)
+
+            # Visualize the *current* (newest) frame's scaled depth for the trace.
+            d_cur = dm[-1].squeeze(-1).float().cpu().numpy()          # (H,W) meters
+            c_cur = depth_conf.squeeze(0)[-1].float().cpu().numpy()   # (H,W) confidence
+            self.last_depth_vis = self._colorize_depth(d_cur, c_cur)
 
             # Build PCD in first frame coords
             E_first = _as_4x4(extrinsic[0, 0])     # (4,4) camera-from-world of first frame

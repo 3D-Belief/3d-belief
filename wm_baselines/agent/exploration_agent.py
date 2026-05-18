@@ -85,6 +85,10 @@ class ExplorationAgent(BaseAgent):
                     rgb = trace_asset['rgb']
                     rgb = Image.fromarray(rgb)
                     rgb.save(self.assets_save_path_ep / key / f"rgb_{self.step}.png")
+                elif key=='depth':
+                    depth = trace_asset.get('depth', None)
+                    if depth is None: continue
+                    Image.fromarray(depth).save(self.assets_save_path_ep / key / f"depth_{self.step}.png")
                 elif key=='goal_images':
                     goal_images = trace_asset.get('goal_images', None)
                     if goal_images is None: continue

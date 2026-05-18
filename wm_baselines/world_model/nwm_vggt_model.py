@@ -47,6 +47,8 @@ from wm_baselines.utils.vision_utils import (
     _mask_take,
     _get_T_c1_for_frame,
     _transform_points_np,
+    finite_xyz_mask,
+    apply_se3_points,
     _image_to_hw3,
     _stack_points_colors,
     _move_time_from_dim1_to_dim0,
@@ -191,6 +193,8 @@ class NWMVGGTModel(BaseWorldModel):
             max_range=self.obs_occupancy.max_range,
             free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
             seed=self._seed,
+            agent_free_radius=self.obs_occupancy.agent_free_radius,
+            flip_y=self.obs_occupancy.flip_y,
         )
         self.belief_occupancy = OccupancyMap(
             resolution=self.belief_occupancy.resolution,
@@ -308,6 +312,8 @@ class NWMVGGTModel(BaseWorldModel):
                 max_range=self.obs_occupancy.max_range,
                 free_overrides_occupied=self.obs_occupancy.free_overrides_occupied,
                 seed=self._seed,
+                agent_free_radius=self.obs_occupancy.agent_free_radius,
+                flip_y=self.obs_occupancy.flip_y,
             )
             _, exe_time = self.obs_occupancy.integrate(
                 np.array(self.scene_pcd.points), 
@@ -320,6 +326,7 @@ class NWMVGGTModel(BaseWorldModel):
         
         assets = {
             "rgb": rgb,
+            "pcd": self.scene_pcd,
             "occupancy": self.obs_occupancy,
             "position": position,
             "rotation": rotation,
@@ -402,14 +409,21 @@ class NWMVGGTModel(BaseWorldModel):
                 good_d = _depth_valid_mask_per_frame(dm_t, H, W)
                 mask = good_d if mask is None else (mask & good_d)
 
+            # Drop non-finite (invalid-depth) points BEFORE masking/transform so
+            # points and colors stay aligned and no inf reaches the transform.
+            fmask = finite_xyz_mask(pts_flat)
+            mask = fmask if mask is None else (mask & fmask)
+
             pts_flat = _mask_take(pts_flat, mask)
 
-            # Transform to first-camera coords
+            # Express points in the FIRST camera's frame via apply_se3_points
+            # (plain affine) on the now finite-only points; the old homogeneous
+            # _transform_points_np corrupted inf-bearing rows (inf*0 -> nan).
             E_curr = None
             if not points_are_world_frame:
                 E_curr = current_extrinsic_cw[t]
             T_c1_for_t = _get_T_c1_for_frame(ref_extrinsic_first_cw, points_are_world_frame, E_curr)
-            pts_flat = _transform_points_np(pts_flat, T_c1_for_t)
+            pts_flat = apply_se3_points(pts_flat, T_c1_for_t)
 
             # Colors
             cols_flat = None

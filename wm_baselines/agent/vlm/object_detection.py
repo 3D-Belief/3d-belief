@@ -12,9 +12,9 @@ import supervision as sv
 
 load_dotenv()
 
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 if api_key is None:
-    raise RuntimeError("GOOGLE_API_KEY env var not set")
+    raise RuntimeError("GEMINI_API_KEY env var not set")
 
 client = genai.Client(api_key=api_key)
 

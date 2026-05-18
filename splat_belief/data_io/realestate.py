@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -24,6 +25,45 @@ except ImportError:
 
 
 Stage = Literal["train", "test",  "unit"]
+
+
+@lru_cache(maxsize=16)
+def _load_npz_video(path: str) -> np.ndarray:
+    """Bounded cache so repeated access to a scene doesn't re-decompress it,
+    while not holding every visited episode in memory."""
+    return np.load(path)["video"]  # (T, C, H, W) uint8
+
+
+class _NpzScene:
+    """A single-episode .npz scene (key 'video' = (T, C, H, W) uint8).
+
+    Frames are already ordered by timestamp at creation time, so it indexes
+    like the timestamp-sorted Path array used for the frame-directory layout.
+    """
+
+    __slots__ = ("path", "name")
+
+    def __init__(self, path: Union[str, Path]):
+        self.path = str(path)
+        self.name = Path(path).stem
+
+    @property
+    def video(self) -> np.ndarray:
+        return _load_npz_video(self.path)
+
+    def __len__(self) -> int:
+        return self.video.shape[0]
+
+    def __getitem__(self, idx):
+        return self.video[idx]  # (C, H, W) uint8
+
+
+def _scene_name(rgb_files) -> str:
+    """Scene id used to key into the camera-pose .mat, for either layout."""
+    if isinstance(rgb_files, _NpzScene):
+        return rgb_files.name
+    return rgb_files[0].parent.name
+
 
 class Camera(object):
     def __init__(self, entry):
@@ -91,7 +131,14 @@ class RealEstate10kDatasetOM(Dataset):
         self.num_intermediate = num_intermediate
         sub_dir = {"train": "train", "test": "test", "unit": "unit"}[stage]
         image_root = Path(root) / sub_dir
-        scene_path_list = sorted(list(Path(image_root).glob("*/")))
+        # Dynamically use per-episode .npz scenes if present, else frame dirs.
+        npz_scene_files = sorted(Path(image_root).glob("*.npz"))
+        if len(npz_scene_files) > 0:
+            self.npz_mode = True
+            scene_path_list = npz_scene_files
+        else:
+            self.npz_mode = False
+            scene_path_list = sorted(list(Path(image_root).glob("*/")))
 
         if max_scenes is not None:
             scene_path_list = scene_path_list[:max_scenes]
@@ -121,6 +168,16 @@ class RealEstate10kDatasetOM(Dataset):
         all_timestamps = []
         self.scene_path_list = []
         for i, scene_path in enumerate(scene_path_list):
+            if self.npz_mode:
+                scene = _NpzScene(scene_path)
+                all_rgb_files.append(scene)
+                self.scene_path_list.append(scene_path)
+                # Frames are timestamp-ordered at .npz creation time; no
+                # per-frame timestamps stored (monotonicity is guaranteed).
+                all_timestamps.append(None)
+                if self.use_depth_supervision:
+                    all_depth_files.append(scene)
+                continue
             rgb_files = sorted(scene_path.glob("*.jpg"))
             if self.use_depth_supervision:
                 depth_files = sorted(scene_path.glob("*.npz"))
@@ -134,22 +191,29 @@ class RealEstate10kDatasetOM(Dataset):
             all_rgb_files.append(np.array(rgb_files)[sorted_ids])
             self.scene_path_list.append(scene_path)
             all_timestamps.append(np.array(timestamps)[sorted_ids])
-        self.all_rgb_files = np.concatenate(all_rgb_files)
         self.indices = torch.arange(0, len(self.scene_path_list))
         self.all_rgb_files = all_rgb_files
         if self.use_depth_supervision:
             self.all_depth_files = all_depth_files
         self.all_timestamps = all_timestamps
-        print("length dataset", self.len)
+        if self.npz_mode:
+            self.len = len(self.all_rgb_files)  # frame counts are lazy in npz mode
+        print("length dataset", self.len, "npz_mode", self.npz_mode)
 
     def read_image(self, rgb_files, id):
-        rgb_file = rgb_files[id]
-        rgb = (
-            torch.tensor(
-                np.asarray(Image.open(rgb_file)).astype(np.float32)
-            ).permute(2, 0, 1)
-            / 255.0
-        )
+        if isinstance(rgb_files, _NpzScene):
+            # video frame is already (C, H, W) uint8
+            rgb = torch.tensor(rgb_files[id].astype(np.float32)) / 255.0
+            scene_name = rgb_files.name
+        else:
+            rgb_file = rgb_files[id]
+            rgb = (
+                torch.tensor(
+                    np.asarray(Image.open(rgb_file)).astype(np.float32)
+                ).permute(2, 0, 1)
+                / 255.0
+            )
+            scene_name = rgb_file.parent.name
         # print(rgb.shape, "SHAPE")
         rgb = F.interpolate(
             rgb.unsqueeze(0),
@@ -158,12 +222,15 @@ class RealEstate10kDatasetOM(Dataset):
             antialias=True,
         )[0]
 
-        cam_param = self.all_cam_params[str(rgb_file.parent.name)][id][1:]
+        cam_param = self.all_cam_params[str(scene_name)][id][1:]
         cam_param = Camera(cam_param.flatten().tolist())
         return rgb, cam_param
 
     def read_depth(self, depth_file, id):
-        depth_data = np.load(depth_file)
+        if isinstance(depth_file, _NpzScene):
+            depth_data = np.load(depth_file.path)
+        else:
+            depth_data = np.load(depth_file)
         depth = depth_data["depths"][id, :]
         depth = torch.tensor(depth).float()
         depth = F.interpolate(
@@ -194,7 +261,8 @@ class RealEstate10kDatasetOM(Dataset):
         if self.use_depth_supervision:
             depth_file = self.all_depth_files[scene_idx]
         timestamps = self.all_timestamps[scene_idx]
-        assert (timestamps == sorted(timestamps)).all()
+        if timestamps is not None:
+            assert (timestamps == sorted(timestamps)).all()
         num_frames = len(rgb_files)
         if num_frames < self.num_target + 1:
             return fallback()
@@ -355,7 +423,8 @@ class RealEstate10kDatasetOM(Dataset):
         scene_idx = video_idx
         rgb_files = self.all_rgb_files[scene_idx]
         timestamps = self.all_timestamps[scene_idx]
-        assert (timestamps == sorted(timestamps)).all()
+        if timestamps is not None:
+            assert (timestamps == sorted(timestamps)).all()
 
         trgt_rgbs = []
         trgt_c2w = []
@@ -400,8 +469,7 @@ class RealEstate10kDatasetOM(Dataset):
                 id = ctxt_idx[0] + i
             else:
                 id = trgt_idx[0] + i
-            rgb_file = rgb_files[id]
-            cam_param = self.all_cam_params[str(rgb_file.parent.name)][id][1:]
+            cam_param = self.all_cam_params[str(_scene_name(rgb_files))][id][1:]
             cam_param = Camera(cam_param.flatten().tolist())
             render_poses.append(cam_param.c2w_mat)
         render_poses = torch.tensor(np.array(render_poses)).float()

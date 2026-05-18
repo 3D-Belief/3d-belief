@@ -98,15 +98,8 @@ obs_occupancy:
   obstacle_height_thresh: -0.12
   ceiling_height: 1.0 # w.r.t. agent height
   max_range: 3.0
-  # Set to null or 0 to disable the hack that force-marks a disk around the
-  # agent's standing position as free on the first integration step.
   agent_free_radius: 0.5
-  # If True, negate pcd Y on entry (use when the incoming pcd is in a Y-down
-  # / OpenCV-camera-style world frame but you want the Y-up thresholds below
-  # to mean "world height").
   flip_y: false
-  # Print Y/sensor/threshold stats on every integrate() call to debug
-  # convention mismatches (floor-as-obstacle, doorway-as-obstacle, etc.).
   debug: false
 
 belief_occupancy:
@@ -119,9 +112,6 @@ belief_occupancy:
   flip_y: false
   debug: false
 
-# If True, _extract_inc_pcd negates pcd Y before returning it (legacy hard-
-# coded behavior). Set False to test whether ceiling/obstacle thresholds were
-# actually tuned against the unflipped frame.
 inc_pcd_flip_y: true
 
 adjacent_angle: 0.523599  # 30 degrees
