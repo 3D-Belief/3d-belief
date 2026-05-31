@@ -1,0 +1,85 @@
+# =============================================================================
+# Meta Paths Config
+# =============================================================================
+# Centralizes all filesystem paths required to run the baselines.
+# Individual workspace configs can reference these via Hydra interpolation,
+# e.g.  episode_root: ${paths.episode_roots.obj_searching}
+#
+# Defaults assume the repository layout produced by the README download steps.
+# Override individual paths from the command line if your data or checkpoints
+# live elsewhere.
+# =============================================================================
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Episode data roots (input trajectories / episodes)
+  # ---------------------------------------------------------------------------
+  episode_roots:
+    # Object searching & env testing episodes (validation split)
+    obj_searching: data/spoc_trajectories_val
+
+    # Object completion episodes
+    # Used by: spoc_obj_completion_3d_belief, spoc_obj_completion_dfot_vggt
+    obj_completion: data/3d-core/object_completion
+
+    # Object permanence episodes
+    # Used by: spoc_obj_permanence_3d_belief, spoc_obj_permanence_dfot_vggt
+    obj_permanence: data/3d-core/object_permanence
+
+    # Room completion episodes
+    # Used by: spoc_room_completion_3d_belief, spoc_room_completion_dfot_vggt
+    room_completion: data/3d-core/room_completion
+
+  # ---------------------------------------------------------------------------
+  # Output root (trajectory saves, assets, logs)
+  # ---------------------------------------------------------------------------
+  # All per-experiment save_paths are derived as  <output_root>/<experiment_name>
+  output_root: wm_baselines/output
+
+  # ---------------------------------------------------------------------------
+  # 3D Belief model checkpoints
+  # ---------------------------------------------------------------------------
+  checkpoints:
+    # 3D Belief – semantic model (used for semantic goal selector, obj/room completion, obj permanence)
+    # Used by: spoc_obj_searching_3d_belief_semantic_goal_selector,
+    #          spoc_obj_completion_3d_belief, spoc_obj_permanence_3d_belief,
+    #          spoc_room_completion_3d_belief, stretch_obj_searching_3d_belief_semantic_goal_selector
+    belief_3d_semantic: checkpoints/3d_belief_spoc.pt
+
+    # VGGT checkpoint (finetuned on SPOC)
+    # Used by: spoc_obj_searching_vggt_*, spoc_obj_completion_dfot_vggt,
+    #          spoc_obj_permanence_dfot_vggt, spoc_room_completion_dfot_vggt,
+    #          dfot_vggt_model, nwm_vggt_model
+    vggt: checkpoints/vggt_spoc.pt
+
+    # DFoT checkpoint
+    # Used by: dfot_vggt_model
+    dfot: checkpoints/dfot_finetune_spoc.ckpt
+
+    # NWM checkpoint
+    # Used by: nwm_vggt_model
+    nwm: checkpoints/nwm_finetune_spoc.pth.tar
+
+    # Finetuned VLM adapter (Qwen-2 LoRA)
+    # Used by: spoc_obj_searching_finetuned_vlm_agent
+    vlm_adapter: ""
+
+  # ---------------------------------------------------------------------------
+  # External repository paths (needed at runtime for model loading)
+  # ---------------------------------------------------------------------------
+  repos:
+    # DFoT repository root
+    # Used by: dfot_vggt_model
+    dfot: third_party/dfot
+
+    # NWM repository root
+    # Used by: nwm_vggt_model
+    nwm: third_party/nwm
+
+  # ---------------------------------------------------------------------------
+  # Semantic configuration
+  # ---------------------------------------------------------------------------
+  # Semantic label config (one-hot encoding spec)
+  # Used by: belief_3d_model configs with use_semantic: true
+  semantic_config: splat_belief/config/semantic/onehot.yaml

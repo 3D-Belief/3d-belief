@@ -1,0 +1,135 @@
+defaults:
+  - agent: exploration_agent
+  - agent/planner: belief_3d_goal_selector
+  - agent/world_model: belief_3d_model
+  - paths
+  - _self_
+
+embodied_task:
+  name: spoc_obj_searching_3d_belief_semantic_goal_selector
+  episode_root: ${paths.episode_roots.obj_searching}
+  subset_type: null # room or length
+  subset: null # short, med, long for length; living, kitchen, bedroom, bathroom for room
+  close_enough_distance: 4.0
+  alignment_threshold: 45
+  max_steps: 25
+  rotation_step: 10
+  move_step: 0.3
+  timeout: 500
+  trajectory:
+    save: True
+    save_path: ${paths.output_root}/object_searching_3d_belief_semantic_goal_selector
+    image_keys: ['rgb']
+    string_keys: ['action', 'position', 'rotation', 'distance_to_goal', 'distance_traveled', 'angle_turned']
+
+task_manager:
+  _target_: wm_baselines.task_manager.spoc_obj_searching_task_manager.SpocObjSearchingTaskManager
+
+env_interface:
+  _target_: wm_baselines.env_interface.spoc_env_interface.SpocEnvInterface
+
+agent:
+  camera:
+    _target_: wm_baselines.agent.perception.camera.Camera
+    h: 240
+    w: 240
+    fx: 93.6
+    fy: 92.4
+    cx: 120
+    cy: 120
+    near: 0.1
+    far: 10.0
+  world_model:
+    camera:
+      _target_: wm_baselines.agent.perception.camera.Camera
+      fx: 0.390
+      fy: 0.385
+      cx: 0.5
+      cy: 0.5
+      h: 128
+      w: 128
+      near: 0.1
+      far: 10.0
+    fast_sampling: true
+    # ---- inc_scene -> obs_occupancy ingestion filters ----
+    # Stop integrating diffusion-imagined gaussians produced beyond observable depth
+    # (e.g. hallway content behind a doorway) which otherwise blocks doorways forever.
+    obs_depth_min: 0.1
+    obs_depth_max: 3.0          # clip diffusion sampling depth (was 10.0)
+    occupancy_min_opacity: 0.35 # drop low-confidence imagined splats (was 0.1)
+    occupancy_max_scale_m: 0.25 # drop oversize uncertainty blobs (was 0.3)
+    occupancy_max_range_m: 3.0  # match OccupancyMap.max_range (was 4.0)
+    obs_filter_border_gaussians: true
+    occupancy_border_px: 6      # tighter border filter (was 4)
+    # Drop diffusion-imagined gaussians whose sensor->point ray crosses an existing obstacle.
+    # Critical for kicking through-wall hallucinations out of obs_occupancy.
+    occlusion_filter_enabled: true
+    occlusion_target_buffer_cells: 3   # spare neighbour points on same wall (curtain self-rejection)
+    obs_occupancy:
+      _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
+      resolution: 0.1
+      obstacle_height_thresh: -0.12  # eye-relative; sofa-top (~ -0.65m AGL) and walls qualify, mid-room splat noise (~ -0.5m only at sparse points) pruned by free-ray override
+      ceiling_height: 1.0 # eye-relative; clip door headers / upper-wall fixtures (~+0.3-0.5m) so doorways stay traversable
+      max_range: 3.0
+    belief_occupancy:
+      _target_: wm_baselines.agent.perception.occupancy.OccupancyMap
+      resolution: 0.1
+      obstacle_height_thresh: -0.12
+      ceiling_height: 1.0
+      max_range: 3.0
+    model:
+      diffusion_model:
+        model:
+          use_semantic: true
+          encoder_visual_pair:
+            cfg:
+              use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
+              use_reg_model: true
+              reg_model_name: dinov3_base
+              d_semantic_reg: 768
+          semantic:
+            _target_: wm_baselines.utils.model_factories.build_semantic_bundle
+            use_semantic: ${agent.world_model.model.diffusion_model.model.use_semantic}
+            semantic_mode: "embed"        # "embed" | "class" | ...
+            semantic_viz: "query"
+            semantic_config: "${paths.semantic_config}"
+            clip:
+              model_name: "ViT-B-16"
+              pretrained: "laion2b_s34b_b88k"
+              precision: "fp16"
+              device: "cuda"
+            reg_model:
+              enabled: true
+              name: dinov3_base
+              device: "cuda"
+          refiner:
+            enabled: false
+            num_iterations: 50
+            lr_means: 1.6e-4
+            lr_harmonics: 2.5e-3
+            lr_opacity: 0.05
+            lr_scaling: 1.0e-3
+            lr_rotation: 1.0e-3
+            rgb_loss_weight: 1.0
+            use_ssim: false
+            ssim_weight: 0.2
+            window_size: 10
+            prior_weight: 0.1
+            freeze_geometry: false
+            harmonics_dc_only: true
+            min_observations: 2
+            use_lr_decay: true
+            lr_means_final: 1.6e-6
+            use_visibility_masking: true
+            visibility_margin: 0.05
+            densify_every: 150
+            densify_grad_threshold: 0.0002
+            opacity_prune_threshold: 0.7
+            size_prune_threshold: 0.1
+      checkpoint_path: ${paths.checkpoints.belief_3d_semantic}
+  planner:
+    goal_sampling_strategy: frontier_balanced_turns
+  assets_saver:
+    save: True
+    save_path: "${embodied_task.trajectory.save_path}"
+    asset_keys: ['occupancy', 'rgb', 'goal_images', 'goal_semantics', 'goal_scores', 'goal_poses']

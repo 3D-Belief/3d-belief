@@ -1,0 +1,83 @@
+import os
+import pathlib
+import sys
+import traceback
+from pathlib import Path
+
+import hydra
+from omegaconf import DictConfig
+
+ROOT_DIR = str(Path(__file__).parent.parent.parent.parent)
+sys.path.append(ROOT_DIR)
+os.chdir(ROOT_DIR)
+
+from environment.stretch_controller import StretchController
+from spoc_utils.constants.stretch_initialization_utils import STRETCH_ENV_ARGS
+from wm_baselines.workspace.base_workspace import BaseWorkspace
+
+
+class SpocObjPermanenceDFoTVGGTWorkspace(BaseWorkspace):
+    def __init__(self, config: DictConfig):
+        stretch_controller = StretchController(**STRETCH_ENV_ARGS)
+        super().__init__(config, stretch_controller=stretch_controller)
+
+    def run(self):
+        vlm_model_name = self.embodied_config.get("vlm_model_name", None)
+        if vlm_model_name:
+            from wm_baselines.agent.vlm.vlm import VLM
+
+            vlm = VLM(vlm_model_name)
+            self.task_manager.set_vlm(vlm)
+
+        save_path = self.embodied_config.trajectory.save_path
+        print(f"Loaded {len(self.task_manager.episodes)} episodes from {self.task_manager.episode_root}")
+        self.task_manager.set_camera(self.agent.camera)
+
+        for ep_idx, _ in enumerate(self.task_manager.episodes):
+            ep_save_path = None
+            try:
+                self.env_interface.reset()
+                self.agent.reset()
+                print(
+                    f"Starting episode {ep_idx}/{len(self.task_manager.episodes)}: "
+                    f"{self.task_manager.current_ep_name}"
+                )
+                max_steps = self.task_manager.num_steps
+                current_ep_name = self.task_manager.current_ep_name
+                ep_save_path = os.path.join(save_path, current_ep_name) if save_path else None
+                if ep_save_path:
+                    os.makedirs(ep_save_path, exist_ok=True)
+                step = 0
+                done = False
+                while (step < max_steps) and (not done):
+                    step += 1
+                    self.agent.observe()
+                    self.agent.imagine()
+                    self.agent.calculate_metrics()
+                    self.agent.save_step()
+                    done = self.task_manager.is_done()
+                    print(f"Step {step}/{max_steps}, Done: {done}")
+
+                result_paths = self.save(ep_save_path)
+                print(f"Saved results to: {result_paths}")
+            except Exception as exc:
+                if ep_save_path:
+                    result_paths = self.save(ep_save_path)
+                    print(f"Saved partial results to: {result_paths}")
+                print(f"Error in episode {self.task_manager.current_ep_name}: {exc}")
+                traceback.print_exc()
+                continue
+
+
+@hydra.main(
+    version_base=None,
+    config_path=str(pathlib.Path(__file__).parent.parent.parent.joinpath("config")),
+    config_name=pathlib.Path(__file__).stem,
+)
+def main(cfg: DictConfig):
+    workspace = SpocObjPermanenceDFoTVGGTWorkspace(cfg)
+    workspace.run()
+
+
+if __name__ == "__main__":
+    main()

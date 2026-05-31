@@ -1,0 +1,26 @@
+name: dit
+
+model: DiT-XL/2
+input_size: [64, 64]
+in_channels: 64
+out_channels: 512
+class_dropout_prob: 0.1
+num_classes: 1000
+cond_feats_dim: 0
+mlp_ratio: 4.0
+learn_sigma: True
+d_out: 512
+use_image_condition: False # this will be overdriven by the encoder config
+use_camera_pose: False # this will be overdriven by the encoder config
+pose_condition_type: "prope"
+union_cond_attn: True
+use_diff_pos_embed: True
+use_cond_res_mlp: False
+view_attn_n_heads: 4
+view_attn_n_layers: 1
+view_attn_ff_mult: 4
+view_attn_pool_type: "attn"
+attn_type: 'mma'
+mlp_type: 'mlp'
+use_repa: False
+repa_z_dim: 768
