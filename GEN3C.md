@@ -46,6 +46,7 @@ CUDA_HOME=$CONDA_PREFIX pip install -v --disable-pip-version-check --no-cache-di
 
 # Install MoGe (depth estimator used for RE10K, which has no simulator depth)
 pip install git+https://github.com/microsoft/MoGe.git
+pip install huggingface-hub==0.29.2
 
 cd ../..
 ```
@@ -60,16 +61,17 @@ cd ../..
 
 ## Checkpoints
 
-Download Gen3C checkpoints from [Hugging Face](https://huggingface.co/collections/nvidia/gen3c-683f3f9540a8f9c98cf46a8d). The RE10K pipeline uses the `Gen3C-Cosmos-7B` model. Place checkpoints in `third_party/gen3c/checkpoints/` (the default `--gen3c-checkpoint-dir`):
-
 ```bash
 cd third_party/gen3c
-# Log in with a Hugging Face token (Read permission is sufficient)
+# Log in with a Hugging Face token (Read permission is enough; needed for the gated Cosmos repos)
 huggingface-cli login
-# Download the Gen3C-Cosmos-7B weights
-huggingface-cli download nvidia/Gen3C-Cosmos-7B --local-dir checkpoints/Gen3C-Cosmos-7B
+# Downloads Gen3C-Cosmos-7B + Cosmos-Tokenize1-CV8x8x8-720p + google-t5/t5-11b (+ guardrail)
+CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python scripts/download_gen3c_checkpoints.py --checkpoint_dir checkpoints
 cd ../..
 ```
+
+This populates `third_party/gen3c/checkpoints/` (the default `--gen3c-checkpoint-dir`). The download
+is large (the `t5-11b` text encoder alone is tens of GB).
 
 ## Environment variables for the RE10K runner
 

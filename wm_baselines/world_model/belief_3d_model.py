@@ -427,9 +427,17 @@ class Belief3DModel(BaseWorldModel):
         # border-pixel gaussians and degrade rendering quality. Border filtering for occupancy
         # ingestion is applied later in _extract_inc_pcd via self.obs_filter_border_gaussians.
         self.model.ema.ema_model.sample(batch_size=1, inp=inp, state_t=self.state_step, filter_border_gaussians=False, depth_inference_min=self.obs_depth_min, depth_inference_max=self.obs_depth_max)
-        self.obs_scene = self.model.ema.ema_model.model.history_gaussians.clone()
-        self.inc_scene = self.model.ema.ema_model.model.incremental_gaussians.clone()
-        self.belief_scene = self.model.ema.ema_model.model.belief_gaussians.clone()
+        _state_model = self.model.ema.ema_model.model
+        # On the first keyframe in "live" observed object-permanence mode, the
+        # observation is held in `context_gaussians_live` and not yet committed to
+        # `history_gaussians` (that happens at the next keyframe). Fall back to it so
+        # obs_scene reflects the current observation instead of crashing on None.
+        history_gaussians = _state_model.history_gaussians
+        if history_gaussians is None:
+            history_gaussians = getattr(_state_model, "context_gaussians_live", None)
+        self.obs_scene = history_gaussians.clone() if history_gaussians is not None else None
+        self.inc_scene = _state_model.incremental_gaussians.clone()
+        self.belief_scene = _state_model.belief_gaussians.clone()
         self.state_step += 1
 
     def _pose_delta(self, pose_a: Union[Tensor, np.ndarray], pose_b: Union[Tensor, np.ndarray]) -> tuple[float, float]:

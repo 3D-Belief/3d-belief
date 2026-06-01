@@ -47,20 +47,20 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 git clone https://github.com/3D-Belief/3d-belief
 cd 3d-belief
 git submodule update --init --recursive
-conda create -n 3d-belief python=3.10 -y
+conda create -n 3d-belief python=3.10 pip -y
 conda activate 3d-belief
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 swig -y
-# Install the one matching your CUDA version
-conda install -c nvidia cuda=12.1
+# Install the version that matches your CUDA version. CUDA 12.1 is used here as an example
+conda install -c nvidia cuda=12.1 -y
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-# Install PyTorch matching your CUDA version
+# Install the version that matches your CUDA version. CUDA 12.1 is used here as an example
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
-conda install vulkan-tools
+conda install -c conda-forge vulkan-tools -y
 pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
@@ -72,7 +72,11 @@ cd third_party/dfot
 pip install -r requirements.txt
 cd ../spoc
 pip install --no-build-isolation -e .
-pip install -r requirements.txt
+pip install "setuptools==65.5.0" "wheel<0.40"
+# Pin the torch stack so spoc's unpinned xformers/torch do not replace the cu121 build
+# from the main install (xformers is disabled at runtime via XFORMERS_DISABLED=1).
+printf 'torch==2.5.1\ntorchvision==0.20.1\ntorchaudio==2.5.1\ntriton==3.1.0\nxformers==0.0.28.post3\n' > /tmp/3db_torch_constraints.txt
+pip install -r requirements.txt -c /tmp/3db_torch_constraints.txt
 pip install --extra-index-url https://ai2thor-pypi.allenai.org ai2thor==0+5d0ab8ab8760eb584c5ae659c2b2b951cab23246
 # Download and unzip the assets may take a while
 python -m scripts.download_training_data --save_dir ../../data --types all
@@ -96,16 +100,38 @@ Download all pretrained checkpoints:
 hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "checkpoints/**"
 ```
 
+Model inference additionally requires the DINOv3 ViT-B/16 backbone
+weights at `checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth`. These weights must be obtained separately from Meta's **gated** DINOv3 release (request access / accept the license at
+[facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
+or the [DINOv3 GitHub](https://github.com/facebookresearch/dinov3)), then place the
+`dinov3_vitb16_pretrain_lvd1689m.pth` file at `checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth`.
+
 Download and set up evaluation data:
 
+### SPOC (AI2-THOR)
+
 ```bash
-hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/*.zip"
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/3d-core.zip" "data/spoc_trajectories_val.zip"
 # Unzipping may take several minutes
 unzip ./data/3d-core.zip -d ./data/ && rm data/3d-core.zip
 unzip ./data/spoc_trajectories_val.zip -d ./data/ && rm data/spoc_trajectories_val.zip
 # Expose the unzipped validation trajectories as the `test` split with a symlink for model inference
 mkdir -p data/spoc
 ln -sfn "$PWD/data/spoc_trajectories_val" data/spoc/test
+```
+
+### RealEstate10K
+
+```bash
+# Download the per-scene video frames (split zip, ~396 GB; needs ~0.8 TB free for
+#    the parts + the reassembled zip) and the camera-pose file:
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/re10k/test_parts/*"
+hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "data/re10k/test.mat"
+# Reassemble the single zip from its parts, then extract the per-scene .npz videos:
+cat data/re10k/test_parts/re10k_test.zip.part_* > data/re10k/re10k_test.zip
+unzip data/re10k/re10k_test.zip -d data/re10k/
+# Reclaim space once extraction succeeds:
+rm -r data/re10k/test_parts data/re10k/re10k_test.zip
 ```
 
 ## Inference
@@ -146,14 +172,17 @@ bash scripts/vision_metrics/run_vision_comparison.sh
 
 ### RealEstate10K
 
-To compute metrics for 3D-Belief and DFoT on RealEstate10K, point `DATASET_ROOT` at your RE10K data directory and run:
+To compute metrics for 3D-Belief and DFoT on RealEstate10K, first set up the RE10K test data as
+described in [Data & Checkpoints](#realestate10k-for-re10k-inference--vision-evaluation) (this
+populates `data/re10k`, the default `DATASET_ROOT`), then run:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-DATASET_ROOT=/path/to/re10k \
 OUTPUT_ROOT="$PWD/outputs/vision_metrics/re10k" \
 bash scripts/vision_metrics/run_vision_comparison_re10k.sh
 ```
+
+(Pass `DATASET_ROOT=/path/to/re10k` if your RE10K data lives elsewhere.)
 
 To include Gen3C as a baseline (after completing the setup in [GEN3C.md](GEN3C.md)), activate its environment and add `gen3c` to `MODELS`:
 
