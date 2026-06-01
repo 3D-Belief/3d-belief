@@ -101,9 +101,7 @@ hf download SCAI-JHU/3d-belief --repo-type dataset --local-dir ./ --include "che
 ```
 
 Model inference additionally requires the DINOv3 ViT-B/16 backbone
-weights at `checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth`. These weights must be obtained separately from Meta's **gated** DINOv3 release (request access / accept the license at
-[facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
-or the [DINOv3 GitHub](https://github.com/facebookresearch/dinov3)), then place the
+weights at `checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth`. These weights must be obtained separately from Meta's gated DINOv3 release (request access / accept the license at the [DINOv3 GitHub](https://github.com/facebookresearch/dinov3)), then place the
 `dinov3_vitb16_pretrain_lvd1689m.pth` file at `checkpoints/dinov3_vitb16_pretrain_lvd1689m.pth`.
 
 Download and set up evaluation data:
