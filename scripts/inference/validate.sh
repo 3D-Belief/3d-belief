@@ -22,7 +22,9 @@ INFERENCE_NUM_SAMPLES="${INFERENCE_NUM_SAMPLES:-25}"
 INFERENCE_SAVE_SCENE="${INFERENCE_SAVE_SCENE:-false}"
 
 # --- Overridable object-permanence guidance (none | opacity | dps) ---
-OBJ_PERMANENCE_MODE="${OBJ_PERMANENCE_MODE:-opacity}"
+OBJ_PERMANENCE_MODE="${OBJ_PERMANENCE_MODE:-none}"
+# --- Overridable observed-side object permanence (none | oneshot | live) ---
+OBJ_PERMANENCE_OBSERVED_MODE="${OBJ_PERMANENCE_OBSERVED_MODE:-none}"
 
 # --- Environment ---
 if [[ -f uv_venv/.venv/bin/activate ]]; then
@@ -91,6 +93,7 @@ python splat_belief/experiment/temporal_inference.py \
     inference_sample_from_dataset="${INFERENCE_SAMPLE_FROM_DATASET}" \
     inference_num_samples="${INFERENCE_NUM_SAMPLES}" \
     obj_permanence_mode="${OBJ_PERMANENCE_MODE}" \
+    obj_permanence_observed_mode="${OBJ_PERMANENCE_OBSERVED_MODE}" \
     inference_min_frames=5 \
     inference_max_frames=25 \
     adjacent_angle=0.523 \

@@ -120,6 +120,10 @@ class SPOCDatasetSeq(Dataset):
         for scene_path in scene_path_list:
             rgb_path = scene_path / "rgb_trajectory.mp4"
             depth_mp4 = scene_path / "depth_trajectory.mp4"
+            if not rgb_path.exists():
+                rgb_path = scene_path / "videos" / "rgb_trajectory.mp4"
+            if not depth_mp4.exists():
+                depth_mp4 = scene_path / "videos" / "depth_trajectory.mp4"
             depth_npz = scene_path / "all_depths.npz"
             poses_npz = scene_path / "all_poses.npz"
             pose_dir = scene_path / "pose"
