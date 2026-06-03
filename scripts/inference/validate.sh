@@ -23,8 +23,8 @@ INFERENCE_SAVE_SCENE="${INFERENCE_SAVE_SCENE:-false}"
 
 # --- Overridable object-permanence guidance (none | opacity | dps) ---
 OBJ_PERMANENCE_MODE="${OBJ_PERMANENCE_MODE:-none}"
-# --- Overridable observed-side object permanence (none | oneshot | live) ---
-OBJ_PERMANENCE_OBSERVED_MODE="${OBJ_PERMANENCE_OBSERVED_MODE:-none}"
+# --- Overridable observed-side object permanence (none | live) ---
+OBJ_PERMANENCE_OBSERVED_MODE="${OBJ_PERMANENCE_OBSERVED_MODE:-live}"
 
 # --- Environment ---
 if [[ -f uv_venv/.venv/bin/activate ]]; then

@@ -76,13 +76,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--belief-temperature", type=float, default=0.85)
     parser.add_argument(
         "--belief-obj-permanence-mode",
-        default="opacity",
+        default="none",
         choices=("none", "opacity", "dps"),
     )
     parser.add_argument(
         "--belief-obj-permanence-observed-mode",
         default="live",
-        choices=("none", "oneshot", "live"),
+        choices=("none", "live"),
     )
     parser.add_argument("--belief-d-semantic", type=int, default=512)
     parser.add_argument("--belief-d-semantic-reg", type=int, default=768)

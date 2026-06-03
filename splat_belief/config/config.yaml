@@ -161,10 +161,8 @@ use_history: True
 use_object_binary_mask: False
 background_weight: 0.1
 
-# Object permanence guidance for temporal inference. See
-# docs/object_permanence_guidance.md.
 obj_permanence_mode: none
-# Observed-side object permanence: none | oneshot | live
+# Observed-side object permanence: none | live
 # "live" is the default: re-encode + re-mask the current keyframe's context
 # every diffusion step so the kf0/kf1 seam is harmonised through the feedback
 # loop. See docs/object_permanence_guidance.md and splat_belief_state.py.

@@ -23,8 +23,8 @@ INFERENCE_SAVE_SCENE="${INFERENCE_SAVE_SCENE:-false}"
 SEED="${SEED:-0}"
 
 # --- Overridable object-permanence guidance (none | opacity | dps) ---
-OBJ_PERMANENCE_MODE="${OBJ_PERMANENCE_MODE:-opacity}"
-# --- Overridable observed-side object permanence (none | oneshot | live) ---
+OBJ_PERMANENCE_MODE="${OBJ_PERMANENCE_MODE:-none}"
+# --- Overridable observed-side object permanence (none | live) ---
 OBJ_PERMANENCE_OBSERVED_MODE="${OBJ_PERMANENCE_OBSERVED_MODE:-live}"
 
 # --- Environment ---

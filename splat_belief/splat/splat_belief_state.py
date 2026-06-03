@@ -118,10 +118,10 @@ class SplatBeliefState(nn.Module):
         # Accumulated belief from earlier keyframes of the current autoregressive
         # imagination rollout (dropped when a real observation arrives).
         self.imagined_gaussians = None
-        # The current keyframe's context Gaussians kept "live" (re-encoded and
-        # re-masked every diffusion step) under obj_permanence_observed_mode
-        # == "live"; committed into history_gaussians when the next keyframe
-        # arrives. Stays None in "none"/"oneshot" mode.
+        # The current keyframe's context Gaussians kept "live" (re-encoded
+        # every diffusion step) under obj_permanence_observed_mode == "live";
+        # committed into history_gaussians when the next keyframe arrives.
+        # Stays None in "none" mode.
         self.context_gaussians_live = None
         # Container for history
         self.history_rgb = None
@@ -133,12 +133,13 @@ class SplatBeliefState(nn.Module):
         assert obj_permanence_mode in ("none", "opacity", "dps"), \
             f"unknown obj_permanence_mode: {obj_permanence_mode!r}"
         self.obj_permanence_mode = obj_permanence_mode
-        # Observed-side object permanence — suppress an incoming keyframe's
-        # context where already-observed history covers it:
-        #   none    -- disabled
-        #   oneshot -- mask once, when the keyframe is folded into history
-        #   live    -- keep the context live, re-masked every diffusion step
-        assert obj_permanence_observed_mode in ("none", "oneshot", "live"), \
+        # Observed-side object permanence — how an incoming keyframe's observed
+        # context is folded into the persistent observed history:
+        #   none -- commit the context into history immediately
+        #   live -- keep the context live (re-encoded every diffusion step so it
+        #           evolves through the diffusion feedback loop), then commit the
+        #           full context into history at the next keyframe
+        assert obj_permanence_observed_mode in ("none", "live"), \
             f"unknown obj_permanence_observed_mode: {obj_permanence_observed_mode!r}"
         self.obj_permanence_observed_mode = obj_permanence_observed_mode
         self.obj_permanence_state_t_min = int(obj_permanence_state_t_min)
@@ -175,7 +176,7 @@ class SplatBeliefState(nn.Module):
     def observed_gaussians(self):
         """Real observed keyframes only: committed history plus the live
         current keyframe context. Excludes autoregressive imagination and the
-        current belief. Equals history_gaussians in "none"/"oneshot" mode."""
+        current belief. Equals history_gaussians in "none" mode."""
         parts = [g for g in (self.history_gaussians, self.context_gaussians_live)
                  if g is not None]
         if not parts:
@@ -452,11 +453,10 @@ class SplatBeliefState(nn.Module):
                 model_input["trgt_c2w"] = torch.einsum("bijk, bikl -> bijl", self.first_ctxt_shift, model_input["trgt_c2w"])
 
             # Update history Gaussians.
-            # obj_permanence_observed_mode controls observed-side object
-            # permanence: "oneshot" masks the incoming keyframe once at the
-            # fold; "live" keeps it re-encoded + re-masked every diffusion step.
+            # obj_permanence_observed_mode == "live" keeps the incoming keyframe's
+            # context live (re-encoded every diffusion step) and commits the full
+            # context into observed history; "none" commits it immediately.
             live_obs = (self.obj_permanence_observed_mode == "live")
-            mask_obs = self.obj_permanence_observed_mode in ("oneshot", "live")
             if self.current_timestep is None:
                 self.current_timestep = 0
                 if live_obs:
@@ -489,17 +489,10 @@ class SplatBeliefState(nn.Module):
                     )
                 else:
                     # A real new observation arrived: drop the imagined rollout
-                    # and incorporate the newly-observed keyframe.
-                    # Observed-side object permanence: suppress the incoming
-                    # keyframe's context Gaussians where committed history
-                    # already covers them (rendered at the context pose). The
-                    # encoder input stays a clean RGB image -- no OOD.
-                    if mask_obs and self.history_gaussians is not None:
-                        context_gaussians, _ = self._apply_opacity_constraint(
-                            context_gaussians, model_input, h, w, pose_key="ctxt_c2w")
+                    # and incorporate the newly-observed keyframe (full context).
                     if live_obs:
                         # Keep the new keyframe's context live so it is
-                        # re-encoded + re-masked every diffusion step.
+                        # re-encoded every diffusion step.
                         self.context_gaussians_live = context_gaussians
                     else:
                         self.history_gaussians=context_gaussians+self.history_gaussians.detach()
@@ -580,13 +573,10 @@ class SplatBeliefState(nn.Module):
             # Update belief Gaussians
             self.belief_gaussians = target_gaussians
 
-            # Live observed-side object permanence: re-encode and re-mask the
-            # current keyframe's context every diffusion step, so the observed
-            # seam is harmonised through the diffusion feedback loop.
+            # Live observed-side object permanence: re-encode the current
+            # keyframe's context every diffusion step so it evolves through the
+            # diffusion feedback loop. The full context is kept (no masking).
             if self.obj_permanence_observed_mode == "live" and not self.imagine_mode:
-                if self.history_gaussians is not None:
-                    context_gaussians, _ = self._apply_opacity_constraint(
-                        context_gaussians, model_input, h, w, pose_key="ctxt_c2w")
                 self.context_gaussians_live = context_gaussians
 
             # Same constraint as the new-state branch — keeps every diffusion
