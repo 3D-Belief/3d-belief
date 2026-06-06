@@ -131,14 +131,19 @@ shift 1
 EXTRA_HYDRA_ARGS=""
 get_agent_config "${AGENT}"
 
+PYTHON_BIN="python"
 if command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base)"
   set +u  # conda scripts reference unset variables
   source "${CONDA_BASE}/etc/profile.d/conda.sh"
   conda activate "$CONDA_ENV"
   set -u
-  # Ensure conda's libstdc++ is found before the (older) system one
-  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+  ENV_PREFIX="${CONDA_BASE}/envs/${CONDA_ENV}"
+  if [[ -x "${ENV_PREFIX}/bin/python" ]]; then
+    export PATH="${ENV_PREFIX}/bin:${PATH}"
+    PYTHON_BIN="${ENV_PREFIX}/bin/python"
+    export LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+  fi
 else
   echo "[WARN] conda not found in PATH. Skipping conda activate."
 fi
@@ -158,7 +163,7 @@ if [[ ! -f "${SCRIPT_PATH}" ]]; then
     echo "         The command will likely fail. Continuing anyway..."
 fi
 
-HYDRA_FULL_ERROR=1 OC_CAUSE=1 python "${SCRIPT_PATH}" \
+HYDRA_FULL_ERROR=1 OC_CAUSE=1 "${PYTHON_BIN}" "${SCRIPT_PATH}" \
     +seed=42 \
     embodied_task.trajectory.save_path="${SAVE_PATH}" \
     embodied_task.episode_root="${EPISODE_ROOT}" \

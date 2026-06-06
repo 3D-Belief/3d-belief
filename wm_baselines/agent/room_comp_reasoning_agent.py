@@ -138,7 +138,10 @@ class RoomCompletionReasoningAgent(BaseAgent):
                     # PLY is loadable by 3DGS viewers (splatviz, gaussian-splatting). Falls back
                     # to plain o3d point cloud if the world model does not expose export_scene.
                     ply_path = self.assets_save_path_ep / key / f"pcd_{self.step}.ply"
-                    if hasattr(self.world_model, 'export_scene') and getattr(self.world_model, 'current_pose', None) is not None:
+                    # Only world models that actually override export_scene (e.g. the
+                    # 3D-Belief gaussian model) can persist a full scene; DFoT/NWM inherit
+                    # the BaseWorldModel stub, so fall back to writing the plain o3d cloud.
+                    if type(self.world_model).export_scene is not BaseWorldModel.export_scene and getattr(self.world_model, 'current_pose', None) is not None:
                         c2w = torch.linalg.inv(self.world_model.current_pose.float()).unsqueeze(0)
                         self.world_model.export_scene(ply_path, c2w)
                     else:
