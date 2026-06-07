@@ -22,6 +22,8 @@ WANDB="${2:-${WANDB:-local}}"
 WANDB_ENTITY="${3:-${WANDB_ENTITY:-null}}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((NGPUS - 1)))}"
 export TORCH_CUDA_ARCH_LIST="8.6;9.0"
+# SPOC semantic-head fine-tune. Override the dataset root / base checkpoint via env vars
+# if your data or weights live elsewhere. (For RE10K use finetune_semantic_re10k.sh.)
 DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/data/spoc}"
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-${REPO_ROOT}/checkpoints/3d_belief_spoc.pt}"
 
@@ -35,6 +37,7 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes 1 --nproc_per_node $NGPUS --master_port
     dataset.root_dir="${DATASET_ROOT}" \
     setting_name=pixelsplat_h100 \
     stage=train \
+    use_depth_supervision=true \
     results_folder=outputs/training/spoc_semantic \
     semantic_config=${REPO_ROOT}/splat_belief/config/semantic/onehot.yaml \
     checkpoint_path="${CHECKPOINT_PATH}" \

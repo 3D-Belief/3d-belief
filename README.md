@@ -21,8 +21,9 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 
 ## 🎉 News
 
+- **[2026-06]** Training code released. See [TRAINING.md](TRAINING.md) for training on SPOC and RealEstate10K.
 - **[2026-04]** Code, pretrained checkpoints, and processed data released on [HuggingFace](https://huggingface.co/datasets/SCAI-JHU/3d-belief).
-- **[2026-04]** 3D-CORE benchmark released — covering object completion, room completion, and object permanence tasks.
+- **[2026-04]** 3D-CORE benchmark released, covering object completion, room completion, and object permanence tasks.
 - **[2026-04]** Project website and paper live at [3d-belief.github.io](https://3d-belief.github.io).
 
 ## Quick Links
@@ -36,6 +37,7 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 - [Embodied Evaluation](#embodied-evaluation)
   - [Object Navigation (AI2-THOR)](#object-navigation-ai2-thor)
   - [3D Contextual Reasoning (3D-CORE)](#3d-contextual-reasoning-3d-core)
+- [Training](#training)
 - [Repository Structure](#repository-structure)
 - [Citation](#citation)
 
@@ -51,20 +53,28 @@ git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 pip -y
 conda activate 3d-belief
 conda install -c conda-forge ninja gcc_linux-64=9 gxx_linux-64=9 swig -y
-# Install the version that matches your CUDA version. CUDA 12.1 is used here as an example
-conda install -c nvidia cuda=12.1 -y
+# Install the version that matches your CUDA version. CUDA 12.8 is used here as an example
+conda install -c nvidia cuda=12.8 -y
 
 export PATH=$CONDA_PREFIX/bin:$PATH
 export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-# Install the version that matches your CUDA version. CUDA 12.1 is used here as an example
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install the version that matches your CUDA version. CUDA 12.8 is used here as an example
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath
 conda install -c conda-forge vulkan-tools -y
 pip install --no-build-isolation -r requirements.txt
 pip install -e .
 ```
+
+> [Note]
+> **The CUDA toolkit and the PyTorch build must match your machine's CUDA version**
+> (`12.8`/`cu128` above are only examples). Check the machine's CUDA with `nvidia-smi`
+> (driver), the installed toolkit with `nvcc --version`, and PyTorch's build with
+> `python -c "import torch; print(torch.version.cuda)"`, all three should agree. If they
+> don't, the CUDA gaussian-rasterizer extension compiles and *inference* may run, but
+> **training will crash in the rasterizer backward**.
 
 ### Third-Party Packages and Assets
 
@@ -73,11 +83,7 @@ cd third_party/dfot
 pip install -r requirements.txt
 cd ../spoc
 pip install --no-build-isolation -e .
-pip install "setuptools==65.5.0" "wheel<0.40"
-# Pin the torch stack so spoc's unpinned xformers/torch do not replace the cu121 build
-# from the main install (xformers is disabled at runtime via XFORMERS_DISABLED=1).
-printf 'torch==2.5.1\ntorchvision==0.20.1\ntorchaudio==2.5.1\ntriton==3.1.0\nxformers==0.0.28.post3\n' > /tmp/3db_torch_constraints.txt
-pip install -r requirements.txt -c /tmp/3db_torch_constraints.txt
+pip install -r requirements.txt
 pip install --extra-index-url https://ai2thor-pypi.allenai.org ai2thor==0+5d0ab8ab8760eb584c5ae659c2b2b951cab23246
 # Download and unzip the assets may take a while
 python -m objathor.dataset.download_annotations --version 2023_07_28 --path ../../data
@@ -259,6 +265,13 @@ python scripts/calculate_metrics/obj_comp_metrics.py <path_to_predicted_trajecto
 python scripts/calculate_metrics/room_comp_metrics.py <path_to_predicted_trajectories>
 python scripts/calculate_metrics/obj_perm_metrics.py <path_to_predicted_trajectories>
 ```
+
+## Training
+
+To train or finetune 3D-Belief on **SPOC** and **RealEstate10K**, see
+[TRAINING.md](TRAINING.md). It covers downloading the training data, the two-stage
+recipe (base training at 128×128 → fine-tune at 256×256), and the optional semantic-head
+fine-tune for each dataset.
 
 ## Repository Structure
 
