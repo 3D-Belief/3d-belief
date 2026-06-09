@@ -115,8 +115,11 @@ def train(cfg: DictConfig):
         clip_model.eval()
 
     dino_model = None
-    if use_semantic and use_reg_model: 
-        dino_model = build_2d_model(model_name=reg_model_name)
+    if use_semantic and use_reg_model:
+        dino_model = build_2d_model(
+            model_name=reg_model_name,
+            weights_path=cfg.model.encoder.get("reg_model_weights", None),
+        )
 
     text_encoder = None
     text_tokenizer = None
