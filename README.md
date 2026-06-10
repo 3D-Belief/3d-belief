@@ -48,7 +48,6 @@ We propose **3D-Belief**, a generative 3D world model that predicts unseen regio
 ```bash
 git clone https://github.com/3D-Belief/3d-belief
 cd 3d-belief
-# It takes ~ 5 mins to pull all submodules and their dependencies.
 git submodule update --init --recursive
 conda create -n 3d-belief python=3.10 pip -y
 conda activate 3d-belief
