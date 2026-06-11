@@ -11,7 +11,6 @@ matplotlib
 scikit-image
 scipy
 open-clip-torch
-clip
 lpips
 omegaconf
 torch-efficient-distloss

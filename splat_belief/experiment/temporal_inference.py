@@ -53,7 +53,6 @@ import torch.nn.functional as F
 from PIL import Image
 from splat_belief.utils.model_utils import build_2d_model
 
-import clip
 import open_clip
 
 

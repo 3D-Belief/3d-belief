@@ -25,7 +25,6 @@ from accelerate import DistributedDataParallelKwargs
 from accelerate import Accelerator
 from splat_belief.utils.model_utils import build_2d_model, load_repa_encoder
 
-import clip
 import open_clip
 
 
